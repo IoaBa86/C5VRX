@@ -73,6 +73,77 @@ together with a deviation measurement.
   over. The kp variants are the same untrained formula compiled with the
   original generator (kp 0.85 reproduces `u85q.bsasm` bit-exactly).
 
+## 6. Open field: AFC re-acquisition at weak signal (`afc_bias.py`)
+
+Operator report (2026-10-11): good video indoors through walls, poor range
+in an open field. One firmware mechanism acts exactly at long range. After
+4 windows without confirmed sync (200 ms) the AFC drops its lock and gets a
+fresh budget of 4 retunes of up to 250 kHz. Losing the lock alone changes
+nothing: the offset stays and U85Q keeps demodulating. The risk is the
+retunes made after the lock is lost.
+
+The porch estimate is a mean of wrapped phase steps. Below the FM
+threshold, clicks pull it toward the receiver centre, and the porch target
+is -1.0 MHz. Model results (true error 0, median of 16 windows, mean of 40
+decisions):
+
+| C/N (20 MHz) | 20 MHz chan | 12 MHz class | 10 MHz class | MAD gate passes (12 MHz) |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 dB | +254 kHz | +177 kHz | +138 kHz | 52 % |
+| 2 dB | +120 kHz | +77 kHz | +65 kHz | 100 % |
+| 4 dB | +58 kHz | +27 kHz | +14 kHz | 100 % |
+| 6 dB | +20 kHz | +5 kHz | +2 kHz | 100 % |
+
+The deadband is 50 kHz. Around the usable-picture threshold (~1-5 dB) the
+AFC can therefore step the wrong way: up to 4 x 250 kHz per lost lock, in
+a fade-heavy field. Section 3 shows that a -0.5 MHz error already hurts the
+narrow settings at the edge.
+
+The firmware now retunes only when the C/N estimate is >= 6 dB
+(`main/cn_estimate.h`). A weak window still feeds the estimate history. The
+VTX carrier does not move during a fade, so the offset found on a strong
+signal stays. `[AFC]` logs every retune; `afc_weak_skips` in `T` counts the
+retunes that were blocked.
+
+This model omits burst detection and sync search at that C/N. Whether such
+steps happen on the board shows up in the logs (`[AFC]` lines,
+`afc_step=1` in FIELD_DIAG).
+
+### Coherence is not C/N
+
+The observer coherence of receiver noise alone depends on the analog
+filter: about 42 % through the ~20 MHz chip channel, 58 % through the 12 MHz
+class and 61 % through the 10 MHz class. Fixed coherence thresholds
+therefore mean a different C/N per filter class. `afc_bias.py --coherence`
+gives the tables behind `cn_estimate.h`. Profile gating, the diagnostics
+and the AFC gate use this estimate.
+
+## 7. Open field: propagation, the larger effect
+
+These are textbook two-ray numbers (ground reflection coefficient -1), not
+C5VRX measurements. They show why a test with both antennas low can lose
+range in an open field, while short indoor paths through walls work.
+
+| heights TX / RX | breakpoint | extra loss vs free space at 300 / 500 / 1000 m |
+| --- | ---: | --- |
+| 1 m / 1 m (walking test, VTX in hand or on the ground) | 77 m | +2 / +6 / +12 dB |
+| 1.5 m / 1.5 m | 174 m | -4 / 0 / +5 dB |
+| 30 m / 1.5 m (flying) | 3.5 km | within +-6 dB nulls and peaks |
+
+The first Fresnel zone has a radius of 2.0 m at the middle of a 300 m path,
+and 3.6 m at 1 km. With antennas at 1 m, the ground fills part of it.
+
+Free-space budget, for scale: 25 mW, 2 dBi each side, 3 dB polarisation
+loss (linear XIAO antenna vs RHCP VTX), 3 dB C/N per 20 MHz at the
+threshold. That gives ~1.0 / 0.7 / 0.46 km for a receiver noise figure of
+5 / 8 / 12 dB. Indoors, distances are ~10x shorter (20 dB less path loss),
+which covers a few walls. A good indoor picture and a short open-field
+range are therefore not contradictory. Neither proves anything about the
+demodulator.
+
+`docs/FIELD_TEST.md` separates propagation (height and position A/B),
+antenna/polarisation and receiver sensitivity (conducted attenuation).
+
 ## Not firmware levers
 
 - The second IQ40 sample of every span (+0.5..1.1 dB in the C5VRX-4 ledger)

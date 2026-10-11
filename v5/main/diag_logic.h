@@ -3,7 +3,9 @@
  *
  * diag.c summarises each second of live reception from statistics the
  * receiver already computes (control-window AFC result, gain observer)
- * into one record. When the picture drops out, the records just before
+ * into one record. The C/N estimate comes from the observer coherence and
+ * the active filter class (cn_estimate.h, a model table), because the
+ * coherence of plain noise itself depends on the filter width. When the picture drops out, the records just before
  * and at the dropout are classified into an evidence category. The
  * categories are hypotheses for the operator, not a proven physical
  * cause, and none of them is a calibrated dBm or range figure:
@@ -11,17 +13,19 @@
  *  CALIBRATION_OR_PHY        the chain itself was not in its intended state
  *                            (filter not applied, sampling phase unsettled,
  *                            no DC correction for the gain in use, DMA or
- *                            BitScrambler faults);
+ *                            BitScrambler faults, an AFC retune);
  *  POSSIBLE_PROPAGATION_FADE the carrier had clear analog-gain headroom and
  *                            disappeared within ~2 s, faster than distance
  *                            explains (ground-reflection null, body or
  *                            antenna shadowing, polarisation);
  *  AT_RF_FLOOR               already at the gain table maximum with a weak
- *                            carrier before the dropout, and noise-like IQ
- *                            at it: the signal sank into the receiver noise;
- *  DEMOD_CLIFF               the IQ still has carrier-like phase coherence
- *                            while the picture is lost: tracker, AFC or sync
- *                            loss rather than missing RF;
+ *                            carrier before the dropout, and a C/N estimate
+ *                            at or below ~2 dB at it: the signal sank into
+ *                            the receiver noise;
+ *  DEMOD_CLIFF               the C/N estimate stays >= 6 dB (well above the
+ *                            simulated usable threshold) while the picture
+ *                            is lost: tracker, AFC or sync loss rather than
+ *                            missing RF;
  *  UNKNOWN                   none of the above fits. */
 #pragma once
 #include <stdbool.h>
@@ -49,7 +53,8 @@ static inline const char *diag_category_name(int c)
 #define DIAG_F_SPHASE_BAD      0x02u   /* sampling phase not settled */
 #define DIAG_F_NO_DC           0x04u   /* no DC correction held for the gain */
 #define DIAG_F_FAULT           0x08u   /* new DMA/BitScrambler fault */
-#define DIAG_F_CHAIN           0x0fu
+#define DIAG_F_AFC_STEP        0x40u   /* the AFC retuned the offset */
+#define DIAG_F_CHAIN           0x4fu
 /* Informational, not a chain fault. */
 #define DIAG_F_AFC_LOCKED      0x10u
 #define DIAG_F_OUT_OF_SPEC     0x20u   /* channel above the documented C5 range */
@@ -61,18 +66,19 @@ typedef struct {
     uint8_t rf_stage;       /* vendor RF stage of the gain */
     int16_t p50;            /* observer envelope median (ultrafine cells^2 x16) */
     int16_t coherence;      /* observer phase coherence, % */
+    int16_t cn_x10;         /* C/N estimate x10 dB (cn_estimate.h), -990 noise-like */
     int16_t origin_pm, clip_pm;
     int16_t offset_khz;     /* AFC tuning offset */
     uint8_t flags;
 } diag_record_t;
 
-/* Thresholds (observer coherence: receiver noise at the table maximum
- * reads 36..61 %, a usable carrier >= 80 %, firmware-exact simulation of
- * PR #196). */
+/* Thresholds on the C/N estimate (per 20 MHz; simulated usable-picture
+ * threshold ~1-5 dB, v5/research/README.md). */
 #define DIAG_VIDEO_OK_PCT     50u   /* a second with a picture */
 #define DIAG_VIDEO_LOST_PCT   5u    /* a second without (no confirmed sync) */
-#define DIAG_NOISE_COHERENCE  65    /* at or below: noise-like */
-#define DIAG_GOOD_COHERENCE   80
+#define DIAG_FLOOR_CN_X10     20    /* at or below: at the receiver noise */
+#define DIAG_WEAK_CN_X10      80    /* below: a weak carrier */
+#define DIAG_CLIFF_CN_X10     60    /* at or above: RF still clearly there */
 #define DIAG_FADE_HEADROOM    6u    /* gain steps below the maximum */
 
 static inline bool diag_video_ok(const diag_record_t *r) { return r->video_pct >= DIAG_VIDEO_OK_PCT; }
@@ -97,8 +103,8 @@ static inline int diag_classify(const diag_record_t *rec, unsigned n)
     bool fast = (int)n - 1 - last_ok <= 2;
     if (fast && ok->gain + DIAG_FADE_HEADROOM <= ok->gain_max) return DIAG_PROPAGATION_FADE;
     bool at_max_before = ok->gain + 1u >= ok->gain_max;
-    if (at_max_before && ok->coherence < DIAG_GOOD_COHERENCE + 10 && drop->coherence <= DIAG_NOISE_COHERENCE)
+    if (at_max_before && ok->cn_x10 < DIAG_WEAK_CN_X10 && drop->cn_x10 <= DIAG_FLOOR_CN_X10)
         return DIAG_AT_RF_FLOOR;
-    if (drop->coherence >= DIAG_GOOD_COHERENCE) return DIAG_DEMOD_CLIFF;
+    if (drop->cn_x10 >= DIAG_CLIFF_CN_X10) return DIAG_DEMOD_CLIFF;
     return DIAG_UNKNOWN;
 }

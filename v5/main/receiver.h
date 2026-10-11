@@ -127,6 +127,7 @@ void calibration_print(void);
 void dco_post_gain(uint8_t gain);
 /* Chain state for the diagnostics (no side effects). */
 const char *calibration_filter_result(void);
+int calibration_filter_class_mhz(void);
 const char *calibration_sphase_state(void);
 bool calibration_sphase_settled(void);
 /* DC correction in place for this gain: held, or not needed (outside the
@@ -167,7 +168,7 @@ void profile_set_reason(const char *reason);
 void profile_print(void);
 
 /* ---- diag.c: passive field diagnostics (diag_logic.h) ---- */
-void diag_window(bool measured, bool video_valid);   /* control task, every processed window */
+void diag_window(bool measured, bool video_valid, bool afc_step);   /* control task, every window */
 void diag_poll(void);                   /* console task: prints queued records */
 void diag_report(void);                 /* console D */
 void diag_toggle_stream(void);          /* console R */

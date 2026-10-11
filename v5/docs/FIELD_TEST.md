@@ -43,6 +43,35 @@ flight video.
 These categories are hypotheses for the next test. They are not a measured
 cause, not dBm, and not range.
 
+## Open-field physics, before blaming the receiver
+
+These are textbook two-ray numbers, not measurements (`v5/research/README.md`,
+section 7).
+
+- **Low antennas lose range in the open.** With VTX and receiver both at
+  ~1 m, the ground reflection cancels the direct ray beyond ~77 m. The extra
+  loss is +6 dB at 500 m and +12 dB at 1 km. Each 6 dB halves the range.
+- **Indoors is not comparable.** Indoor paths are short, and reflections
+  fill the gaps.
+- **Polarisation costs about 3 dB.** The XIAO antenna is linear and FPV VTX
+  antennas are usually RHCP.
+- **What helps:**
+  - put the receiver antenna high and clear of your body;
+  - fly instead of walking the VTX on the ground;
+  - use a matched 5.8 GHz antenna.
+- **What does not help:** a different LUT does not change this.
+
+`D` and `R` report a C/N estimate (`cn_est_x10`). It is a model value from
+the phase coherence and the active filter class, not dBm. Compare it
+between runs. It also feeds the dropout classes and the AFC gate: the AFC
+retunes only from ~6 dB, logged as `[AFC]`. If FIELD_DIAG shows
+`afc_step=1` just before dropouts on an older build, the old weak-signal
+retune was involved.
+
+A `QUANTISER_LIMITED` verdict in `D` (VTX off, gain at the table maximum)
+means the receiver noise is below one ultrafine step. Then the 4-bit
+capture, not the antenna, sets the floor, and an LNA in front would help.
+
 ## Record every run
 
 Write these down; the firmware cannot infer them: distance, RX and TX

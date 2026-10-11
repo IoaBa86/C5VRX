@@ -1,5 +1,6 @@
 /* C5VRX-5 by Twotoz and the C5VRX contributors: host test of the dropout
- * classifier (main/diag_logic.h) on synthetic per-second records.
+ * classifier (main/diag_logic.h) on synthetic per-second records, and of
+ * the coherence -> C/N estimate and AFC gate (main/cn_estimate.h).
  *
  * The records model the situations the field report asks to separate:
  * a fast fade with gain headroom, a slow walk into the receiver noise at
@@ -12,6 +13,7 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include "cn_estimate.h"
 #include "diag_logic.h"
 
 #define MAX_GAIN 83u
@@ -26,6 +28,7 @@ static diag_record_t rec(uint8_t video, uint8_t gain, int coherence, uint8_t fla
     r.gain = gain;
     r.gain_max = MAX_GAIN;
     r.coherence = (int16_t)coherence;
+    r.cn_x10 = (int16_t)cn_estimate_x10(coherence, 20);
     r.flags = flags;
     return r;
 }
@@ -73,7 +76,7 @@ int main(void)
     }
     /* Chain faults win over every RF reading. */
     {
-        const uint8_t flags[] = {DIAG_F_FILTER_MISMATCH, DIAG_F_SPHASE_BAD, DIAG_F_NO_DC, DIAG_F_FAULT};
+        const uint8_t flags[] = {DIAG_F_FILTER_MISMATCH, DIAG_F_SPHASE_BAD, DIAG_F_NO_DC, DIAG_F_FAULT, DIAG_F_AFC_STEP};
         for (unsigned k = 0; k < sizeof(flags); ++k) {
             diag_record_t r[] = {rec(100, 50, 92, 0), rec(0, MAX_GAIN, 50, flags[k])};
             expect("chain flag at dropout", r, 2, DIAG_CALIBRATION_OR_PHY);
@@ -130,6 +133,42 @@ int main(void)
                     printf("FAIL sweep fade without headroom g=%u\n", g);
                 }
             }
+    /* C/N estimate: monotonic in coherence, noise alone is "unknown", and
+     * the model table points map back to their C/N. */
+    {
+        const int filters[] = {10, 12, 20};
+        const int noise[] = {61, 58, 42};                 /* afc_bias.py --coherence, noise only */
+        const int at2db[] = {78, 76, 63}, at8db[] = {94, 92, 84};
+        for (unsigned f = 0; f < 3u; ++f) {
+            int prev = -10000;
+            for (int c = 0; c <= 100; ++c) {
+                int v = cn_estimate_x10(c, filters[f]);
+                ++s_run;
+                if (v < prev) { ++s_fail; printf("FAIL cn not monotonic f=%d c=%d\n", filters[f], c); }
+                prev = v;
+            }
+            ++s_run;
+            if (cn_estimate_x10(noise[f], filters[f]) != CN_UNKNOWN_X10) {
+                ++s_fail;
+                printf("FAIL noise-only coherence %d at %d MHz reads %d\n", noise[f], filters[f],
+                       cn_estimate_x10(noise[f], filters[f]));
+            }
+            /* AFC: no retune at the range edge, retune on a clear carrier. */
+            s_run += 2;
+            if (afc_correction_allowed(at2db[f], filters[f])) { ++s_fail; printf("FAIL AFC allowed at 2 dB f=%d\n", filters[f]); }
+            if (!afc_correction_allowed(at8db[f], filters[f])) { ++s_fail; printf("FAIL AFC refused at 8 dB f=%d\n", filters[f]); }
+            int e2 = cn_estimate_x10(at2db[f], filters[f]), e8 = cn_estimate_x10(at8db[f], filters[f]);
+            s_run += 2;
+            if (e2 < 0 || e2 > 40) { ++s_fail; printf("FAIL 2 dB point reads %d f=%d\n", e2, filters[f]); }
+            if (e8 < 60 || e8 > 100) { ++s_fail; printf("FAIL 8 dB point reads %d f=%d\n", e8, filters[f]); }
+        }
+        /* The same coherence means a weaker carrier through a narrower filter. */
+        ++s_run;
+        if (!(cn_estimate_x10(80, 10) < cn_estimate_x10(80, 12) && cn_estimate_x10(80, 12) < cn_estimate_x10(80, 20))) {
+            ++s_fail;
+            printf("FAIL filter ordering\n");
+        }
+    }
     printf("%s: %u checks, %u failures\n", s_fail ? "FAIL" : "PASS", s_run, s_fail);
     return s_fail ? 1 : 0;
 }

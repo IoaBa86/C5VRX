@@ -391,6 +391,16 @@ bool filter_calibrate(bool automatic)
 
 const char *calibration_filter_result(void) { return s_filter_result; }
 
+/* Width class of the active analog filter, for model tables keyed on it
+ * (cn_estimate.h): 10 narrow, 12 normal, 20 the chip's own ~20 MHz. */
+int calibration_filter_class_mhz(void)
+{
+    rf_filter_t f, now = rf_filter();
+    if (filter_setting(true, &f) && rf_filter_equal(f, now)) return 10;
+    if (filter_setting(false, &f) && rf_filter_equal(f, now)) return 12;
+    return 20;
+}
+
 bool filter_setting(bool narrow, rf_filter_t *out)
 {
     const filter_entry_t *e = narrow ? &s_filter_cal.narrow : &s_filter_cal.normal;

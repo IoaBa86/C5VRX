@@ -389,7 +389,15 @@ AT_RF_FLOOR / DEMOD_CLIFF / UNKNOWN), evidence categories, not causes or
 dBm. Console `L` is a bench-only raw-IQ lane comparison (ultrafine / fine /
 coarse, ABBA, behind a status screen); production stays fixed ultrafine.
 Channels above 5885 MHz (R8, E6-E8) are flagged out of the documented C5
-range. Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
+range. AFC re-acquisition retunes only at a C/N estimate >= 6 dB
+(`v5/main/cn_estimate.h`: coherence -> C/N per filter class, since 4-bit
+noise alone reads ~42/58/61 % coherent at 20/12/10 MHz): below it the porch
+estimate is pulled toward the receiver centre (`v5/research/afc_bias.py`,
+host model: +65..250 kHz at 0-2 dB C/N, which passed the MAD gate), so the
+old gate could walk the offset the wrong way at the range edge. Open-field
+propagation (two-ray/Fresnel with low antennas: +6 dB at 500 m, +12 dB at
+1 km for 1 m heights) is documented in `v5/research/README.md` section 7;
+textbook numbers, not C5VRX measurements. Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
 operator report 2026-10-11: much less static but little more range, so no
 range gain is claimed; firmware is build-tested, board test pending. No options menu, labs, native AGC, AutoFit/Fusion,
 flywheel, level servo or idle raster. NVS namespace `c5vrx5`. CI:

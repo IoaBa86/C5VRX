@@ -58,6 +58,9 @@ def summary(path):
         "gain_median": median([r.get("gain", 0) for r in seconds]),
         "at_max_gain_pct": 100.0 * at_max / n if n else float("nan"),
         "coherence_median": median([r.get("coherence", 0) for r in seconds]),
+        "cn_est_median_db": median([r["cn_est_x10"] / 10 for r in seconds if r.get("cn_est_x10", -990) > -990]),
+        "noise_like_s": sum(1 for r in seconds if r.get("cn_est_x10", 0) == -990),
+        "afc_step_s": sum(1 for r in seconds if r.get("afc_step")),
         "coherence_with_picture": median([r.get("coherence", 0) for r in seconds if r.get("video_pct", 0) >= 50]),
         "p50_median": median([r.get("p50", 0) for r in seconds]),
         "origin_pm_median": median([r.get("origin_pm", 0) for r in seconds]),
@@ -74,7 +77,7 @@ def main(argv):
         print("usage: field_diag_compare.py LOG [LOG ...]")
         return 2
     rows = [summary(p) for p in argv[1:]]
-    keys = ["seconds", "picture_pct", "gain_median", "at_max_gain_pct", "coherence_median", "coherence_with_picture",
+    keys = ["seconds", "picture_pct", "gain_median", "at_max_gain_pct", "coherence_median", "coherence_with_picture", "cn_est_median_db", "noise_like_s", "afc_step_s",
             "p50_median", "origin_pm_median", "chain_fault_s", "out_of_spec_s", "dropouts", "dropout_s_median"]
     cats = sorted({c for r in rows for c in r["categories"]})
     width = max(len(k) for k in keys + ["dropouts " + c for c in cats]) + 2

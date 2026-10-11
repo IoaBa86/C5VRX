@@ -18,6 +18,7 @@
 #include "receiver.h"
 #include <stdio.h>
 #include <string.h>
+#include "cn_estimate.h"
 #include "diag_logic.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -50,6 +51,7 @@ static struct {
     long coh, p50, origin, clip;
     uint32_t faults;
     bool owned;           /* menu / calibration / scan owned TX or gain */
+    bool afc_step;
 } s_acc;
 static bool s_in_dropout;
 static uint32_t s_seen_faults;
@@ -77,11 +79,12 @@ static void close_second(int64_t now)
     arc_gain_tuple_t tuple;
     r.rf_stage = arc_gain_tuple_decode(table, r.gain, &tuple) ? tuple.rf_stage : 0xff;
     r.coherence = (int16_t)(s_acc.coh / (long)s_acc.windows);
+    r.cn_x10 = (int16_t)cn_estimate_x10(r.coherence, calibration_filter_class_mhz());
     r.p50 = (int16_t)(s_acc.p50 / (long)s_acc.windows);
     r.origin_pm = (int16_t)(s_acc.origin / (long)s_acc.windows);
     r.clip_pm = (int16_t)(s_acc.clip / (long)s_acc.windows);
     r.offset_khz = (int16_t)rf_offset_khz();
-    r.flags = chain_flags(r.gain, s_acc.faults);
+    r.flags = chain_flags(r.gain, s_acc.faults) | (s_acc.afc_step ? DIAG_F_AFC_STEP : 0u);
 
     taskENTER_CRITICAL(&s_lock);
     s_hist[s_seq % DIAG_HISTORY] = r;
@@ -113,7 +116,7 @@ static void close_second(int64_t now)
     }
 }
 
-void diag_window(bool measured, bool video_valid)
+void diag_window(bool measured, bool video_valid, bool afc_step)
 {
     const int64_t now = esp_timer_get_time();
     /* A gap (scan, stalled task) is not a second of reception. */
@@ -125,6 +128,7 @@ void diag_window(bool measured, bool video_valid)
     if (s_menu_active || s_scan_active || receiver_paused()) s_acc.owned = true;
     ++s_acc.windows;
     s_acc.measured += measured;
+    s_acc.afc_step |= afc_step;
     s_acc.video += measured && video_valid;
     s_acc.gain_sum += s_current_gain;
     s_acc.coh += s_obs_coherence;
@@ -147,9 +151,9 @@ void diag_window(bool measured, bool video_valid)
 static void print_record(const char *tag, const diag_record_t *r)
 {
     printf("%s t=%lu video_pct=%u gain=%u max=%u rf_stage=%u p50=%d coherence=%d origin_pm=%d clip_pm=%d "
-           "offset_khz=%d afc=%u filter_ok=%u sphase_ok=%u dc_ok=%u fault=%u in_spec=%u\n", tag,
+           "cn_est_x10=%d offset_khz=%d afc=%u afc_step=%u filter_ok=%u sphase_ok=%u dc_ok=%u fault=%u in_spec=%u\n", tag,
            (unsigned long)r->t_s, r->video_pct, r->gain, r->gain_max, r->rf_stage, r->p50, r->coherence, r->origin_pm,
-           r->clip_pm, r->offset_khz, !!(r->flags & DIAG_F_AFC_LOCKED), !(r->flags & DIAG_F_FILTER_MISMATCH),
+           r->clip_pm, r->cn_x10, r->offset_khz, !!(r->flags & DIAG_F_AFC_LOCKED), !!(r->flags & DIAG_F_AFC_STEP), !(r->flags & DIAG_F_FILTER_MISMATCH),
            !(r->flags & DIAG_F_SPHASE_BAD), !(r->flags & DIAG_F_NO_DC), !!(r->flags & DIAG_F_FAULT),
            !(r->flags & DIAG_F_OUT_OF_SPEC));
 }
@@ -230,8 +234,9 @@ void diag_report(void)
            tuple_ok ? t.bb_code : 0u, tuple_ok ? t.fine_code : 0u, top, g >= table->max_index, (unsigned)s_gain.state);
     printf("RANGE_DIAG chain sphase=%s dc_ok=%u dc_held=%u lane=%s faults=%lu\n", calibration_sphase_state(),
            calibration_dc_ok(g), phy_dco_held(), rf_lane_name(rf_lane()), (unsigned long)transport_fault_count());
-    printf("RANGE_DIAG iq p50=%d coherence=%d origin_pm=%d clip_pm=%d video_recent=%u\n", s_obs_p50, s_obs_coherence,
-           s_obs_origin_pm, s_obs_clip_pm,
+    const int cls_mhz = calibration_filter_class_mhz(), cn = cn_estimate_x10(s_obs_coherence, cls_mhz);
+    printf("RANGE_DIAG iq p50=%d coherence=%d cn_est_x10=%d (model, %d MHz class) origin_pm=%d clip_pm=%d "
+           "video_recent=%u\n", s_obs_p50, s_obs_coherence, cn, cls_mhz, s_obs_origin_pm, s_obs_clip_pm,
            s_last_video_us && esp_timer_get_time() - s_last_video_us < 2000000);
 
     /* Verdicts: evidence, not a measured cause. */
@@ -242,9 +247,13 @@ void diag_report(void)
     VERDICT(!calibration_sphase_settled(), "CALIBRATION_OR_PHY sampling phase not settled (repaired at boot only)");
     VERDICT(!calibration_dc_ok(g), "NOT_CALIBRATED DC correction missing for this gain (VTX off at boot fills it)");
     VERDICT(!rf_freq_in_spec(mhz), "UNKNOWN out-of-spec channel: compare with a channel <= 5885 MHz");
-    VERDICT(g >= table->max_index && s_obs_coherence <= DIAG_NOISE_COHERENCE,
-            "POSSIBLE_RF_FLOOR table maximum and noise-like IQ (no carrier, or below the receiver noise)");
-    VERDICT(g + DIAG_FADE_HEADROOM <= table->max_index && s_obs_coherence >= DIAG_GOOD_COHERENCE,
+    VERDICT(g >= table->max_index && cn <= DIAG_FLOOR_CN_X10,
+            "POSSIBLE_RF_FLOOR table maximum and C/N estimate <= 2 dB (no carrier, or at the receiver noise)");
+    VERDICT(g >= table->max_index && cn > DIAG_FLOOR_CN_X10 && cn < DIAG_WEAK_CN_X10,
+            "WEAK_CARRIER table maximum, C/N estimate 2-8 dB: near the usable-picture threshold");
+    VERDICT(g >= table->max_index && s_obs_p50 <= 4 && s_obs_origin_pm >= 650,
+            "QUANTISER_LIMITED noise below one ultrafine step at the table maximum: check with the VTX off");
+    VERDICT(g + DIAG_FADE_HEADROOM <= table->max_index && cn >= DIAG_WEAK_CN_X10,
             "OK strong carrier with gain headroom");
     if (!any) printf("RANGE_DIAG verdict=UNKNOWN no specific evidence\n");
 #undef VERDICT

@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "afc_ctrl.h"
+#include "cn_estimate.h"
 #include "analog_video_detect.h"
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
@@ -37,7 +38,7 @@ QueueHandle_t s_commands;
 static uint8_t s_window[CONTROL_BYTES];
 static uint8_t s_pal_votes, s_ntsc_votes;
 static uint8_t s_last_std = 0xFF;      /* last stable standard (NVS) */
-static unsigned s_afc_corrections;
+static unsigned s_afc_corrections, s_afc_weak_skips;
 
 static void standard_reset(void)
 {
@@ -304,22 +305,33 @@ static void control_task(void *arg)
         bool valid = window_ok && r.lines && r.standard && r.porch_pairs && r.sync_pairs &&
                      r.burst_x10 >= AFC2_BURST_MIN_X10;
         if (valid) { s_last_video_us = now; standard_vote(r.standard); profile_observe(&r); }
-        diag_window(window_ok, valid);
         bool was = s_afc_locked;
         s_afc_locked = afc2_native_lock(s_afc_locked, valid, afc2_ctrl_can_lock(&afc, true), afc.n, &afc_lost);
         if (was && !s_afc_locked) afc2_ctrl_reset(&afc, ctx, true);
+        /* Re-acquisition retunes only on a strong carrier: at the range edge
+         * the porch estimate is pulled toward the receiver centre and would
+         * walk the offset the wrong way (cn_estimate.h, afc_bias.py). A weak
+         * window still feeds the estimate history, it just cannot step. */
+        const int cn_x10 = cn_estimate_x10(s_obs_coherence, calibration_filter_class_mhz());
         if (!s_afc_locked && window_ok && m.q_phase >= 55 && !s_menu_active &&
             phy_try_actuator(phy_generation())) {
             int32_t step = 0;
-            if (afc2_ctrl_decide(&afc, gain_epoch == s_gain_epoch, &step)) {
+            const bool strong = cn_x10 >= AFC_MIN_CN_X10;
+            if (afc2_ctrl_decide(&afc, gain_epoch == s_gain_epoch && strong, &step)) {
                 rf_set_offset_khz(rf_offset_khz() + (int)step);
                 s_last_gain_write_us = esp_timer_get_time();   /* restore re-forces gain */
                 ++s_gain_epoch;
                 ++s_afc_corrections;
                 own_write = true;
+                printf("[AFC] step_khz=%ld offset_khz=%d cn_est_x10=%d coherence=%d gain=%u\n", (long)step,
+                       rf_offset_khz(), cn_x10, s_obs_coherence, s_current_gain);
+            } else if (!strong && afc2_ctrl_stable(&afc, &step) &&
+                       (step > AFC2_CTRL_DEADBAND_KHZ || step < -AFC2_CTRL_DEADBAND_KHZ)) {
+                ++s_afc_weak_skips;    /* would have stepped on a weak carrier */
             }
             phy_end_actuator();
         }
+        diag_window(window_ok, valid, own_write);   /* own_write: an AFC step this window */
         if (s_afc_locked && !was_locked)
             printf("[VIDEO] locked %s %u MHz %s offset_khz=%d gain=%u\n", rf_channel()->name,
                    rf_channel()->freq_mhz, r.standard == 2 ? "PAL" : "NTSC", rf_offset_khz(), s_current_gain);
@@ -345,9 +357,9 @@ void control_start(void)
 void control_print(void)
 {
     printf("CONTROL channel=%s freq=%u offset_khz=%d cfo_khz=%d afc_locked=%u afc_corrections=%u "
-           "standard=%s detected=%s signal=%d menu=%u deviation_x100=%d mode=%s tracker=%d\n",
+           "afc_weak_skips=%u standard=%s detected=%s signal=%d menu=%u deviation_x100=%d mode=%s tracker=%d\n",
            rf_channel()->name, rf_frequency_mhz(), rf_offset_khz(), s_cfo_khz, s_afc_locked,
-           s_afc_corrections, s_std_mode == STD_MODE_AUTO ? "AUTO" : s_std_mode == STD_MODE_PAL ? "PAL" : "NTSC",
+           s_afc_corrections, s_afc_weak_skips, s_std_mode == STD_MODE_AUTO ? "AUTO" : s_std_mode == STD_MODE_PAL ? "PAL" : "NTSC",
            s_detected_std_valid ? (s_detected_std == VIDEO_STD_PAL ? "PAL" : "NTSC") : "none",
            s_signal_strength, s_menu_active, profile_deviation_x100(rf_channel_index()),
            profile_name(profile_active()), transport_tracker());
