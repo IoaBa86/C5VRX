@@ -161,17 +161,10 @@ static void sphase_monitor(void)
  * deviation was measured). */
 #define FILTER_MIN_KHZ     12000u
 #define FILTER_NARROW_KHZ  10000u
-/* Quiet = receiver noise: the envelope statistic (DC removed) of complex
- * noise is 1.00 and an FM carrier raises it (1.32 at 0 dB C/N). Rail
- * clipping of strong noise raises it too (1.21 at 5.5 % railed samples),
- * so the limit grows with the railed fraction. Not phase coherence: the
- * 4-bit quantizer makes plain noise 36..61 % "coherent" at the noise level
- * of the table maximum (simulation of measure_window), which rejected every
- * channel with all VTXs off (board, 2026-10-11). */
-#define QUIET_ENV_X100     115u
-#define QUIET_CARRIER_X100 30u    /* above the quiet limit: certainly a carrier */
+/* Quiet test: dsp_quiet_reason() (dsp.h). */
 #define QUIET_NO_SYNC_US   2000000LL
-static unsigned quiet_limit(int clip_pm) { return QUIET_ENV_X100 + (unsigned)(clip_pm > 0 ? clip_pm : 0) * 4u / 5u; }
+#define QUIET_CARRIER_X100 DSP_QUIET_CARRIER_X100
+static unsigned quiet_limit(int clip_pm) { return dsp_quiet_limit(clip_pm); }
 #define CAL_WINDOWS        96u
 typedef struct {
     uint8_t valid, bw20, skirt;
@@ -460,19 +453,7 @@ static const char *noise_check(unsigned *env_out, int *clip_out)
         if (copy_probe_window(s_env_buf + got * PROBE_BYTES, NULL)) ++got;
     }
     if (got < 16u) return "probe_failed";
-    unsigned origin = 0, rail = 0, n = got * PROBE_BYTES;
-    for (unsigned k = 0; k < n; ++k) {
-        int i = dsp_i(s_env_buf[k]), q = dsp_q(s_env_buf[k]);
-        origin += (i == 0 || i == -1) && (q == 0 || q == -1);
-        rail += i == -8 || i == 7 || q == -8 || q == 7;
-    }
-    int clip = (int)(rail * 1000u / n);
-    unsigned env = dsp_envelope_ratio_x100(s_env_buf, n);
-    if (env_out) *env_out = env;
-    if (clip_out) *clip_out = clip;
-    if (origin * 2u > n) return "origin";
-    if (rail * 5u > n) return "rails";
-    return env <= quiet_limit(clip) ? NULL : "envelope";
+    return dsp_quiet_reason(s_env_buf, got * PROBE_BYTES, env_out, clip_out);
 }
 
 static bool noise_like(void) { return noise_check(NULL, NULL) == NULL; }

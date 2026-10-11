@@ -370,8 +370,9 @@ rows; carrier: current row), and the VTX deviation. Quiet = envelope
 statistic of receiver noise (not phase coherence: 4-bit noise reads 36-61 %
 coherent, which rejected every channel, board 2026-10-11). Optional receive
 profiles per channel (12 MHz + kp 0.85 default; 10 MHz + kp 0.6 for
-deviation <= 1.10; 10 MHz + kp 0.5 for <= 0.80), chosen from three
-consistent deviation batches, stored per channel, applied only while the
+deviation <= 1.05; 10 MHz + kp 0.5 for <= 0.80), chosen from three
+consistent deviation batches (highest batch median; host test
+`v5/test/test_profile.c`: no wide VTX >= 1.15 enters a narrow profile), stored per channel, applied only while the
 menu/status screen owns TX. Profile gains (+1.7 / +3.2 dB) are SIMULATION
 only (`v5/research`); firmware behaviour is build-tested, board test pending. No options menu, labs, native AGC, AutoFit/Fusion,
 flywheel, level servo or idle raster. NVS namespace `c5vrx5`. CI:

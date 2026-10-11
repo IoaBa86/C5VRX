@@ -47,6 +47,13 @@ jobs:
             echo "version=5.0.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
             echo "tag=c5vrx5-v5.0.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           fi
+      - name: Host tests (quiet test, VTX deviation profile)
+        shell: bash
+        working-directory: v5/test
+        run: |
+          for t in test_quiet test_profile; do
+            cc -O2 -std=c11 -Wall -Wextra -Werror -I../main "$t.c" -lm -o "/tmp/$t" && "/tmp/$t" | tail -1
+          done
       - name: Build C5VRX-5
         shell: bash
         working-directory: v5

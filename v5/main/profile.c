@@ -15,18 +15,13 @@
  * burst-confirmed lines; their distance is deviation x 1.914 MHz (40 of 140
  * IRE over 6.7 MHz). A decision needs three batches of 32 estimates, each
  * with a spread <= 8 % and all medians within 5 % of each other, on a
- * centred (AFC locked), coherent carrier in the healthy gain band. Profile
- * thresholds leave margin below the simulated boundaries (0.85 / 1.15). */
+ * centred (AFC locked), coherent carrier in the healthy gain band. The
+ * estimator and thresholds are pure (profile_logic.h) and host-tested. */
 #include "receiver.h"
+#include "profile_logic.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define DEV_SYNC_KHZ     1914
-#define DEV_BATCH        32u
-#define DEV_BATCHES      3u
-#define DEV_KP050_MAX    80     /* deviation x100 */
-#define DEV_KP060_MAX    110
 
 static const char *const s_names[PROFILES] = {"DEFAULT 12MHZ KP0.85", "MATCHED 10MHZ KP0.6", "MATCHED 10MHZ KP0.5"};
 static uint16_t s_dev_table[FPV_CHANNELS];    /* deviation x100 per channel, 0 = unknown */
@@ -34,9 +29,7 @@ static volatile int s_profile = PROFILE_DEFAULT;
 
 /* Measurement state, written by the control task through profile_observe(). */
 static volatile bool s_measuring;
-static int32_t s_span[DEV_BATCH], s_medians[DEV_BATCHES];
-static unsigned s_n, s_batches;
-static volatile int s_result_x100 = -1;
+static dev_estimator_t s_dev;
 
 const char *profile_name(int p) { return p >= 0 && p < PROFILES ? s_names[p] : "?"; }
 int profile_active(void) { return s_profile; }
@@ -44,10 +37,8 @@ int profile_deviation_x100(size_t channel) { return channel < FPV_CHANNELS ? s_d
 
 int profile_for_deviation(int dev_x100)
 {
-    if (dev_x100 <= 0) return PROFILE_DEFAULT;
     rf_filter_t narrow;
-    if (!filter_setting(true, &narrow)) return PROFILE_DEFAULT;   /* no narrow class calibrated */
-    return dev_x100 <= DEV_KP050_MAX ? PROFILE_KP050 : dev_x100 <= DEV_KP060_MAX ? PROFILE_KP060 : PROFILE_DEFAULT;
+    return profile_class(dev_x100, filter_setting(true, &narrow));
 }
 
 /* Filter class and tracker of a profile. Only while TX is not live: before
@@ -96,54 +87,22 @@ void profile_channel_changed(void)
 
 void profile_measure_begin(void)
 {
-    s_n = s_batches = 0;
-    s_result_x100 = -1;
+    dev_reset(&s_dev);
     s_measuring = true;
 }
 
 void profile_measure_end(void) { s_measuring = false; }
-int profile_measure_result(void) { return s_result_x100; }
-
-static int32_t median(int32_t *v, unsigned n)
-{
-    for (unsigned a = 1; a < n; ++a)
-        for (unsigned b = a; b > 0 && v[b - 1] > v[b]; --b) { int32_t t = v[b]; v[b] = v[b - 1]; v[b - 1] = t; }
-    return n & 1u ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2;
-}
+int profile_measure_result(void) { return s_dev.result_x100; }
 
 /* One burst-confirmed AFC window; gates on a usable, centred carrier. */
 void profile_observe(const afc2_result_t *r)
 {
-    if (!s_measuring || s_result_x100 >= 0 || !r->sync_pairs || !r->porch_pairs || !s_afc_locked) return;
+    if (!s_measuring || s_dev.result_x100 >= 0 || !r->sync_pairs || !r->porch_pairs || !s_afc_locked) return;
     if (s_obs_p50 < 13 || s_obs_p50 > 32 || s_obs_coherence < 80 || s_obs_clip_pm || s_gain.state != DG_HOLD) return;
     int32_t span = r->polarity < 0 ? r->porch_khz - r->sync_khz : r->sync_khz - r->porch_khz;
-    if (span <= 0) return;
-    s_span[s_n++] = span;
-    if (s_n < DEV_BATCH) return;
-    s_n = 0;
-    int32_t v[DEV_BATCH], d[DEV_BATCH];
-    memcpy(v, s_span, sizeof(v));
-    int32_t med = median(v, DEV_BATCH);
-    for (unsigned k = 0; k < DEV_BATCH; ++k) d[k] = abs(s_span[k] - med);
-    int32_t mad = median(d, DEV_BATCH);
-    if (mad * 100 > med * 8) {         /* spread > 8 %: start the batches over */
-        printf("PROFILE batch rejected span_khz=%ld mad_khz=%ld\n", (long)med, (long)mad);
-        s_batches = 0;
-        return;
-    }
-    s_medians[s_batches++] = med;
-    if (s_batches < DEV_BATCHES) return;
-    int32_t lo = s_medians[0], hi = s_medians[0];
-    for (unsigned k = 1; k < DEV_BATCHES; ++k) {
-        if (s_medians[k] < lo) lo = s_medians[k];
-        if (s_medians[k] > hi) hi = s_medians[k];
-    }
-    if ((hi - lo) * 100 > lo * 5) {    /* batches disagree: start over */
-        printf("PROFILE batches disagree span_khz=%ld..%ld\n", (long)lo, (long)hi);
-        s_batches = 0;
-        return;
-    }
-    s_result_x100 = (int)(((lo + hi) / 2) * 100 / DEV_SYNC_KHZ);
+    unsigned rejected = s_dev.rejected;
+    (void)dev_add(&s_dev, span);
+    if (s_dev.rejected != rejected) printf("PROFILE batch rejected (spread or disagreement), count=%u\n", s_dev.rejected);
 }
 
 /* Store a measured deviation for the current channel and select its

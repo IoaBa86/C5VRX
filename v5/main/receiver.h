@@ -137,7 +137,6 @@ void status_screen_end(void);
 bool menu_status_active(void);
 
 /* ---- profile.c ---- */
-enum { PROFILE_DEFAULT, PROFILE_KP060, PROFILE_KP050, PROFILES };
 #include "afc.h"
 const char *profile_name(int profile);
 int profile_active(void);

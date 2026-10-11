@@ -104,6 +104,40 @@ static inline unsigned dsp_envelope_ratio_x100(const uint8_t *s, size_t n)
     return ratio > 9999.0 ? 9999u : (unsigned)(ratio + 0.5);
 }
 
+/* Quiet test of the calibration (receiver noise, no carrier). The envelope
+ * statistic of complex noise is 1.00 and an FM carrier raises it (1.32 at
+ * 0 dB C/N); rail clipping of strong noise raises it too, so the limit
+ * grows with the railed fraction. Not phase coherence: 4-bit noise at the
+ * table maximum reads 36..61 % "coherent", which rejected every channel
+ * with all VTXs off (board, 2026-10-11). Host test: v5/test/test_quiet.c. */
+#define DSP_QUIET_ENV_X100     115u
+#define DSP_QUIET_CARRIER_X100 30u    /* above the quiet limit: certainly a carrier */
+static inline unsigned dsp_quiet_limit(int clip_pm)
+{
+    /* Clipped noise: env ~ 100 + 0.3 x clip_pm (host test); 0.4 keeps a
+     * 0 dB C/N carrier out at every tested noise level. */
+    return DSP_QUIET_ENV_X100 + (unsigned)(clip_pm > 0 ? clip_pm : 0) * 2u / 5u;
+}
+
+/* NULL when the bytes are receiver noise, else the reason. */
+static inline const char *dsp_quiet_reason(const uint8_t *s, size_t n, unsigned *env_out, int *clip_out)
+{
+    if (n < 64u) return "probe_failed";
+    unsigned origin = 0, rail = 0;
+    for (size_t k = 0; k < n; ++k) {
+        int i = dsp_i(s[k]), q = dsp_q(s[k]);
+        origin += (i == 0 || i == -1) && (q == 0 || q == -1);
+        rail += i == -8 || i == 7 || q == -8 || q == 7;
+    }
+    int clip = (int)(rail * 1000u / n);
+    unsigned env = dsp_envelope_ratio_x100(s, n);
+    if (env_out) *env_out = env;
+    if (clip_out) *clip_out = clip;
+    if (origin * 2u > n) return "origin";
+    if (rail * 10u > n * 3u) return "rails";     /* > 30 %: not a usable noise measurement */
+    return env <= dsp_quiet_limit(clip) ? NULL : "envelope";
+}
+
 /* RC filter capacitor byte: calibrated base + offset, saturating at 60
  * (the code phy_11p_set() writes); upper bits preserved. */
 static inline uint8_t dsp_filter_code(uint8_t calibrated, int offset)
