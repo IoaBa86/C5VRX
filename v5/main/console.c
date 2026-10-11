@@ -6,6 +6,7 @@
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "freertos/queue.h"
 #include "hal/usb_serial_jtag_ll.h"
 #include "rf.h"
 #include "snapshot.h"
@@ -64,18 +65,43 @@ static void help(void)
            "  ` reboot to USB download (flashing)\n");
 }
 
-static void console_task(void *arg)
+/* The USB reader runs above every receiver task: the download key and the
+ * heartbeat work however busy the CPU is (a starved console used to make
+ * flashing need the BOOT button, 2026-10-11). It drains the FIFO, handles
+ * the download key itself and queues the rest for the console task. */
+static QueueHandle_t s_keys;
+
+static void usb_reader_task(void *arg)
 {
     (void)arg;
     for (;;) {
         for (unsigned k = 0; k < 64; ++k) {
             uint8_t c;
             if (usb_serial_jtag_ll_read_rxfifo(&c, 1) == 0) break;
+            if (c == '`') rf_reboot_to_download();   /* never returns */
+            (void)xQueueSend(s_keys, &c, 0);
+        }
+        /* Heartbeat: shows the board is alive whatever the console does. */
+        static int64_t beat;
+        if (esp_timer_get_time() - beat > 5000000) {
+            beat = esp_timer_get_time();
+            printf("HB t_s=%lld stage=%s gain=%u menu=%u startup=%u\n", beat / 1000000, s_boot_stage,
+                   s_current_gain, s_menu_active, calibration_in_startup());
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+static void console_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        uint8_t c;
+        while (xQueueReceive(s_keys, &c, pdMS_TO_TICKS(100)) == pdTRUE) {
             switch (c) {
             case 'T': status(); break;
             case 'I': snapshot(); break;
             case 'F': filter_request(); break;
-            case '`': rf_reboot_to_download(); break;
             case 'h': case '?': help(); break;
             case 'o': case 'n': case 'x': case 'c': case 'b': case 's': {
                 int command = c;
@@ -85,18 +111,14 @@ static void console_task(void *arg)
             default: break;
             }
         }
-        /* Heartbeat: shows the console task is alive and not starved. */
-        static int64_t beat;
-        if (esp_timer_get_time() - beat > 5000000) {
-            beat = esp_timer_get_time();
-            printf("HB t_s=%lld stage=%s gain=%u menu=%u\n", beat / 1000000, s_boot_stage,
-                   s_current_gain, s_menu_active);
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
 void console_start(void)
 {
-    ESP_ERROR_CHECK(xTaskCreate(console_task, "console", 6144, NULL, 1, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+    s_keys = xQueueCreate(64, 1);
+    ESP_ERROR_CHECK(s_keys ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(xTaskCreate(console_task, "console", 6144, NULL, 2, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(xTaskCreate(usb_reader_task, "usb_reader", 3072, NULL, 10, NULL) == pdPASS ? ESP_OK :
+                    ESP_ERR_NO_MEM);
 }

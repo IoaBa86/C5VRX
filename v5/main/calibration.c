@@ -725,12 +725,16 @@ static void startup_phase(bool manual)
         printf("STARTUP begin manual=%u filter=%s dco_rows=%u deviation_x100=%d\n", manual,
                s_filter_cal.normal.valid ? "stored" : "missing", dco_valid_rows(),
                profile_deviation_x100(rf_channel_index()));
+        printf("STARTUP step=sphase\n");
         sphase_startup();
+        printf("STARTUP step=filter\n");
         if (phy_filter_calibrated_code() < 0) { s_filter_result = "unsupported_phy"; }
         else if (manual || s_filter_cal.version != FILTER_VERSION || !s_filter_cal.normal.valid) {
             if (filter_calibrate(!manual)) profile_boot();   /* narrow class now known */
         }
+        printf("STARTUP step=dco\n");
         if (esp_timer_get_time() < deadline) dco_startup(manual, deadline);
+        printf("STARTUP step=deviation\n");
         /* Video needs a moment back on the own channel before measuring. */
         status_screen_end();
         vTaskDelay(pdMS_TO_TICKS(1500));
@@ -746,6 +750,7 @@ static void calibration_task(void *arg)
 {
     (void)arg;
     rf_set_post_gain_hook(dco_post_gain);
+    printf("STARTUP task up\n");
     startup_phase(false);
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(250));
@@ -764,7 +769,7 @@ void calibration_start(void)
         rf_set_filter(loaded);
         s_filter_result = "loaded";
     } else memset(&s_filter_cal, 0, sizeof(s_filter_cal));
-    ESP_ERROR_CHECK(xTaskCreate(calibration_task, "calibration", 4096, NULL, 2, NULL) == pdPASS ?
+    ESP_ERROR_CHECK(xTaskCreate(calibration_task, "calibration", 8192, NULL, 1, NULL) == pdPASS ?
                     ESP_OK : ESP_ERR_NO_MEM);
 }
 
