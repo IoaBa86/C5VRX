@@ -237,6 +237,46 @@ filter class >= 16 MHz from the same sweep, chosen at a measured deviation
 The filter blob gets a new version, so the receiver runs one new filter
 sweep after the update (startup, as before).
 
+## 11. Where it is good and where it is bad (`situations.py`)
+
+This stress matrix runs the bit-exact U85Q with the profile the firmware
+picks per deviation, at 2 seeds and C/N 4 / 8 / 20 dB (`data/situations.txt`;
+the focused comparisons used 4 seeds). Picture is the share of lines the
+goggle shows correctly.
+
+**Good** (picture ~1.0 from 4 dB): clean signal, residual carrier error of
++-0.5 MHz, motion fades (3 ms nulls, picture kept, SINAD lower), DC 0.5
+cell, I/Q imbalance 1.5 dB / 10 degrees, a CW spur at -10 dBc, and a strong
+signal at the top of the gain band.
+
+**Bad, and what was done about it:**
+
+- **Negative carrier error at weak signal.** At 4 dB C/N, -0.75 MHz drops
+  the picture to 0.86-0.89 and -1.0 MHz to 0.5-0.75 (dev 1.7), and
+  -1.5 MHz loses it (0.03-0.58, all profiles). The sync tip then runs into
+  the low edge of the filter and the U85Q window. Positive errors keep the
+  picture but cost SINAD.
+  - Firmware flaw found in the AFC (`test/test_afc.c`): the correction
+    budget (4 x 250 kHz) only came back after a lost lock. A VTX more than
+    1 MHz off therefore never got centred and never locked. It kept
+    0.2-0.45 MHz residual for the whole session.
+  - Fix: while still unlocked, a spent budget re-arms after 3 s. The
+    offset clamp is widened from +-1.5 to +-2.5 MHz (channels are >= 19 MHz
+    apart). VTXs up to 2.4 MHz off are now centred within 20 s; a centred
+    carrier with 80 kHz estimate noise is never retuned. The +-2.5 MHz
+    range of the vendor offset helper is not yet hardware-tested.
+- **Long multipath echoes** (-6 dB at 0.3 us, -3 dB at 1 us) hurt every
+  profile alike. A wide VTX loses the picture with either echo, and every
+  VTX loses it with the 1 us echo up to 8 dB. This is frequency-selective
+  fading. The BitScrambler cannot run an equaliser, so this is not a
+  profile or tuning choice. Open-field ground reflections have nanosecond
+  delays (flat fading, sections 7 and 9), so these echoes come from
+  buildings and trees.
+- **DC of 1 cell** hurts wide VTXs at 4 dB (picture 0.36). The measured
+  uncorrected DC is ~0.13 cell, and the per-gain DC hold covers it.
+- **WIDE vs DEFAULT on a deviation-1.7 VTX:** equal or better in every
+  situation (+2 dB SINAD at 8 dB), so the WIDE profile stays.
+
 ## Not firmware levers
 
 - The second IQ40 sample of every span (+0.5..1.1 dB in the C5VRX-4 ledger)

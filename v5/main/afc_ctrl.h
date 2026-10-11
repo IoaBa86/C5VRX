@@ -30,6 +30,13 @@
 #define AFC2_CTRL_DEADBAND_KHZ     50
 #define AFC2_CTRL_MAX_STEP_KHZ     250
 #define AFC2_CTRL_MAX_CORRECTIONS  4u
+/* A spent budget re-arms after this many windows (3 s at 50 ms) while the
+ * AFC is still not locked. Before, the budget only came back after a lost
+ * lock: a VTX more than 4 x 250 kHz off frequency never got centred, never
+ * locked, and kept a 0.2-0.5 MHz residual for the whole session
+ * (v5/test/test_afc.c), which costs the picture at weak signal
+ * (v5/research/situations.py: -0.75 / -1.0 MHz residual at 4 dB C/N). */
+#define AFC2_CTRL_REARM_WINDOWS    60u
 #define AFC2_NATIVE_LOST_WINDOWS   4u
 
 /* Acquisition lock must be sticky. A changed CFO while otherwise receiving
@@ -56,6 +63,7 @@ typedef struct {
     int8_t polarity;
     uint8_t standard;
     uint8_t corrections;
+    uint16_t since_correction;   /* observed windows since the last correction */
     afc2_ref_t ref;
     /* Design porch frequency of the active demodulator (kHz relative to the
      * tuned frequency). Shared-word range trackers (RANGE32/PAIR/EDGE) are
@@ -93,6 +101,7 @@ static inline void afc2_ctrl_invalidate(afc2_ctrl_t *c)
 
 static inline void afc2_ctrl_observe(afc2_ctrl_t *c, const afc2_result_t *r)
 {
+    if (c->since_correction < 0xffffu) ++c->since_correction;
     if (!r || !r->lines || !r->standard || !r->polarity ||
         r->burst_x10 < AFC2_BURST_MIN_X10 || !r->sync_pairs || !r->porch_pairs) {
         afc2_ctrl_invalidate(c);
@@ -146,6 +155,8 @@ static inline bool afc2_ctrl_can_lock(const afc2_ctrl_t *c, bool auto_afc)
 static inline bool afc2_ctrl_decide(afc2_ctrl_t *c, bool eligible, int32_t *step_khz)
 {
     int32_t med;
+    if (c->corrections >= AFC2_CTRL_MAX_CORRECTIONS && c->since_correction >= AFC2_CTRL_REARM_WINDOWS)
+        c->corrections = 0;     /* still not centred: another bounded burst */
     if (!eligible || c->corrections >= AFC2_CTRL_MAX_CORRECTIONS ||
         !afc2_ctrl_stable(c, &med)) return false;
     if (med <= AFC2_CTRL_DEADBAND_KHZ && med >= -AFC2_CTRL_DEADBAND_KHZ) return false;
@@ -153,6 +164,7 @@ static inline bool afc2_ctrl_decide(afc2_ctrl_t *c, bool eligible, int32_t *step
                    med < -AFC2_CTRL_MAX_STEP_KHZ ? -AFC2_CTRL_MAX_STEP_KHZ : med;
     *step_khz = step;
     ++c->corrections;
+    c->since_correction = 0;
     c->n = 0;
     return true;
 }

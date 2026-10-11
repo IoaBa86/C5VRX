@@ -415,7 +415,15 @@ is listed as a 2.4 GHz part; ESP32-C5 5 GHz sensitivity (-92.5 dBm, 11a
 >= 1.6; filter blob v3): the board VTX swung -5.0..+6.25 MHz (deviation
 ~1.7), and the 12 MHz default clips wide VTXs (bit-exact U85Q,
 `v5/research/data/wide.txt`: 1.7 3.64 vs 3.26 dB at 16 MHz, 2.0 8.03 vs
-5.27 dB; 1.4 stays best at 12 MHz). Simulation; board test pending. Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
+5.27 dB; 1.4 stays best at 12 MHz). Simulation; board test pending. AFC
+re-arm (`v5/main/afc_ctrl.h` `AFC2_CTRL_REARM_WINDOWS`, host test
+`v5/test/test_afc.c`): the 4 x 250 kHz budget only came back after a lost
+lock, so a VTX > 1 MHz off never centred or locked (0.2-0.45 MHz residual
+all session); it now re-arms after 3 s while unlocked, and the offset clamp
+is +-2.5 MHz (was 1.5; vendor helper range not yet hardware-tested).
+Stress matrix `v5/research/situations.py` (README section 11): -0.75 /
+-1.0 MHz residual already costs the picture at 4 dB C/N; long echoes hurt
+all profiles alike (no equaliser possible). Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
 operator report 2026-10-11: much less static but little more range, so no
 range gain is claimed; firmware is build-tested, board test pending. No options menu, labs, native AGC, AutoFit/Fusion,
 flywheel, level servo or idle raster. NVS namespace `c5vrx5`. CI:

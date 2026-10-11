@@ -365,12 +365,15 @@ void rf_next_channel(void)
     }
 }
 
-/* Clamped to +-1.5 MHz: FPV channels are >= 19 MHz apart, so the AFC can
- * never walk onto another channel. */
+/* Clamped to +-2.5 MHz (was 1.5): cheap VTXs can be 2 MHz off frequency,
+ * and a residual of -0.75 MHz already costs the picture at weak signal
+ * (v5/research/situations.py). FPV channels are >= 19 MHz apart, so the AFC
+ * can never walk onto another channel. */
+#define RF_OFFSET_MAX_KHZ 2500
 void rf_set_offset_khz(int offset_khz)
 {
-    if (offset_khz < -1500) offset_khz = -1500;
-    if (offset_khz > 1500) offset_khz = 1500;
+    if (offset_khz < -RF_OFFSET_MAX_KHZ) offset_khz = -RF_OFFSET_MAX_KHZ;
+    if (offset_khz > RF_OFFSET_MAX_KHZ) offset_khz = RF_OFFSET_MAX_KHZ;
     if (offset_khz == s_offset_khz) return;
     phy_begin();
     s_offset_khz = offset_khz;
