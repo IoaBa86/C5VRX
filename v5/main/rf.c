@@ -52,7 +52,13 @@ static const gpio_num_t s_iq_pins[8] = {
  * DIAG[14,15,16,19] (bit-exact against the RF dump, PR #122). Fixed for
  * the session: Direct Gain V5 brings a folding carrier back into the
  * window with analog gain (operator default since 2026-10-08). */
-static const uint8_t s_ultrafine_diag[8] = {4u, 5u, 6u, 9u, 14u, 15u, 16u, 19u};
+static const uint8_t s_lane_diag[RF_LANES][8] = {
+    {6u, 7u, 8u, 9u, 16u, 17u, 18u, 19u},   /* coarse    {9,8,7,6} */
+    {5u, 6u, 7u, 9u, 15u, 16u, 17u, 19u},   /* fine      {9,7,6,5} */
+    {4u, 5u, 6u, 9u, 14u, 15u, 16u, 19u},   /* ultrafine {9,6,5,4} */
+};
+static const char *const s_lane_names[RF_LANES] = {"coarse", "fine", "ultrafine"};
+static unsigned s_lane = RF_LANE_ULTRAFINE;
 
 extern int lmac_stop_hw_txq(void);
 extern void phy_wifi_fbw_sel(uint32_t val);
@@ -79,7 +85,7 @@ static esp_err_t lock_rx_only(void)
     return ESP_OK;
 }
 
-static esp_err_t route_modem_iq(void)
+static esp_err_t route_modem_iq(unsigned lane)
 {
     uint64_t mask = 0;
     for (unsigned k = 0; k < 8; ++k) mask |= 1ULL << s_iq_pins[k];
@@ -93,10 +99,20 @@ static esp_err_t route_modem_iq(void)
     esp_err_t err = gpio_config(&cfg);
     if (err != ESP_OK) return err;
     for (unsigned k = 0; k < 8; ++k)
-        esp_rom_gpio_connect_out_signal(s_iq_pins[k], MODEM_DIAG0_IDX + s_ultrafine_diag[k], false, false);
+        esp_rom_gpio_connect_out_signal(s_iq_pins[k], MODEM_DIAG0_IDX + s_lane_diag[lane][k], false, false);
     __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+    s_lane = lane;
     return ESP_OK;
 }
+
+esp_err_t rf_set_lane(unsigned lane)
+{
+    if (lane >= RF_LANES) return ESP_ERR_INVALID_ARG;
+    return route_modem_iq(lane);
+}
+
+unsigned rf_lane(void) { return s_lane; }
+const char *rf_lane_name(unsigned lane) { return lane < RF_LANES ? s_lane_names[lane] : "?"; }
 
 static void enable_continuous_modem(void)
 {
@@ -133,7 +149,8 @@ static void apply_filter(void)
     if (!phy_filter_set_code(s_filter.code) && s_filter.code != PHY_FILTER_CALIBRATED)
         ESP_EARLY_LOGW(TAG, "filter code %d not applied", s_filter.code);
     /* Written even at 0: leaving a skirt must undo it. */
-    (void)phy_filter_set_skirt(s_filter.skirt);
+    if (!phy_filter_set_skirt(s_filter.skirt) && s_filter.skirt)
+        ESP_EARLY_LOGW(TAG, "filter skirt %u not applied", s_filter.skirt);
 }
 
 /* Every tuning/filter transaction restores the same receive state: vendor
@@ -193,7 +210,7 @@ esp_err_t rf_start(void)
     wifi_promiscuous_filter_t filter = {.filter_mask = 0};
     (void)esp_wifi_set_promiscuous_filter(&filter);
     if ((err = lock_rx_only()) != ESP_OK) return err;
-    if ((err = route_modem_iq()) != ESP_OK) return err;
+    if ((err = route_modem_iq(RF_LANE_ULTRAFINE)) != ESP_OK) return err;
     phy_begin();
     /* The filter capacitors still hold the per-chip calibration from PHY
      * init; capture them before anything else writes the filter. */
@@ -248,15 +265,25 @@ void rf_set_post_gain_hook(void (*hook)(uint8_t gain)) { s_post_gain_hook = hook
 const arc_gain_table_t *rf_gain_table(void) { return &s_table; }
 uint32_t rf_table_generation(void) { return s_table_generation; }
 
-void rf_set_filter(rf_filter_t filter)
+bool rf_set_filter(rf_filter_t filter)
 {
     phy_begin();
     s_filter = filter;
     restore_lock();
+    bool ok = rf_filter_applied();
     phy_end();
+    return ok;
 }
 
 rf_filter_t rf_filter(void) { return s_filter; }
+
+/* Requested versus read back (phy.c verifies every register write and
+ * falls back to the calibrated bytes). Without the pinned PHY nothing can
+ * be written, so only the chip's own calibration counts as applied. */
+bool rf_filter_applied(void)
+{
+    return phy_filter_code() == s_filter.code && phy_filter_skirt() == (int)s_filter.skirt;
+}
 
 /* 6 bands x 8 channels. */
 static const fpv_channel_t s_channels[FPV_BANDS][8] = {

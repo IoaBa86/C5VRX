@@ -22,6 +22,13 @@ board or in held-out tests (see [docs/FINDINGS.md](docs/FINDINGS.md)).
 - **Calibration only at startup**: anything that interrupts the picture
   runs once after power-on (only what is missing) or from the menu item
   CALIBRATE, never during flight. The goggles show what it does and how long.
+- **VTX-matched profile only from a fresh measurement**: every boot starts
+  with the default profile; the narrow profile is chosen only when this
+  boot measured the VTX in the startup phase. Later readings are kept as
+  pending for the next boot, never switched in flight.
+- **Field diagnostics** (serial `D`, `R`): what is really active, and why
+  each dropout happened as far as the receiver can tell
+  ([docs/FIELD_TEST.md](docs/FIELD_TEST.md)).
 - **Automatic receive-chain care**: per-gain DC correction, DC drift
   tracking, sampling-phase check, AFC that centres the VTX.
 - **Simple menu**: band, channel, scan, video standard, exit.
@@ -66,8 +73,11 @@ The menu closes by itself after 30 s without a press.
 
 ## Serial console (USB, 115200)
 
-`T` status, `I` IQ snapshot (`tools/capture_iq_snapshot.py`), `o` menu,
-`c` next channel, `b` next band, `s` scan, `F` calibrate again (as the menu item), `` ` `` download mode, `h` help.
+`T` status, `D` range/health report, `R` per-second FIELD_DIAG lines on/off
+(`tools/field_diag_compare.py`), `I` IQ snapshot
+(`tools/capture_iq_snapshot.py`), `o` menu, `c` next channel, `b` next band,
+`s` scan, `F` calibrate again (as the menu item), `L` bench-only IQ lane
+comparison (video stops ~3 s), `` ` `` download mode, `h` help.
 
 ## Credits and license
 

@@ -366,15 +366,32 @@ only in a bounded STARTUP phase of a boot (or after the menu CALIBRATE item),
 never in live video, and only for what is missing: sampling-phase repair, one
 filter sweep (12 MHz and 10 MHz classes, lowest noise bandwidth; own channel
 with the VTX off, else a quiet channel >= 40 MHz away), DC rows (noise: all
-rows; carrier: current row), and the VTX deviation. Quiet = envelope
+rows still missing; carrier: current row), and the VTX deviation. Quiet = envelope
 statistic of receiver noise (not phase coherence: 4-bit noise reads 36-61 %
 coherent, which rejected every channel, board 2026-10-11). Optional receive
 profiles per channel (12 MHz + kp 0.85 default; 10 MHz + kp 0.6 for
 deviation <= 1.05; 10 MHz + kp 0.5 for <= 0.80), chosen from three
 consistent deviation batches (highest batch median; host test
-`v5/test/test_profile.c`: no wide VTX >= 1.15 enters a narrow profile), stored per channel, applied only while the
-menu/status screen owns TX. Profile gains (+1.7 / +3.2 dB) are SIMULATION
-only (`v5/research`); firmware behaviour is build-tested, board test pending. No options menu, labs, native AGC, AutoFit/Fusion,
+`v5/test/test_profile.c`: no wide VTX >= 1.15 enters a narrow profile),
+applied only while the menu/status screen owns TX. A stored deviation is
+not a VTX identity: every boot and channel change starts DEFAULT; a matched
+profile needs a fresh measurement in the bounded startup phase (waits up to
+20 s for a VTX switched on after a VTX-off calibration). Afterwards the
+deviation is measured passively and kept as PENDING for the next boot;
+nothing switches in flight. Filter writes are read back (requested vs
+applied); a sweep is stored only after an exact channel/offset restore, a
+read-back best setting, nonzero noise bandwidth and a successful NVS write.
+Passive FIELD_DIAG (`v5/main/diag.c`, `diag_logic.h`, host test
+`v5/test/test_diag.c`, `v5/tools/field_diag_compare.py`, protocol
+`v5/docs/FIELD_TEST.md`): per-second records from existing statistics and a
+dropout classifier (CALIBRATION_OR_PHY / POSSIBLE_PROPAGATION_FADE /
+AT_RF_FLOOR / DEMOD_CLIFF / UNKNOWN), evidence categories, not causes or
+dBm. Console `L` is a bench-only raw-IQ lane comparison (ultrafine / fine /
+coarse, ABBA, behind a status screen); production stays fixed ultrafine.
+Channels above 5885 MHz (R8, E6-E8) are flagged out of the documented C5
+range. Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
+operator report 2026-10-11: much less static but little more range, so no
+range gain is claimed; firmware is build-tested, board test pending. No options menu, labs, native AGC, AutoFit/Fusion,
 flywheel, level servo or idle raster. NVS namespace `c5vrx5`. CI:
 `.github/workflows/c5vrx5.yml` publishes `c5vrx5-v5.0.N` and `c5vrx5-pr-N`
 for the flasher's C5VRX-5 tab. Board: runs and holds video; range is not

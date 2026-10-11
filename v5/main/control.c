@@ -91,7 +91,8 @@ static void after_retune(void)
     settings_save();
     profile_channel_changed();   /* another channel may carry another VTX */
     if (s_menu_active) menu_render();
-    printf("[CHANNEL] %s %u MHz\n", rf_channel()->name, rf_channel()->freq_mhz);
+    printf("[CHANNEL] %s %u MHz%s\n", rf_channel()->name, rf_channel()->freq_mhz,
+           rf_freq_in_spec(rf_channel()->freq_mhz) ? "" : " (above the documented C5 range, not characterised)");
 }
 
 /* ---- Channel scanner -------------------------------------------------------
@@ -303,6 +304,7 @@ static void control_task(void *arg)
         bool valid = window_ok && r.lines && r.standard && r.porch_pairs && r.sync_pairs &&
                      r.burst_x10 >= AFC2_BURST_MIN_X10;
         if (valid) { s_last_video_us = now; standard_vote(r.standard); profile_observe(&r); }
+        diag_window(window_ok, valid);
         bool was = s_afc_locked;
         s_afc_locked = afc2_native_lock(s_afc_locked, valid, afc2_ctrl_can_lock(&afc, true), afc.n, &afc_lost);
         if (was && !s_afc_locked) afc2_ctrl_reset(&afc, ctx, true);

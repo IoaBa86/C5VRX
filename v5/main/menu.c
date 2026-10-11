@@ -121,7 +121,11 @@ void status_screen(const char *title, const char *line1, const char *line2, int 
     s_status_percent = percent;
     if (!s_status) {
         s_status = true;
-        if (!s_menu_active && !menu_open()) { s_status = false; return; }
+        if (!s_menu_active && !menu_open()) {
+            s_status = false;
+            printf("STATUS screen refused (menu raster could not take TX): %s\n", title);
+            return;
+        }
     }
     render_status();
 }

@@ -307,6 +307,11 @@ void transport_poll_faults(void)
     }
 }
 
+uint32_t transport_fault_count(void)
+{
+    return s_tx_empty + s_rx_overflow + s_dma_faults + s_bs_overload;
+}
+
 void transport_print(void)
 {
     printf("TRANSPORT rx_descriptors=%d tx_empty=%lu rx_overflow=%lu dma_faults=%lu bs_overload=%lu\n",

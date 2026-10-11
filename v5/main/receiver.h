@@ -64,6 +64,7 @@ bool transport_set_tracker(int tracker);
 int transport_tracker(void);
 void transport_stop_chain(void);
 void transport_poll_faults(void);
+uint32_t transport_fault_count(void);
 void transport_print(void);
 void sync_dma_c2m(const void *addr, size_t size);
 void sync_dma_m2c(const void *addr, size_t size);
@@ -124,6 +125,15 @@ bool calibration_in_startup(void);
 bool filter_setting(bool narrow, rf_filter_t *out);
 void calibration_print(void);
 void dco_post_gain(uint8_t gain);
+/* Chain state for the diagnostics (no side effects). */
+const char *calibration_filter_result(void);
+const char *calibration_sphase_state(void);
+bool calibration_sphase_settled(void);
+/* DC correction in place for this gain: held, or not needed (outside the
+ * calibrated rows, or below the measured noise floor). */
+bool calibration_dc_ok(uint8_t gain);
+/* Explicit bench-only lane comparison (console L): video stops ~2 s. */
+void lane_compare_request(void);
 
 /* ---- menu.c ---- */
 enum { MENU_BAND, MENU_CHANNEL, MENU_SCAN, MENU_VIDEO, MENU_CALIBRATE, MENU_EXIT, MENU_ITEMS };
@@ -151,6 +161,16 @@ void profile_measure_end(void);
 int profile_measure_result(void);
 void profile_observe(const afc2_result_t *r);
 void profile_commit(int dev_x100);
+void profile_live_begin(void);
+const char *profile_reason(void);
+void profile_set_reason(const char *reason);
+void profile_print(void);
+
+/* ---- diag.c: passive field diagnostics (diag_logic.h) ---- */
+void diag_window(bool measured, bool video_valid);   /* control task, every processed window */
+void diag_poll(void);                   /* console task: prints queued records */
+void diag_report(void);                 /* console D */
+void diag_toggle_stream(void);          /* console R */
 
 /* ---- settings.c ---- */
 void settings_load(void);
