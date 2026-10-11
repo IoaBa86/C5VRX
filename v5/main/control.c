@@ -282,6 +282,7 @@ static void control_task(void *arg)
         uint32_t gain_epoch = s_gain_epoch, ctx = afc_context();
         if (s_scan_active || !copy_control_window(s_window, sizeof(s_window))) {
             afc2_ctrl_invalidate(&afc);
+            diag_window(false, false, false); /* failed copies count as missing evidence */
             continue;
         }
         metrics_t m = measure_window(s_window, sizeof(s_window));

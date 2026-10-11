@@ -385,9 +385,16 @@ read-back best setting, nonzero noise bandwidth and a successful NVS write.
 Passive FIELD_DIAG (`v5/main/diag.c`, `diag_logic.h`, host test
 `v5/test/test_diag.c`, `v5/tools/field_diag_compare.py`, protocol
 `v5/docs/FIELD_TEST.md`): per-second records from existing statistics and a
-dropout classifier (CALIBRATION_OR_PHY / POSSIBLE_PROPAGATION_FADE /
+dropout classifier (CALIBRATION_OR_PHY / FAST_EVIDENCE_LOSS /
 AT_RF_FLOOR / DEMOD_CLIFF / UNKNOWN), evidence categories, not causes or
-dBm. Console `L` is a bench-only raw-IQ lane comparison (ultrafine / fine /
+dBm. Coverage and sync use all control observations, with conditional sync
+reported separately; AFC sync is not displayed-image quality. `diag_trace.h`
+keeps bounded timestamped 16-pre/16-post onset observations at the existing
+nominal 50-ms control cadence, including gain/tuple/filter/profile and counters.
+Console-only output, oldest unread event retained with skip count; gaps and
+ownership/retunes cut history. Faster fades and a luma cliff retaining sync
+still need IQ/CVBS captures. Unknown coverage/C/N stays UNKNOWN; coherent IQ
+gets a DSP/output investigation before any headroom/fade hypothesis. Console `L` is a bench-only raw-IQ lane comparison (ultrafine / fine /
 coarse, ABBA, behind a status screen); production stays fixed ultrafine.
 Channels above 5885 MHz (R8, E6-E8) are flagged out of the documented C5
 range. AFC re-acquisition retunes only at a C/N estimate >= 6 dB
@@ -409,9 +416,9 @@ link model (`v5/research/field_antenna.py`, README section 9, textbook
 physics): at FPV grazing angles the ground bounce of an RHCP VTX returns in
 the opposite hand, so an RHCP receive antenna rejects it while a linear one
 gets the full two-ray nulls (model: ~0.4-0.55 km linear vs ~1.1-1.25 km RHCP
-omni vs ~3 km 8 dBi RHCP patch at 25 mW). The XIAO's bundled FPC antenna
-is listed as a 2.4 GHz part; ESP32-C5 5 GHz sensitivity (-92.5 dBm, 11a
-6 Mbps) implies a ~5 dB NF, so the chip is not the open-field limit. WIDE profile (filter class >= 16 MHz, kp 0.85, deviation
+omni vs ~3 km 8 dBi RHCP patch at 25 mW). Identify the actual bundled FPC antenna before asserting its band.
+The link model's RF threshold/NF inferred from Wi-Fi PER sensitivity is an
+assumption, not measured C5 WBFM sensitivity or proof that RF is not limiting. WIDE profile (filter class >= 16 MHz, kp 0.85, deviation
 >= 1.6; filter blob v3): the board VTX swung -5.0..+6.25 MHz (deviation
 ~1.7), and the 12 MHz default clips wide VTXs (bit-exact U85Q,
 `v5/research/data/wide.txt`: 1.7 3.64 vs 3.26 dB at 16 MHz, 2.0 8.03 vs
