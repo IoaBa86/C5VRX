@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/c5vrx-phase8-logo.png" alt="C5VRX Phase8 logo" width="760" />
+  <img src="assets/C5VRX_logo.gif" alt="C5VRX animated logo" width="760" />
 
   <p><strong>ESP32-C5 Analog 5.8 GHz FPV Receiver</strong></p>
   <p>From live 5.8 GHz FPV video to real-time analog CVBS with one Seeed Studio XIAO ESP32-C5 and a passive resistor DAC.</p>
