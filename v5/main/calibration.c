@@ -411,18 +411,19 @@ static bool dco_same_context(const dco_table_t *a, const dco_table_t *b)
            a->band5 == b->band5 && a->iq_scale_sel == b->iq_scale_sel;
 }
 
+/* The wanted context lives off the task stack: two full tables on it took
+ * 1840 bytes (-fstack-usage) before NVS added its own frames. */
+static RTC_FAST_ATTR dco_table_t s_dco_want;
 static void dco_select(void)
 {
-    dco_table_t want = {0}, saved;
-    dco_context(&want, rf_frequency_mhz());
-    if (dco_same_context(&want, &s_dco)) return;
+    memset(&s_dco_want, 0, sizeof(s_dco_want));
+    dco_context(&s_dco_want, rf_frequency_mhz());
+    if (dco_same_context(&s_dco_want, &s_dco)) return;
     (void)phy_dco_release();
-    memset(&s_dco, 0, sizeof(s_dco));
     memset(s_dco_found_us, 0, sizeof(s_dco_found_us));
     memset(s_dco_banned, 0, sizeof(s_dco_banned));
     s_dco_floor = 0;
-    if (blob_load("dco", &saved, sizeof(saved)) && dco_same_context(&saved, &want)) s_dco = saved;
-    else s_dco = want;
+    if (!blob_load("dco", &s_dco, sizeof(s_dco)) || !dco_same_context(&s_dco, &s_dco_want)) s_dco = s_dco_want;
 }
 
 void dco_post_gain(uint8_t g)
