@@ -35,6 +35,7 @@ enum { FPV_BAND_R, FPV_BAND_A, FPV_BAND_B, FPV_BAND_E, FPV_BAND_F, FPV_BAND_L, F
 #define FPV_CHANNELS (FPV_BANDS * 8u)
 const fpv_channel_t *rf_channel(void);
 size_t rf_channel_index(void);
+uint16_t rf_channel_freq(size_t index);
 const char *rf_band_name(unsigned band);
 esp_err_t rf_set_channel(size_t index);
 void rf_next_band(void);

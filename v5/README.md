@@ -16,8 +16,12 @@ board or in held-out tests (see [docs/FINDINGS.md](docs/FINDINGS.md)).
   path.
 - **Direct Gain V5**: firmware gain with a zero-write healthy band, fast
   overload handling and a learned, persisted gain map.
-- **Narrow analog filter**, measured once per board (VTX off): the lowest
-  noise bandwidth that still passes 14 MHz of video.
+- **Narrow analog filter**, measured once per board at startup: the lowest
+  noise bandwidth that still passes 12 MHz (plus a 10 MHz class for
+  low-deviation VTXs; simulation-based, board test pending).
+- **Calibration only at startup**: anything that interrupts the picture
+  runs once after power-on (only what is missing) or from the menu item
+  CALIBRATE, never during flight. The goggles show what it does and how long.
 - **Automatic receive-chain care**: per-gain DC correction, DC drift
   tracking, sampling-phase check, AFC that centres the VTX.
 - **Simple menu**: band, channel, scan, video standard, exit.
@@ -30,9 +34,10 @@ receiver uses the ESP32-C5's own Wi-Fi radio; no extra RF parts.
 
 ## First boot
 
-1. Flash (below) and power the receiver with the **VTX off** for about a
-   minute: it measures its narrow filter and the DC correction while there
-   is no signal. Both are stored.
+1. Flash (below) and power the receiver, best with the **VTX off**, for up
+   to two minutes: the goggles show CALIBRATING with the time left. With a
+   VTX on it calibrates the filter on a quiet channel and comes back.
+   Results are stored; later boots skip what is already measured.
 2. Switch the VTX on. Without a stored channel the receiver starts on
    A1 (5865 MHz); use the menu or scan to find yours.
 
@@ -45,7 +50,8 @@ receiver uses the ESP32-C5's own Wi-Fi radio; no extra RF parts.
 
 Menu items: **BAND** (next band), **CHANNEL** (next channel), **SCAN**
 (all 48 channels, picks the strongest centred analog video), **VIDEO**
-(AUTO / NTSC / PAL for the menu picture; AUTO follows the camera), **EXIT**.
+(AUTO / NTSC / PAL for the menu picture; AUTO follows the camera),
+**CALIBRATE** (on the ground: measure again), **EXIT**.
 The menu closes by itself after 30 s without a press.
 
 ## Flashing
@@ -61,8 +67,7 @@ The menu closes by itself after 30 s without a press.
 ## Serial console (USB, 115200)
 
 `T` status, `I` IQ snapshot (`tools/capture_iq_snapshot.py`), `o` menu,
-`c` next channel, `b` next band, `s` scan, `F` re-measure the filter (VTX
-off), `` ` `` download mode, `h` help.
+`c` next channel, `b` next band, `s` scan, `F` calibrate again (as the menu item), `` ` `` download mode, `h` help.
 
 ## Credits and license
 

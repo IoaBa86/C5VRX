@@ -29,6 +29,10 @@ void app_main(void)
     receiver_set_gain(arc_gain_highest_rf_stage_start(rf_gain_table()));
     s_boot_stage = "calibration";
     calibration_start();
+    /* The receive profile (filter class + tracker) of this channel is
+     * chosen before live TX starts; it never changes under live video. */
+    profile_load();
+    profile_boot();
     s_boot_stage = "transport";
     ESP_ERROR_CHECK(transport_start());
     s_boot_stage = "tasks";

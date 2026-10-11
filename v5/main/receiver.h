@@ -115,6 +115,10 @@ void control_print(void);
 void calibration_start(void);
 bool filter_calibrate(bool automatic);
 void filter_request(void);
+/* True until the startup calibration has finished: afterwards nothing
+ * intrusive (searches, sweeps, slips, retunes) runs for the rest of the
+ * boot. A manual calibration from the menu reopens it once. */
+bool calibration_in_startup(void);
 /* Calibrated analog filter settings: normal (>= 12 MHz, every VTX) and
  * narrow (>= 10 MHz, low-deviation VTXs). false when not calibrated. */
 bool filter_setting(bool narrow, rf_filter_t *out);
@@ -122,7 +126,7 @@ void calibration_print(void);
 void dco_post_gain(uint8_t gain);
 
 /* ---- menu.c ---- */
-enum { MENU_BAND, MENU_CHANNEL, MENU_SCAN, MENU_VIDEO, MENU_EXIT, MENU_ITEMS };
+enum { MENU_BAND, MENU_CHANNEL, MENU_SCAN, MENU_VIDEO, MENU_CALIBRATE, MENU_EXIT, MENU_ITEMS };
 extern volatile int s_menu_cursor;
 bool menu_open(void);
 void menu_close(void);
@@ -131,6 +135,23 @@ void menu_set_standard_mode(std_mode_t mode);
 void status_screen(const char *title, const char *line1, const char *line2, int percent);
 void status_screen_end(void);
 bool menu_status_active(void);
+
+/* ---- profile.c ---- */
+enum { PROFILE_DEFAULT, PROFILE_KP060, PROFILE_KP050, PROFILES };
+#include "afc.h"
+const char *profile_name(int profile);
+int profile_active(void);
+int profile_deviation_x100(size_t channel);
+int profile_for_deviation(int dev_x100);
+bool profile_set(int profile);
+void profile_load(void);
+void profile_boot(void);
+void profile_channel_changed(void);
+void profile_measure_begin(void);
+void profile_measure_end(void);
+int profile_measure_result(void);
+void profile_observe(const afc2_result_t *r);
+void profile_commit(int dev_x100);
 
 /* ---- settings.c ---- */
 void settings_load(void);

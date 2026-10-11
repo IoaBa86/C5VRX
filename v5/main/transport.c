@@ -30,6 +30,7 @@ BITSCRAMBLER_PROGRAM(s_u85q, "u85q");
 BITSCRAMBLER_PROGRAM(s_u85q_kp060, "u85q_kp060");
 BITSCRAMBLER_PROGRAM(s_u85q_kp050, "u85q_kp050");
 static volatile int s_tracker = TRACKER_KP085;
+static bool s_started;   /* live TX running (set once at boot) */
 static const void *tracker_program(int t)
 {
     return t == TRACKER_KP050 ? s_u85q_kp050 : t == TRACKER_KP060 ? s_u85q_kp060 : s_u85q;
@@ -219,22 +220,24 @@ esp_err_t transport_start(void)
     if (err != ESP_OK) return err;
     start_demodulator();
     start_rings();
+    s_started = true;
     return ESP_OK;
 }
 
-/* Swap the tracker program in the running pipeline: the engine halts only
- * between load and start (a few ms, C5VRX-4 FusionDemod swaps measured
- * 3.8-5.1 ms). With the menu open it is applied on the way back. */
+/* Select the tracker program. Never under live video: only before the
+ * pipeline starts or while the menu / a status screen owns TX; the program
+ * is then loaded by the same start sequence as at boot (menu exit path), so
+ * DMA and BitScrambler ordering are the proven ones. */
 bool transport_set_tracker(int tracker)
 {
+    if (tracker != TRACKER_KP085 && tracker != TRACKER_KP060 && tracker != TRACKER_KP050) return false;
     if (tracker == s_tracker) return true;
+    if (s_started && !s_menu_active) {
+        printf("TRACKER change refused: live video\n");
+        return false;
+    }
     s_tracker = tracker;
-    if (s_menu_active) return true;
-    esp_err_t err = bitscrambler_load_program(s_bs, tracker_program(tracker));
-    if (err == ESP_OK) err = bitscrambler_reset(s_bs);
-    if (err == ESP_OK) err = bitscrambler_start(s_bs);
-    if (err != ESP_OK) printf("TRACKER swap failed: %s\n", esp_err_to_name(err));
-    return err == ESP_OK;
+    return true;
 }
 
 int transport_tracker(void) { return s_tracker; }

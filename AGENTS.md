@@ -360,8 +360,20 @@ raw 32 KiB ring -> TX BitScrambler U85Q (model `1a09f5c092e8`: untrained
 two bundles, LUT16, unique CVBS20 as [D,D] at TX40) -> 6-bit DAC. Direct
 Gain V5 (fixed lane, staged recovery, persisted map), per-gain DC hold with
 the carrier latch, DC drift nudges, sampling-phase check, AFC centring the
-porch on -1.0 MHz (matched to the U85Q window, simulation; was -436 kHz), and one measured narrow-filter sweep (>= 14 MHz, lowest noise
-bandwidth, VTX off). No options menu, labs, native AGC, AutoFit/Fusion,
+porch on -1.0 MHz (matched to the U85Q window, simulation; was -436 kHz).
+PR #196 (`research/c5vrx5-range`): all picture-interrupting calibration runs
+only in a bounded STARTUP phase of a boot (or after the menu CALIBRATE item),
+never in live video, and only for what is missing: sampling-phase repair, one
+filter sweep (12 MHz and 10 MHz classes, lowest noise bandwidth; own channel
+with the VTX off, else a quiet channel >= 40 MHz away), DC rows (noise: all
+rows; carrier: current row), and the VTX deviation. Quiet = envelope
+statistic of receiver noise (not phase coherence: 4-bit noise reads 36-61 %
+coherent, which rejected every channel, board 2026-10-11). Optional receive
+profiles per channel (12 MHz + kp 0.85 default; 10 MHz + kp 0.6 for
+deviation <= 1.10; 10 MHz + kp 0.5 for <= 0.80), chosen from three
+consistent deviation batches, stored per channel, applied only while the
+menu/status screen owns TX. Profile gains (+1.7 / +3.2 dB) are SIMULATION
+only (`v5/research`); firmware behaviour is build-tested, board test pending. No options menu, labs, native AGC, AutoFit/Fusion,
 flywheel, level servo or idle raster. NVS namespace `c5vrx5`. CI:
 `.github/workflows/c5vrx5.yml` publishes `c5vrx5-v5.0.N` and `c5vrx5-pr-N`
 for the flasher's C5VRX-5 tab. Board: runs and holds video; range is not

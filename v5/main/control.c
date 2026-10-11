@@ -82,86 +82,16 @@ static int strength(const metrics_t *m, uint8_t gain)
     return (coherence * 2 + power + headroom) / 4;
 }
 
-static void match_reset(void);
-
 static void after_retune(void)
 {
-    match_reset();          /* another channel may carry another VTX */
     ++s_control_epoch;
     s_cfo_khz = 0;
     s_afc_locked = false;
     standard_reset();
     settings_save();
+    profile_channel_changed();   /* another channel may carry another VTX */
     if (s_menu_active) menu_render();
     printf("[CHANNEL] %s %u MHz\n", rf_channel()->name, rf_channel()->freq_mhz);
-}
-
-/* ---- VTX-matched receive mode ---------------------------------------------
- * The VTX deviation sets the best filter width and tracker loop gain
- * (v5/research, held-out simulation, usable-picture threshold):
- *   deviation 0.69: 10 MHz + kp 0.5, 3.2 dB better than 14 MHz + kp 0.85;
- *   deviation 1.0:  10 MHz + kp 0.6, 1.7 dB better;
- *   deviation 1.4:  12 MHz + kp 0.85 (the default) is already best.
- * The narrow settings hurt a wide VTX badly, so they are only used after a
- * clear measurement. The AFC measures the sync tip and the burst-free porch
- * of every burst-confirmed line; their distance is deviation x 1.914 MHz
- * (40 of 140 IRE over 6.7 MHz). 32 estimates on a usable carrier, a tight
- * spread, once per channel session; a retune or reboot starts over. */
-#define DEV_SAMPLES     32u
-#define DEV_SYNC_KHZ    1914
-static int32_t s_dev_span[DEV_SAMPLES];
-static unsigned s_dev_n;
-static volatile int s_dev_x100 = -1;        /* measured deviation x100, -1 none */
-static volatile int s_match_mode;           /* 0 default, 1 dev <= 1.15, 2 dev <= 0.85 */
-static const char *const s_match_names[] = {"DEFAULT 12MHZ KP0.85", "MATCHED 10MHZ KP0.6", "MATCHED 10MHZ KP0.5"};
-
-static void match_reset(void)
-{
-    bool matched = s_match_mode != 0;
-    s_dev_n = 0;
-    s_dev_x100 = -1;
-    s_match_mode = 0;
-    rf_filter_t f;
-    if (matched && filter_setting(false, &f)) rf_set_filter(f);
-    (void)transport_set_tracker(TRACKER_KP085);
-}
-
-static int32_t median_i32(int32_t *v, unsigned n)
-{
-    for (unsigned a = 1; a < n; ++a)
-        for (unsigned b = a; b > 0 && v[b - 1] > v[b]; --b) { int32_t t = v[b]; v[b] = v[b - 1]; v[b - 1] = t; }
-    return n & 1u ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2;
-}
-
-static void match_observe(const afc2_result_t *r)
-{
-    if (s_dev_x100 >= 0 || !r->sync_pairs || !r->porch_pairs) return;
-    /* Only a usable carrier: in the healthy gain band, coherent. */
-    if (s_obs_p50 < 13 || s_obs_coherence < 70) return;
-    int32_t span = r->polarity < 0 ? r->porch_khz - r->sync_khz : r->sync_khz - r->porch_khz;
-    if (span <= 0) return;
-    s_dev_span[s_dev_n++] = span;
-    if (s_dev_n < DEV_SAMPLES) return;
-    int32_t v[DEV_SAMPLES], dev[DEV_SAMPLES];
-    memcpy(v, s_dev_span, sizeof(v));
-    int32_t med = median_i32(v, DEV_SAMPLES);
-    for (unsigned k = 0; k < DEV_SAMPLES; ++k) dev[k] = abs(s_dev_span[k] - med);
-    int32_t mad = median_i32(dev, DEV_SAMPLES);
-    s_dev_n = 0;
-    if (mad * 10 > med) {          /* spread > 10 %: measure again */
-        printf("[VTX] deviation unclear: span_khz=%ld mad=%ld\n", (long)med, (long)mad);
-        return;
-    }
-    s_dev_x100 = (int)(med * 100 / DEV_SYNC_KHZ);
-    rf_filter_t narrow;
-    int mode = !filter_setting(true, &narrow) ? 0 : s_dev_x100 <= 85 ? 2 : s_dev_x100 <= 115 ? 1 : 0;
-    s_match_mode = mode;
-    if (mode) {
-        rf_set_filter(narrow);
-        (void)transport_set_tracker(mode == 2 ? TRACKER_KP050 : TRACKER_KP060);
-    }
-    printf("[VTX] deviation=%d.%02d span_khz=%ld mode=%s\n", s_dev_x100 / 100, s_dev_x100 % 100, (long)med,
-           s_match_names[mode]);
 }
 
 /* ---- Channel scanner -------------------------------------------------------
@@ -264,6 +194,7 @@ static void menu_action(void)
     case MENU_BAND: rf_next_band(); after_retune(); break;
     case MENU_CHANNEL: rf_next_channel(); after_retune(); break;
     case MENU_SCAN: scan(); break;
+    case MENU_CALIBRATE: menu_close(); filter_request(); return;   /* runs once the menu is closed */
     case MENU_VIDEO:
         menu_set_standard_mode(s_std_mode == STD_MODE_AUTO ? STD_MODE_NTSC :
                                s_std_mode == STD_MODE_NTSC ? STD_MODE_PAL : STD_MODE_AUTO);
@@ -371,7 +302,7 @@ static void control_task(void *arg)
         s_cfo_khz = r.porch_pairs ? r.porch_khz : 0;
         bool valid = window_ok && r.lines && r.standard && r.porch_pairs && r.sync_pairs &&
                      r.burst_x10 >= AFC2_BURST_MIN_X10;
-        if (valid) { s_last_video_us = now; standard_vote(r.standard); match_observe(&r); }
+        if (valid) { s_last_video_us = now; standard_vote(r.standard); profile_observe(&r); }
         bool was = s_afc_locked;
         s_afc_locked = afc2_native_lock(s_afc_locked, valid, afc2_ctrl_can_lock(&afc, true), afc.n, &afc_lost);
         if (was && !s_afc_locked) afc2_ctrl_reset(&afc, ctx, true);
@@ -416,5 +347,6 @@ void control_print(void)
            rf_channel()->name, rf_frequency_mhz(), rf_offset_khz(), s_cfo_khz, s_afc_locked,
            s_afc_corrections, s_std_mode == STD_MODE_AUTO ? "AUTO" : s_std_mode == STD_MODE_PAL ? "PAL" : "NTSC",
            s_detected_std_valid ? (s_detected_std == VIDEO_STD_PAL ? "PAL" : "NTSC") : "none",
-           s_signal_strength, s_menu_active, s_dev_x100, s_match_names[s_match_mode], transport_tracker());
+           s_signal_strength, s_menu_active, profile_deviation_x100(rf_channel_index()),
+           profile_name(profile_active()), transport_tracker());
 }

@@ -528,6 +528,14 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
         g->last_direction = 0;
         return g->current_gain;
     }
+    /* Weak at the table maximum: there is no higher state. Receiver noise
+     * reads here (P50 ~9 between "carrier" and "no carrier"); every write
+     * found by the search was a sideways step and V5 hunted ~20 times a
+     * second at G83 with every VTX off (board, 2026-10-11). Hold. */
+    if (weak && at_max) {
+        g->state = DG_HOLD;
+        return g->current_gain;
+    }
     /* Severe excursions act on one window, moderate ones on two windows
      * and 20 ms; damping after reversals needs eight. */
     bool damped = o->observed_us < g->damp_until_us;

@@ -1,11 +1,22 @@
 /* C5VRX-5 by Twotoz and the C5VRX contributors: automatic receive-chain
  * calibration, from C5VRX-4 main/video_calibration.c, video_dco.c,
- * video_drift.c and video_sampling.c. One low-priority task (250 ms tick),
- * never in the 40 MS/s path:
- *  - sampling phase: PARLIO must not sample MODEM_DIAG mid-transition;
- *  - narrow analog filter: one measured sweep (VTX off) per board;
- *  - per-gain RX DC correction, searched only in confirmed quiet;
- *  - DC drift tracking and persistence of the Direct Gain map. */
+ * video_drift.c and video_sampling.c. One low-priority task, never in the
+ * 40 MS/s path.
+ *
+ * Everything that interrupts the picture runs only in the STARTUP phase of
+ * a boot (or once more after a manual request from the menu / console),
+ * never during live video: a receiver must not drop the picture in flight
+ * because it decided to calibrate. Startup, bounded to ~2 minutes:
+ *  1. sampling phase: PARLIO must not sample MODEM_DIAG mid-transition;
+ *  2. narrow analog filter, only when none is stored: one sweep on the own
+ *     channel (VTX off) or a quiet channel >= 40 MHz away (VTX on);
+ *  3. per-gain RX DC correction, only when none is stored for the channel:
+ *     every gain row on receiver noise (VTX off), or the current row on the
+ *     carrier's circle (VTX on);
+ *  4. VTX deviation and receive profile (profile.c), only when unknown.
+ * Afterwards: held DC codes, small DC drift nudges and the gain map, which
+ * do not interrupt video. A step that cannot run (no quiet channel, menu
+ * open, ...) keeps the safe default and is tried again on the next boot. */
 #include "receiver.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,9 +40,19 @@ typedef struct {
     metrics_t m;             /* last window */
 } window_stats_t;
 
+static volatile bool s_startup = true;
+bool calibration_in_startup(void) { return s_startup; }
+
 static bool quiet_owner(void)
 {
     return !s_menu_active && !s_scan_active && !receiver_paused() && !phy_busy();
+}
+
+/* Status screens of the startup phase own TX (menu raster), so the menu
+ * check must not count them as a busy owner. */
+static bool startup_owner(void)
+{
+    return (!s_menu_active || menu_status_active()) && !s_scan_active && !receiver_paused() && !phy_busy();
 }
 
 static bool collect(unsigned windows, window_stats_t *out)
@@ -97,32 +118,29 @@ static bool sphase_scan(void)
     return settled;
 }
 
-static void sphase_service(void)
+/* Startup: check, and repair a bad phase (a few hundred ms of slips). */
+static void sphase_startup(void)
 {
-    static int64_t next_us, settled_us;
-    static uint16_t freq;
-    if (!quiet_owner()) return;
-    int64_t now = esp_timer_get_time();
-    if (freq != rf_frequency_mhz()) { freq = rf_frequency_mhz(); settled_us = 0; s_sphase_scans = 0; }
-    if (settled_us && now - settled_us < 120000000LL) return;
-    if (now < next_us) return;
-    /* A held carrier in band, or receiver noise without clipping. */
-    bool carrier = s_gain.state == DG_HOLD && s_obs_coherence >= 60 && s_obs_p50 >= 13 && s_obs_p50 <= 46;
-    bool noise = s_obs_p50 <= 8 && s_obs_clip_pm == 0 && s_obs_coherence < 40;
-    if (!carrier && !noise) return;
     window_stats_t w;
-    if (!collect(48, &w)) return;
+    if (!collect(48, &w)) { s_sphase_state = "probe_failed"; return; }
     s_sphase_excess = sphase_excess(&w);
-    if (s_sphase_excess < SPHASE_LIMIT) { s_sphase_state = "settled"; settled_us = now; return; }
-    if (s_sphase_scans >= SPHASE_MAX_SCANS) {   /* no endless slips in flight */
-        s_sphase_state = "failed";
-        next_us = now + 60000000LL;
-        return;
+    for (s_sphase_scans = 0; s_sphase_excess >= SPHASE_LIMIT && s_sphase_scans < 2u;) {
+        ++s_sphase_scans;
+        if (sphase_scan()) break;
     }
-    ++s_sphase_scans;
-    s_sphase_state = "checking";
-    if (sphase_scan()) { s_sphase_state = "settled"; settled_us = esp_timer_get_time(); }
-    else { s_sphase_state = "unsettled"; next_us = esp_timer_get_time() + 10000000LL; }
+    s_sphase_state = s_sphase_excess < SPHASE_LIMIT ? "settled" : "unsettled";
+    printf("SPHASE startup state=%s excess_mc2=%d scans=%u\n", s_sphase_state, s_sphase_excess, s_sphase_scans);
+}
+
+/* Live: monitoring only, every 30 s (a slip would interrupt the picture). */
+static void sphase_monitor(void)
+{
+    static int64_t next_us;
+    int64_t now = esp_timer_get_time();
+    if (now < next_us || !quiet_owner()) return;
+    next_us = now + 30000000LL;
+    window_stats_t w;
+    if (collect(16, &w)) s_sphase_excess = sphase_excess(&w);
 }
 
 /* ---- Narrow analog filter --------------------------------------------------
@@ -143,8 +161,17 @@ static void sphase_service(void)
  * deviation was measured). */
 #define FILTER_MIN_KHZ     12000u
 #define FILTER_NARROW_KHZ  10000u
-#define QUIET_QPHASE       34     /* V5 coherence < 25 */
-#define QUIET_CLIP_PM      50
+/* Quiet = receiver noise: the envelope statistic (DC removed) of complex
+ * noise is 1.00 and an FM carrier raises it (1.32 at 0 dB C/N). Rail
+ * clipping of strong noise raises it too (1.21 at 5.5 % railed samples),
+ * so the limit grows with the railed fraction. Not phase coherence: the
+ * 4-bit quantizer makes plain noise 36..61 % "coherent" at the noise level
+ * of the table maximum (simulation of measure_window), which rejected every
+ * channel with all VTXs off (board, 2026-10-11). */
+#define QUIET_ENV_X100     115u
+#define QUIET_CARRIER_X100 30u    /* above the quiet limit: certainly a carrier */
+#define QUIET_NO_SYNC_US   2000000LL
+static unsigned quiet_limit(int clip_pm) { return QUIET_ENV_X100 + (unsigned)(clip_pm > 0 ? clip_pm : 0) * 4u / 5u; }
 #define CAL_WINDOWS        96u
 typedef struct {
     uint8_t valid, bw20, skirt;
@@ -160,26 +187,25 @@ static filter_blob_t s_filter_cal;
 static uint16_t s_original_mhz;
 static const char *s_filter_result = "never";
 
-static bool noise_measure(unsigned *width, unsigned *nbw, int *q_phase, int *clip_pm)
+static bool noise_measure(unsigned *width, unsigned *nbw, unsigned *env_x100, int *clip_pm)
 {
     float psd[DSP_FFT_N] = {0};
     uint8_t sample[PROBE_BYTES];
-    unsigned got = 0;
-    int q_sum = 0, clip_max = 0;
+    unsigned got = 0, env_sum = 0;
+    int clip_sum = 0;
     for (unsigned tries = 0; tries < CAL_WINDOWS * 3u && got < CAL_WINDOWS; ++tries) {
         vTaskDelay(1);
         if (!copy_probe_window(sample, NULL)) continue;
         for (unsigned r = 0; r < PROBE_REGIONS; ++r) dsp_psd_accumulate(sample + r * PROBE_REGION_BYTES, psd);
-        metrics_t m = measure_window(sample, sizeof(sample));
-        q_sum += m.q_phase;
-        if (m.clip_pm > clip_max) clip_max = m.clip_pm;
+        clip_sum += measure_window(sample, sizeof(sample)).clip_pm;
+        env_sum += dsp_envelope_ratio_x100(sample, sizeof(sample));
         ++got;
     }
     if (got * 2u < CAL_WINDOWS) return false;
     *width = dsp_psd_width_khz(psd);
     *nbw = dsp_psd_nbw_khz(psd);
-    *q_phase = q_sum / (int)got;
-    *clip_pm = clip_max;
+    *env_x100 = env_sum / got;
+    *clip_pm = clip_sum / (int)got;
     return true;
 }
 
@@ -203,22 +229,29 @@ static bool measure_setting(rf_filter_t f, unsigned *width, unsigned *nbw, bool 
     if (s_cal_total) { ++s_cal_done; cal_status(); }
     rf_set_filter(f);
     vTaskDelay(pdMS_TO_TICKS(20));
-    int q = 0, clip = 0;
-    if (!noise_measure(width, nbw, &q, &clip)) return false;
-    *quiet = q < QUIET_QPHASE && clip < QUIET_CLIP_PM;
-    *carrier = clip >= QUIET_CLIP_PM;
-    printf("FILTER_CAL bw=%s code=%d skirt=%u width_khz=%u nbw_khz=%u q=%d clip_pm=%d\n",
-           f.bw20 ? "BW20" : "BW40", f.code, f.skirt, *width, *nbw, q, clip);
+    unsigned env = 0;
+    int clip = 0;
+    if (!noise_measure(width, nbw, &env, &clip)) return false;
+    /* A setting with clipped noise is just not chosen; only a clearly
+     * non-noise envelope means a carrier appeared. */
+    *quiet = env <= quiet_limit(clip);
+    *carrier = env > quiet_limit(clip) + QUIET_CARRIER_X100;
+    printf("FILTER_CAL bw=%s code=%d skirt=%u width_khz=%u nbw_khz=%u env_x100=%u limit=%u clip_pm=%d\n",
+           f.bw20 ? "BW20" : "BW40", f.code, f.skirt, *width, *nbw, env, quiet_limit(clip), clip);
     return true;
 }
 
-/* A channel is quiet when its noise is incoherent and noise-like at
- * maximum gain (no carrier, not dead or railing IQ). */
-static bool noise_like(void);
+/* A channel is quiet when it shows receiver noise at maximum gain: no
+ * burst-confirmed sync, noise-like envelope, not dead or railing IQ. */
+static const char *noise_check(unsigned *env_out, int *clip_out);
 static bool channel_quiet(void)
 {
-    window_stats_t w;
-    return collect(24, &w) && w.m.q_phase < QUIET_QPHASE && w.m.clip_pm < QUIET_CLIP_PM && noise_like();
+    unsigned env = 0;
+    int clip = 0;
+    const char *why = esp_timer_get_time() - s_last_video_us < QUIET_NO_SYNC_US ? "video_sync" : noise_check(&env, &clip);
+    printf("FILTER_CAL channel=%s freq=%u gain=%u quiet=%u reason=%s env_x100=%u clip_pm=%d\n", rf_channel()->name,
+           rf_frequency_mhz(), s_current_gain, why == NULL, why ? why : "-", env, clip);
+    return why == NULL;
 }
 
 /* The filter is the chip's own baseband filter: its noise bandwidth does
@@ -230,8 +263,9 @@ static bool find_quiet_channel(size_t original)
     /* Channels within 40 MHz are skipped: a VTX leaks into its neighbours. */
     for (size_t k = 0; k < FPV_CHANNELS; ++k) {
         size_t ch = (original + FPV_CHANNELS / 2 + k) % FPV_CHANNELS;
-        if (ch == original || rf_set_channel(ch) != ESP_OK) continue;
-        if (abs((int)rf_frequency_mhz() - (int)s_original_mhz) < 40) continue;
+        if (ch == original) continue;
+        if (abs((int)rf_channel_freq(ch) - (int)s_original_mhz) < 40) continue;
+        if (rf_set_channel(ch) != ESP_OK) continue;
         receiver_set_gain(rf_gain_table()->max_index);
         vTaskDelay(pdMS_TO_TICKS(50));
         if (channel_quiet()) return true;
@@ -245,6 +279,7 @@ bool filter_calibrate(bool automatic)
     if (!receiver_pause("FILTER_CAL")) { s_filter_result = "busy"; return false; }
     const uint8_t saved_gain = s_current_gain;
     const size_t original = rf_channel_index();
+    const int original_offset = rf_offset_khz();
     s_original_mhz = rf_frequency_mhz();
     const rf_filter_t previous = rf_filter(), calibrated = {PHY_FILTER_CALIBRATED, 0, false};
     s_scan_active = true;              /* control loop and AFC stand aside */
@@ -253,9 +288,10 @@ bool filter_calibrate(bool automatic)
     vTaskDelay(pdMS_TO_TICKS(50));
     status_screen("CALIBRATING", "LOOKING FOR A QUIET CHANNEL", "ONE TIME ONLY, ABOUT 30 S", -1);
     bool ok = find_quiet_channel(original);
+    s_cal_done = 0;
     s_cal_own_channel = rf_channel_index() == original;
     s_cal_done = 0;
-    s_cal_total = 2u + 2u * 10u * 5u;   /* checks + BW40/BW20 x codes x skirts */
+    s_cal_total = ok ? 2u + 2u * 10u * 5u : 0u;   /* checks + BW40/BW20 x codes x skirts */
     s_cal_t0 = esp_timer_get_time();
     printf("FILTER_CAL begin mode=%s freq=%u (own %u) target_width_khz=%u\n", automatic ? "auto" : "manual",
            rf_frequency_mhz(), s_original_mhz, FILTER_MIN_KHZ);
@@ -282,7 +318,15 @@ bool filter_calibrate(bool automatic)
             }
     /* Re-check on the calibrated bytes before trusting the sweep. */
     if (ok) ok = measure_setting(calibrated, &width, &nbw, &quiet, &carrier) && quiet;
-    if (rf_channel_index() != original) (void)rf_set_channel(original);
+    /* Back to the exact original tuning; a failed retune is retried and
+     * reported, never assumed. */
+    bool restored = rf_channel_index() == original;
+    for (unsigned t = 0; !restored && t < 3u; ++t) {
+        restored = rf_set_channel(original) == ESP_OK;
+        if (!restored) vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (!restored) printf("FILTER_CAL error: retune to %u MHz failed\n", s_original_mhz);
+    if (rf_offset_khz() != original_offset) rf_set_offset_khz(original_offset);
     if (ok) {
 #define KHZ16(v) ((uint16_t)((v) > 65535u ? 65535u : (v)))
         s_filter_cal = (filter_blob_t){FILTER_VERSION,
@@ -298,14 +342,14 @@ bool filter_calibrate(bool automatic)
                narrow.skirt, narrow_width, narrow_nbw, cal_nbw);
     } else {
         rf_set_filter(previous);
-        s_filter_result = carrier ? "carrier_present" : quiet ? "sample_failure" : "no_quiet_channel";
+        s_filter_result = !s_cal_total ? "probe_failed" : carrier ? "carrier_detected" :
+                          s_cal_done ? "sweep_failed" : "no_quiet_channel";
         printf("FILTER_CAL aborted=%s\n", s_filter_result);
     }
     s_cal_total = 0;
-    status_screen(ok ? "CALIBRATED" : "CALIBRATION LATER", ok ? "NARROW FILTER STORED" : "NO QUIET CHANNEL OR A CARRIER",
-                  "BACK TO LIVE VIDEO", ok ? 100 : -1);
+    status_screen(ok ? "FILTER CALIBRATED" : "FILTER NOT CALIBRATED", ok ? "NARROW FILTER STORED" : s_filter_result,
+                  ok ? "" : "SAFE DEFAULT, RETRY NEXT BOOT", ok ? 100 : -1);
     vTaskDelay(pdMS_TO_TICKS(1500));
-    status_screen_end();
     receiver_set_gain(saved_gain);
     s_scan_active = false;
     receiver_resume();
@@ -320,30 +364,10 @@ bool filter_setting(bool narrow, rf_filter_t *out)
     return true;
 }
 
-/* Console request: runs in this task, so the console keeps draining USB. */
-static volatile bool s_filter_requested;
-void filter_request(void) { s_filter_requested = true; }
-
-/* Without a stored calibration: on the own channel as soon as it is quiet
- * (VTX off); with a VTX on, once in the first minute after boot (on the
- * ground), on another channel. A failure retries once a minute. */
-static void filter_service(void)
-{
-    static unsigned quiet_ticks;
-    static int64_t last_try;
-    if (s_filter_requested && !s_menu_active) { s_filter_requested = false; (void)filter_calibrate(false); return; }
-    if (s_filter_cal.normal.valid || phy_filter_calibrated_code() < 0 || !quiet_owner()) { quiet_ticks = 0; return; }
-    const int64_t now = esp_timer_get_time();
-    bool own_quiet = s_current_gain == rf_gain_table()->max_index && s_gain.state != DG_SETTLE &&
-                     s_obs_coherence < 25;
-    quiet_ticks = own_quiet ? quiet_ticks + 1u : 0u;
-    bool boot_window = now > 10000000LL && now < 60000000LL;
-    if (quiet_ticks < 12u && !boot_window) return;
-    if (last_try && now - last_try < 60000000LL) return;
-    last_try = now;
-    quiet_ticks = 0;
-    (void)filter_calibrate(true);
-}
+/* Manual request (menu or console): runs the startup phase once more, in
+ * this task (the console keeps draining USB). */
+static volatile bool s_manual_requested;
+void filter_request(void) { s_manual_requested = true; }
 
 /* ---- Per-gain RX DC correction --------------------------------------------
  * Near the range edge the carrier is a few cells; a receiver DC of ~1 cell
@@ -353,10 +377,6 @@ static void filter_service(void)
  * and held right after every gain write by the post-gain hook (board,
  * 2026-10-07: DC median ~134 LSB without the hook, ~11 with it). */
 #define DCO_VERSION      6u   /* 6: context without the filter class */
-#define DCO_RESEARCH_US  120000000LL
-#define DCO_NO_SYNC_US   3000000LL
-#define DCO_QUIET_US     5000000LL
-#define DCO_NOISE_RATIO  115u
 typedef struct {
     int16_t code[2];
     int16_t residual_mcells[2];
@@ -375,10 +395,7 @@ static RTC_FAST_ATTR uint8_t s_env_buf[24u * PROBE_BYTES];
 static uint8_t s_dco_banned[ARC_VENDOR_GAIN_MAX + 1u];
 static uint8_t s_dco_floor;
 static bool s_dco_dirty;
-static int64_t s_quiet_since_us, s_quiet_eval_us;
-static bool s_quiet_last;
-static uint16_t s_carrier_freq;
-static uint32_t s_dco_searches, s_dco_hook_holds, s_dco_refusals, s_dco_aborts, s_dco_carrier_searches;
+static uint32_t s_dco_searches, s_dco_hook_holds, s_dco_aborts, s_dco_carrier_searches;
 
 static void dco_context(dco_table_t *t, uint16_t freq)
 {
@@ -432,25 +449,33 @@ static bool dco_measure(int dc[2])
     return true;
 }
 
-/* Quiet = receiver noise: flat envelope statistic, and not dead or railing
- * IQ (which also has one; board 2026-10-07). */
-static bool noise_like(void)
+/* Receiver noise: flat envelope statistic, and not dead or railing IQ
+ * (which also has one; board 2026-10-07). NULL when it is noise, else the
+ * reason. */
+static const char *noise_check(unsigned *env_out, int *clip_out)
 {
     unsigned got = 0;
     for (unsigned tries = 0; tries < 72u && got < 24u; ++tries) {
         vTaskDelay(1);
         if (copy_probe_window(s_env_buf + got * PROBE_BYTES, NULL)) ++got;
     }
-    if (got < 16u) return false;
+    if (got < 16u) return "probe_failed";
     unsigned origin = 0, rail = 0, n = got * PROBE_BYTES;
     for (unsigned k = 0; k < n; ++k) {
         int i = dsp_i(s_env_buf[k]), q = dsp_q(s_env_buf[k]);
         origin += (i == 0 || i == -1) && (q == 0 || q == -1);
         rail += i == -8 || i == 7 || q == -8 || q == 7;
     }
-    if (origin * 2u > n || rail * 5u > n) return false;
-    return dsp_envelope_ratio_x100(s_env_buf, n) <= DCO_NOISE_RATIO;
+    int clip = (int)(rail * 1000u / n);
+    unsigned env = dsp_envelope_ratio_x100(s_env_buf, n);
+    if (env_out) *env_out = env;
+    if (clip_out) *clip_out = clip;
+    if (origin * 2u > n) return "origin";
+    if (rail * 5u > n) return "rails";
+    return env <= quiet_limit(clip) ? NULL : "envelope";
 }
+
+static bool noise_like(void) { return noise_check(NULL, NULL) == NULL; }
 
 /* A search needs noise wide enough to dither the quantizer: >= 3 cells
  * per axis each with >= 5 % of the samples. */
@@ -486,19 +511,13 @@ static bool dco_measure_carrier(int dc[2])
     return true;
 }
 
-static void dco_carrier_search(int64_t now)
+static bool dco_carrier_search(void)
 {
-    static int64_t steady_since, last;
-    static uint8_t steady_gain;
     const uint8_t g = s_current_gain;
-    bool steady = s_gain.state == DG_HOLD && g == steady_gain && s_obs_coherence >= 80 && !s_obs_clip_pm;
-    if (!steady) { steady_gain = g; steady_since = now; return; }
-    if (now - steady_since < 10000000LL || now - last < 10000000LL || g < s_dco.lo || g > s_dco.hi ||
-        s_dco.e[g].valid || s_dco_found_us[g]) return;
+    if (s_gain.state != DG_HOLD || g < s_dco.lo || g > s_dco.hi || s_obs_coherence < 80 || s_obs_clip_pm) return false;
     window_stats_t w;
-    if (!collect(16, &w) || !w.dc_circle || w.envelope_x100 < DCO_CARRIER_RATIO_X100) return;
-    last = now;
-    if (!receiver_pause("DCO_CARRIER")) return;
+    if (!collect(16, &w) || !w.dc_circle || w.envelope_x100 < DCO_CARRIER_RATIO_X100) return false;
+    if (!receiver_pause("DCO_CARRIER")) return false;
     (void)phy_dco_release();
     phy_dco_result_t res;
     (void)phy_dco_search(dco_measure_carrier, &res);
@@ -507,67 +526,83 @@ static void dco_carrier_search(int64_t now)
             {(int16_t)res.residual_mcells[0], (int16_t)res.residual_mcells[1]}, 1u};
         if (blob_store("dco", &s_dco, sizeof(s_dco))) s_dco_dirty = false;
     }
-    s_dco_found_us[g] = now;
+    s_dco_found_us[g] = esp_timer_get_time();
     ++s_dco_searches;
     ++s_dco_carrier_searches;
     receiver_resume();
+    return res.measured;
 }
 
+/* One quiet search of gain row g (receiver noise). False when the noise
+ * is below one quantizer step there (no codes at or below g). */
+static bool dco_quiet_search(uint8_t g)
+{
+    if (!receiver_pause("DCO")) return false;
+    const uint8_t restore = s_current_gain;
+    (void)phy_dco_release();
+    receiver_set_gain(g);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    bool measurable = noise_measurable();
+    if (!measurable) {
+        for (int k = g; k >= (int)s_dco.lo; --k) s_dco.e[k].valid = 0;
+        s_dco_floor = (uint8_t)(g + 1);
+    } else {
+        phy_dco_result_t res;
+        (void)phy_dco_search(dco_measure, &res);
+        if (res.measured)
+            s_dco.e[g] = (dco_entry_t){{(int16_t)res.codes[0], (int16_t)res.codes[1]},
+                {(int16_t)res.residual_mcells[0], (int16_t)res.residual_mcells[1]}, 1u};
+        s_dco_found_us[g] = esp_timer_get_time();
+        ++s_dco_searches;
+    }
+    s_dco_dirty = true;
+    receiver_set_gain(restore);
+    receiver_resume();
+    return measurable;
+}
+
+static unsigned dco_valid_rows(void)
+{
+    unsigned n = 0;
+    for (unsigned g = 0; g <= ARC_VENDOR_GAIN_MAX; ++g) n += s_dco.e[g].valid;
+    return n;
+}
+
+/* Startup: only when the channel has no stored DC codes (or manual). */
+static void dco_startup(bool manual, int64_t deadline)
+{
+    dco_select();
+    if (!manual && dco_valid_rows()) { printf("DCO startup skip=stored rows=%u\n", dco_valid_rows()); return; }
+    const bool carrier = esp_timer_get_time() - s_last_video_us < QUIET_NO_SYNC_US;
+    if (carrier || !noise_like()) {
+        bool ok = carrier && dco_carrier_search();
+        printf("DCO startup carrier=%u result=%s gain=%u\n", carrier, ok ? "stored" : "skip", s_current_gain);
+        return;
+    }
+    const int64_t t0 = esp_timer_get_time();
+    const unsigned rows = (unsigned)(s_dco.hi - s_dco.lo + 1u);
+    unsigned done = 0;
+    const char *why = "done";
+    for (int g = s_dco.hi; g >= (int)s_dco.lo; --g, ++done) {
+        char line2[48];
+        unsigned left = done ? (unsigned)((esp_timer_get_time() - t0) / done * (rows - done) / 1000000) + 1u : rows * 2u;
+        snprintf(line2, sizeof(line2), "ABOUT %u S LEFT, THEN LIVE VIDEO", left);
+        status_screen("CALIBRATING DC", "KEEP THE VTX OFF", line2, (int)(done * 100u / rows));
+        if (esp_timer_get_time() > deadline) { why = "timeout"; break; }
+        if (!noise_like()) { why = "carrier_detected"; break; }   /* VTX switched on */
+        if (!dco_quiet_search((uint8_t)g)) break;                  /* floor reached */
+    }
+    if (s_dco_dirty && blob_store("dco", &s_dco, sizeof(s_dco))) s_dco_dirty = false;
+    printf("DCO startup quiet result=%s rows=%u floor=%u\n", why, dco_valid_rows(), s_dco_floor);
+}
+
+/* Live: hold the stored codes after gain writes and guard them; never a
+ * search (a search steps the DC for seconds). */
 static void dco_service(void)
 {
     if (!quiet_owner()) return;
     dco_select();
-    const uint16_t freq = rf_frequency_mhz();
-    const int64_t now = esp_timer_get_time();
-    bool no_carrier = false;
-    if (now - s_last_video_us > DCO_NO_SYNC_US) {
-        if (now - s_quiet_eval_us < 1000000LL) no_carrier = s_quiet_last;
-        else {
-            s_quiet_eval_us = now;
-            no_carrier = noise_like();
-            s_quiet_last = no_carrier;
-        }
-    }
-    /* A carrier seen on this channel makes "quiet" ambiguous: a weak FM
-     * carrier at the edge has a noise-like envelope (board 2026-10-09). */
-    if (!no_carrier && now - s_quiet_eval_us < 1000000LL) s_carrier_freq = freq;
-    if (now - s_last_video_us <= DCO_NO_SYNC_US) s_carrier_freq = freq;
-    if (s_carrier_freq == freq && no_carrier) { no_carrier = false; ++s_dco_refusals; }
-    if (!no_carrier) s_quiet_since_us = 0;
-    else if (!s_quiet_since_us) s_quiet_since_us = now;
-    if (no_carrier && now - s_quiet_since_us >= DCO_QUIET_US) {
-        int target = -1, low = s_dco_floor > s_dco.lo ? s_dco_floor : s_dco.lo;
-        for (int g = s_dco.hi; g >= low; --g)
-            if (!s_dco_found_us[g] || now - s_dco_found_us[g] > DCO_RESEARCH_US) { target = g; break; }
-        if (target >= 0) {
-            if (!receiver_pause("DCO")) return;
-            const uint8_t restore = s_current_gain;
-            (void)phy_dco_release();
-            receiver_set_gain((uint8_t)target);
-            vTaskDelay(pdMS_TO_TICKS(20));
-            if (!noise_measurable()) {
-                /* Noise below one quantizer step: no codes here or below. */
-                for (int g = target; g >= (int)s_dco.lo; --g) s_dco.e[g].valid = 0;
-                s_dco_floor = (uint8_t)(target + 1);
-                s_dco_dirty = true;
-            } else {
-                phy_dco_result_t res;
-                (void)phy_dco_search(dco_measure, &res);
-                if (res.measured) {
-                    s_dco.e[target] = (dco_entry_t){{(int16_t)res.codes[0], (int16_t)res.codes[1]},
-                        {(int16_t)res.residual_mcells[0], (int16_t)res.residual_mcells[1]}, 1u};
-                    s_dco_dirty = true;
-                }
-                s_dco_found_us[target] = now;
-                ++s_dco_searches;
-            }
-            receiver_set_gain(restore);
-            receiver_resume();
-            return;
-        }
-        if (s_dco_dirty && blob_store("dco", &s_dco, sizeof(s_dco))) s_dco_dirty = false;
-    }
-    if (!no_carrier) dco_carrier_search(now);
+    if (s_dco_dirty && s_gain.state == DG_HOLD && blob_store("dco", &s_dco, sizeof(s_dco))) s_dco_dirty = false;
     /* Hold guard: held codes must never coincide with dead or railing IQ. */
     static unsigned bad_ticks;
     const uint8_t g = s_current_gain;
@@ -656,17 +691,69 @@ static void gain_map_service(void)
     if (blob_store("gain_map", &blob, sizeof(blob))) { s_gain_map_saved = blob; s_gain_map_saved_valid = true; }
 }
 
+/* VTX deviation for the receive profile (profile.c): measured on a
+ * centred, burst-confirmed carrier while video keeps running; only the
+ * switch to the matched profile happens behind a status screen. */
+static void deviation_startup(bool manual, int64_t deadline)
+{
+    rf_filter_t narrow;
+    if (!filter_setting(true, &narrow)) { printf("PROFILE startup skip=no_narrow_filter\n"); return; }
+    if (!manual && profile_deviation_x100(rf_channel_index())) { printf("PROFILE startup skip=stored\n"); return; }
+    if (esp_timer_get_time() - s_last_video_us > QUIET_NO_SYNC_US) { printf("PROFILE startup skip=no_video\n"); return; }
+    profile_measure_begin();
+    const int64_t until = esp_timer_get_time() + 15000000LL;
+    while (profile_measure_result() < 0 && esp_timer_get_time() < until && esp_timer_get_time() < deadline)
+        vTaskDelay(pdMS_TO_TICKS(100));
+    profile_measure_end();
+    int dev = profile_measure_result();
+    if (dev < 0) { printf("PROFILE startup result=inconclusive profile=%s\n", profile_name(profile_active())); return; }
+    profile_commit(dev);
+}
+
+#define STARTUP_BUDGET_US 120000000LL
+static void startup_phase(bool manual)
+{
+    s_startup = true;
+    const int64_t t0 = esp_timer_get_time(), deadline = t0 + STARTUP_BUDGET_US;
+    /* Direct Gain first finds its state (table maximum without a carrier). */
+    for (unsigned k = 0; k < 40u && s_gain.state == DG_SETTLE; ++k) vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(manual ? 200 : 1500));
+    for (unsigned k = 0; k < 100u && !startup_owner(); ++k) vTaskDelay(pdMS_TO_TICKS(100));
+    if (!startup_owner()) {
+        printf("STARTUP skip=owner_busy menu=%u scan=%u paused=%u\n", s_menu_active, s_scan_active, receiver_paused());
+    } else {
+        printf("STARTUP begin manual=%u filter=%s dco_rows=%u deviation_x100=%d\n", manual,
+               s_filter_cal.normal.valid ? "stored" : "missing", dco_valid_rows(),
+               profile_deviation_x100(rf_channel_index()));
+        sphase_startup();
+        if (phy_filter_calibrated_code() < 0) { s_filter_result = "unsupported_phy"; }
+        else if (manual || s_filter_cal.version != FILTER_VERSION || !s_filter_cal.normal.valid) {
+            if (filter_calibrate(!manual)) profile_boot();   /* narrow class now known */
+        }
+        if (esp_timer_get_time() < deadline) dco_startup(manual, deadline);
+        /* Video needs a moment back on the own channel before measuring. */
+        status_screen_end();
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        if (esp_timer_get_time() < deadline) deviation_startup(manual, deadline);
+    }
+    status_screen_end();
+    s_startup = false;
+    printf("STARTUP done ms=%lld filter=%s dco_rows=%u profile=%s\n", (esp_timer_get_time() - t0) / 1000,
+           s_filter_result, dco_valid_rows(), profile_name(profile_active()));
+}
+
 static void calibration_task(void *arg)
 {
     (void)arg;
     rf_set_post_gain_hook(dco_post_gain);
+    startup_phase(false);
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(250));
+        if (s_manual_requested && !s_menu_active) { s_manual_requested = false; startup_phase(true); continue; }
         dco_service();
         drift_service();
         gain_map_service();
-        sphase_service();
-        filter_service();
+        sphase_monitor();
     }
 }
 
@@ -691,10 +778,9 @@ void calibration_print(void)
            f.code, f.skirt, s_filter_cal.normal.width_khz, s_filter_cal.normal.nbw_khz,
            s_filter_cal.narrow.valid, s_filter_cal.narrow.width_khz, s_filter_cal.narrow.nbw_khz,
            s_filter_cal.calibrated_nbw_khz);
-    printf("DCO held=%u gains_valid=%u floor=%u searches=%lu carrier_searches=%lu hook_holds=%lu carrier_refusals=%lu aborts=%lu "
+    printf("DCO held=%u gains_valid=%u floor=%u searches=%lu carrier_searches=%lu hook_holds=%lu aborts=%lu "
            "drift_avg_mcells=%d/%d nudges=%lu temp_c=%.1f\n", phy_dco_held(), valid, s_dco_floor,
            (unsigned long)s_dco_searches, (unsigned long)s_dco_carrier_searches, (unsigned long)s_dco_hook_holds,
-           (unsigned long)s_dco_refusals,
            (unsigned long)s_dco_aborts, s_drift_avg[0], s_drift_avg[1], (unsigned long)s_drift_nudges,
            (double)s_temp_c);
     printf("SPHASE state=%s excess_mc2=%d limit=%d scans=%u rx_div=%lu\n", s_sphase_state, s_sphase_excess,

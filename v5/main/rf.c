@@ -281,6 +281,7 @@ static uint16_t s_freq = 5865u;
 static int s_offset_khz;
 
 const fpv_channel_t *rf_channel(void) { return &s_channels[s_index / 8u][s_index % 8u]; }
+uint16_t rf_channel_freq(size_t index) { return index < FPV_CHANNELS ? s_channels[index / 8u][index % 8u].freq_mhz : 0; }
 size_t rf_channel_index(void) { return s_index; }
 const char *rf_band_name(unsigned band) { return band < FPV_BANDS ? s_band_names[band] : "?"; }
 uint16_t rf_frequency_mhz(void) { return s_freq; }

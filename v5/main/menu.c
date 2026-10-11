@@ -37,9 +37,10 @@ static const uint8_t s_icons[MENU_ITEMS][8] = {
     {0x7e, 0x42, 0x5a, 0x5a, 0x5a, 0x42, 0x7e, 0x00},   /* channel */
     {0x00, 0x40, 0x50, 0x54, 0x55, 0x55, 0x55, 0x00},   /* scan */
     {0x7e, 0x42, 0x42, 0x42, 0x7e, 0x18, 0x3c, 0x00},   /* video */
+    {0x08, 0x08, 0x1c, 0x7f, 0x1c, 0x08, 0x08, 0x00},   /* calibrate */
     {0x7c, 0x44, 0x04, 0x1f, 0x04, 0x44, 0x7c, 0x00},   /* exit */
 };
-static const char *const s_items[MENU_ITEMS] = {"BAND", "CHANNEL", "SCAN", "VIDEO", "EXIT"};
+static const char *const s_items[MENU_ITEMS] = {"BAND", "CHANNEL", "SCAN", "VIDEO", "CALIBRATE", "EXIT"};
 
 static void rect(int x, int y, int w, int h, uint8_t code)
 {
@@ -155,9 +156,9 @@ void menu_render(void)
     rect(0, 8, 92, MENU_UI_LINES - 8, UI_ROOT);
     rect(91, 8, 1, MENU_UI_LINES - 8, UI_DIVIDER);
     for (int i = 0; i < MENU_ITEMS; ++i) {
-        int y = 8 + i * 9;
+        int y = 8 + i * 8;
         bool on = i == s_menu_cursor;
-        if (on) { rect(0, y, 91, 9, UI_SELECTED); rect(0, y, 3, 9, UI_WHITE); rect(3, y, 88, 1, UI_SELECTED_EDGE); }
+        if (on) { rect(0, y, 91, 8, UI_SELECTED); rect(0, y, 3, 8, UI_WHITE); rect(3, y, 88, 1, UI_SELECTED_EDGE); }
         uint8_t ink = on ? UI_WHITE : UI_MUTED;
         for (int gy = 0; gy < 8; ++gy)
             for (int gx = 0; gx < 8; ++gx)
@@ -200,6 +201,12 @@ void menu_render(void)
                                             s_std_mode == STD_MODE_PAL ? "PAL" : "NTSC");
         value_box(100, 34, 276, "DETECTED", s_detected_std_valid ? std_name(s_detected_std) : "NO VIDEO");
         text("AUTO FOLLOWS THE CAMERA", 100, 47, UI_MUTED, 1);
+        break;
+    case MENU_CALIBRATE:
+        title("CALIBRATE", "HOLD: CALIBRATE NOW");
+        text("ON THE GROUND ONLY: VIDEO STOPS", 100, 24, UI_WHITE, 1);
+        text("FOR UP TO 2 MIN. VTX OFF IS BEST", 100, 33, UI_MUTED, 1);
+        text("NEVER RUNS BY ITSELF IN FLIGHT", 100, 47, UI_MUTED, 1);
         break;
     default:
         title("EXIT", NULL);
