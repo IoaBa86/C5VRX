@@ -94,6 +94,7 @@ bool receiver_pause(const char *tag);
 void receiver_resume(void);
 void receiver_set_gain(uint8_t gain);
 void receiver_print(void);
+void receiver_print_map(void);   /* console M: GAINMAP line */
 
 /* ---- control.c ---- */
 extern volatile bool s_menu_active;

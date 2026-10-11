@@ -446,7 +446,11 @@ its gain map only with a confirmed VTX (burst-confirmed sync within 500 ms,
 `learn_enabled`): the coherence test alone passes plain 4-bit noise through
 the 12/10 MHz filters, so VTX-off noise ratios were learned and persisted;
 map version 4 drops such maps once. The map is saved every 30 s when it
-changed.
+changed. Gain map preset (`v5/main/gain_map_preset.h`, built by
+`v5/tools/gain_map_preset.py` from console `M` GAINMAP lines of measured
+boards, host test `v5/test/test_gain_preset.c`): a lowest-confidence prior
+for boards without a saved map; empty until board data exists (not
+simulated: RF-stage/BB dB values are not known well enough to model).
 Stress matrix `v5/research/situations.py` (README section 11): -0.75 /
 -1.0 MHz residual already costs the picture at 4 dB C/N; long echoes hurt
 all profiles alike (no equaliser possible). Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);

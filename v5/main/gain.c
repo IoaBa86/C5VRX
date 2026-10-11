@@ -232,6 +232,25 @@ bool dg_import_map(direct_gain_t *g, const dg_map_blob_t *blob)
     return true;
 }
 
+bool dg_import_preset(direct_gain_t *g, const uint16_t *power_q10, unsigned count, uint8_t max_index, uint8_t band5)
+{
+    if (!g || !power_q10 || max_index != g->table.max_index || band5 != g->table.band5) return false;
+    const uint8_t anchor = g->current_gain;
+    if (anchor >= count || !power_q10[anchor]) return false;
+    /* Rescale so the anchor keeps its own value: predict() only uses ratios. */
+    const uint32_t base = g->relative_power_q10[anchor] ? g->relative_power_q10[anchor] : 1024u;
+    unsigned used = 0;
+    for (unsigned k = 0; k <= g->table.max_index && k < count; ++k) {
+        if (!power_q10[k] || g->confidence[k] > 1u) continue;   /* own data wins */
+        uint32_t v = (uint32_t)power_q10[k] * base / power_q10[anchor];
+        g->relative_power_q10[k] = (uint16_t)(v < 1u ? 1u : v > 65535u ? 65535u : v);
+        g->uncertainty_pm[k] = 600u;
+        g->confidence[k] = 1u;
+        ++used;
+    }
+    return used > 1u;
+}
+
 /* Measured responses predict any tuple; without them only a fine step in
  * the same BB bank gets a low-confidence local prior. */
 static bool predict(const direct_gain_t *g, uint8_t candidate, int *ratio_q10, int *uncertainty_pm)
