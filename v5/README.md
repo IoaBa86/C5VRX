@@ -3,9 +3,11 @@
 Analog 5.8 GHz FPV receiver on one Seeed Studio XIAO ESP32-C5 with a passive
 6-bit resistor DAC: live FM video in, composite PAL/NTSC out for goggles.
 
-C5VRX-5 is the simplest and best C5VRX so far: one demodulator, no
-experimental options. Everything that is in it earned its place on the
-board or in held-out tests (see [docs/FINDINGS.md](docs/FINDINGS.md)).
+C5VRX-5 uses one live demodulator. Its receive-chain evidence is recorded in
+[docs/FINDINGS.md](docs/FINDINGS.md). Console `J` additionally enables the
+read-only [IQLaneFusion research shadow](docs/IQLANE_FUSION.md): analytic
+model proposals, off by default, with no lane/gain/decoder actuator. This
+research is not a demonstrated video or range improvement.
 
 ## What it does
 

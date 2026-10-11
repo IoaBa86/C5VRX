@@ -440,6 +440,16 @@ yet measured. Evidence: `v5/docs/FINDINGS.md`.
 
 ### Instructions for future pipeline work
 
+IQLaneFusion research extends U85 and the older adaptive-lane/history work:
+`v5/docs/IQLANE_FUSION.md`, `v5/research/iq_lane_fusion.py`. Exact Q10 cell
+likelihoods, mathematical bitset/gain screening, factorized phase/frequency
+reference, route-transition replay and a fixed-context compressed BS experiment
+are host research. Console J enables a read-only shadow with explicit assumed
+contexts, off by default and no actuators. Full posterior and compressed BS
+program are not equivalent. Preserve the negative fade comparison. Safe live
+arbitrary routing/decoder handover, hardware timing and range remain unproved;
+do not treat model-only proposals or unused counters as physical validation.
+
 1. Search this ledger, the original source paths, `docs/KNOWLEDGE_INDEX.md` and
    `docs/pr-derived-findings.md` before proposing a CPU, source, DMA, DSP or DAC
    route. State which previously investigated method it extends.

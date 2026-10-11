@@ -116,7 +116,7 @@ def raster(standard, seed, fields=2):
 
 
 def make_case(seed, cnr_db, standard='PAL', deviation=1.0, rms=4.2, filter_hz=None,
-              porch_hz=PORCH_HZ, offset_hz=0.0, fields=2):
+              porch_hz=PORCH_HZ, offset_hz=0.0, fields=2, physical_adc=False, adc_gain=None):
     """Raw IQ bytes (noisy and noise-free) plus the goggle-filtered truth.
     filter_hz: -3 dB full width of an extra 4th-order analog filter (None =
     the C5's normal ~20 MHz channel only). offset_hz: residual AFC error."""
@@ -132,20 +132,38 @@ def make_case(seed, cnr_db, standard='PAL', deviation=1.0, rms=4.2, filter_hz=No
     pre = sg.butter(4, filter_hz / 2, fs=FS, output='sos') if filter_hz else None
     ratio = 10 ** (cnr_db / 10)
 
+    analog = []
+    # Physical study uses ONE gain for noisy and clean inputs. Default legacy
+    # studies retain their old clamp/instantaneous-normalization behavior;
+    # those results are not folding or gain-transient proofs.
+    reference = z * np.sqrt(ratio / (1 + ratio))
+    if pre is not None:
+        reference = sg.sosfilt(pre, reference)
+    fixed_scale = rms / np.sqrt(np.mean(abs(reference) ** 2)) if adc_gain is None else adc_gain
+
     def quantize(noise):
         y = (z * np.sqrt(ratio) + noise) / np.sqrt(1 + ratio)
         if pre is not None:
             # The narrower filter sits before the ADC on the chip; modelled at
             # 40 MS/s after the channel filter that already limits aliasing.
             y = sg.sosfilt(pre, y)
-        y *= rms / np.sqrt(np.mean(abs(y) ** 2))   # Direct Gain V5 holds the radius
+        if physical_adc:
+            import iq_lane_fusion as F
+            y *= fixed_scale
+            analog.append(y * 16.)
+            return F.capture(y * 16.)
+        y *= rms / np.sqrt(np.mean(abs(y) ** 2))   # Legacy ideal gain normalization
         i = np.clip(np.floor(y.real), -8, 7).astype(int)
         q = np.clip(np.floor(y.imag), -8, 7).astype(int)
         return (((i & 15) << 4) | (q & 15)).astype(np.uint8)
 
     truth = sg.sosfilt(GOGGLE, ire)
-    return dict(raw=quantize(n), clean=quantize(np.zeros_like(n)), truth=truth, region=region,
-                standard=standard, cnr=cnr_db, deviation=deviation, filter_hz=filter_hz)
+    result = dict(raw=quantize(n), clean=quantize(np.zeros_like(n)), truth=truth, region=region,
+                  standard=standard, cnr=cnr_db, deviation=deviation, filter_hz=filter_hz,
+                  physical_adc=physical_adc)
+    if physical_adc:
+        result.update(adc=analog[0], clean_adc=analog[1], adc_gain=fixed_scale)
+    return result
 
 
 def video_out(codes):

@@ -248,7 +248,10 @@ static void control_task(void *arg)
         /* BOOT button: short = next channel (menu: next item); 0.6 s = menu
          * (menu: do the selected item). */
         /* A calibration status screen owns the picture: no menu, no idle exit. */
-        if (menu_status_active()) { btn = 0; long_fired = false; menu_idle = 0; continue; }
+        if (menu_status_active()) {
+            lane_shadow_window(NULL, 0, afc_context(), s_gain_epoch, false);
+            btn = 0; long_fired = false; menu_idle = 0; continue;
+        }
         if (boot_grace) { --boot_grace; btn = 0; long_fired = false; }
         else if (gpio_get_level(BOOT_BUTTON) == 0) {
             ++btn;
@@ -283,6 +286,7 @@ static void control_task(void *arg)
         if (s_scan_active || !copy_control_window(s_window, sizeof(s_window))) {
             afc2_ctrl_invalidate(&afc);
             diag_window(false, false, false); /* failed copies count as missing evidence */
+            lane_shadow_window(NULL, 0, ctx, gain_epoch, false);
             continue;
         }
         metrics_t m = measure_window(s_window, sizeof(s_window));
@@ -333,6 +337,8 @@ static void control_task(void *arg)
             phy_end_actuator();
         }
         diag_window(window_ok, valid, own_write);   /* own_write: an AFC step this window */
+        lane_shadow_window(s_window, sizeof(s_window), ctx, gain_epoch,
+                           window_ok && !own_write && gain_epoch == s_gain_epoch && ctx == afc_context());
         if (s_afc_locked && !was_locked)
             printf("[VIDEO] locked %s %u MHz %s offset_khz=%d gain=%u\n", rf_channel()->name,
                    rf_channel()->freq_mhz, r.standard == 2 ? "PAL" : "NTSC", rf_offset_khz(), s_current_gain);
