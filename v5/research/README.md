@@ -170,6 +170,48 @@ example behind an obstacle. A 100 ms hold cost 81 ms there, so it was
 rejected. These are model numbers; every gain write is also a short PHY
 transient on the board. `fade_holds` in `T` counts the windows held.
 
+## 9. Open field: what gives the most range (`field_antenna.py`)
+
+This section uses textbook physics and data from datasheets and listings,
+not C5VRX measurements.
+
+**The receiver chip.** The ESP32-C5 802.11a 6 Mbps sensitivity is
+-92.5 dBm (module datasheet). That puts its noise figure at about 5 dB,
+the same class as an RX5808 (-90 dBm datasheet). At the threshold, Direct
+Gain holds a radius of ~4 cells, so the 4-bit capture costs ~0.1 dB there.
+The chip is not what limits open-field range.
+
+**The antenna.** Retail listings give the FPC antenna bundled with the XIAO
+ESP32-C5 as a 2.4 GHz part (2.9 dBi). Its 5.8 GHz performance is unknown
+and could be poor; this needs an A/B test.
+
+**Polarisation against the ground bounce.** At FPV grazing angles
+(0.4-4 degrees), the ground reflection of the RHCP VTX signal returns
+almost entirely left-handed. Over average ground it is -0.2..-2 dB in the
+opposite hand and -16..-34 dB in the same hand. An RHCP receive antenna
+therefore rejects the bounce, limited by its axial ratio. A linear antenna
+loses 3 dB on the direct wave and still gets the full bounce, which causes
+the two-ray nulls.
+
+Model ranges (25 mW, 2 dBi RHCP VTX, -93 dBm, 95 % of positions):
+
+| receive antenna | VTX 1 m / RX 1 m | VTX 30 m / RX 1 m | VTX 30 m / RX 3 m |
+| --- | ---: | ---: | ---: |
+| linear, 0 dBi | 400 m | 550 m | 400 m |
+| linear, 6 dB worse (mismatched antenna) | 300 m | 250 m | 250 m |
+| RHCP omni 3 dBi (13 dB cross-pol) | 1250 m | 1150 m | 1150 m |
+| RHCP patch 8 dBi (aimed) | 2600 m | 3150 m | 2850 m |
+
+**Other levers.**
+
+- VTX power: 25 to 200 mW is +9 dB, about 2.8x range.
+- A low-noise LNA right at the antenna (NF ~1 dB, e.g. ADI CN0534: 23 dB
+  gain, 2 dB NF) adds ~3-4 dB over a ~5 dB chip NF, minus coax loss. A
+  ~5 dB NF LNA adds little (VK4GHZ build).
+- Spatial or polarisation diversity needs a second receive path (a second
+  C5 plus a video switch).
+- Firmware cannot turn a linear antenna into a circular one.
+
 ## Not firmware levers
 
 - The second IQ40 sample of every span (+0.5..1.1 dB in the C5VRX-4 ledger)

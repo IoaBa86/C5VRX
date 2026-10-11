@@ -72,6 +72,23 @@ A `QUANTISER_LIMITED` verdict in `D` (VTX off, gain at the table maximum)
 means the receiver noise is below one ultrafine step. Then the 4-bit
 capture, not the antenna, sets the floor, and an LNA in front would help.
 
+## Antenna first
+
+These conclusions come from the model in `v5/research/README.md`, section 9.
+
+1. **Do not use the bundled 2.4 GHz FPC antenna.** It is a 2.4 GHz part.
+   Use a 5.8 GHz antenna with a U.FL lead.
+2. **Use RHCP when the VTX is RHCP.** Besides 3 dB of polarisation gain, an
+   RHCP antenna rejects the ground bounce, which comes back left-handed. In
+   the model a linear antenna reaches ~0.4-0.55 km and an RHCP omni
+   ~1.1-1.25 km (25 mW).
+3. **For distance, use an aimed RHCP patch (8+ dBi).** In the model that
+   gives ~3 km.
+4. **A/B test at one fixed spot.** Wait 10 s and press `D`; the
+   `RANGE_DIAG last_10s` line gives the median C/N estimate and the gain.
+   Change one thing and repeat. A higher C/N, or a lower gain at the same
+   C/N, means the setup is better.
+
 ## Record every run
 
 Write these down; the firmware cannot infer them: distance, RX and TX

@@ -275,6 +275,23 @@ void diag_report(void)
         ok += diag_video_ok(r);
         max_gain += r->gain + 1u >= r->gain_max;
     }
+    /* Antenna / placement A/B: hold one position for 10 s, press D, change
+     * one thing, repeat. Medians, so one fade does not decide. */
+    {
+        int cn[10], gn[10];
+        unsigned m = seq < 10u ? seq : 10u;
+        for (unsigned k = 0; k < m; ++k) {
+            const diag_record_t *r = &h[(seq - 1u - k) % DIAG_HISTORY];
+            cn[k] = r->cn_x10;
+            gn[k] = r->gain;
+        }
+        for (unsigned a2 = 1; a2 < m; ++a2)
+            for (unsigned b = a2; b > 0 && cn[b - 1] > cn[b]; --b) { int t2 = cn[b]; cn[b] = cn[b - 1]; cn[b - 1] = t2; }
+        for (unsigned a2 = 1; a2 < m; ++a2)
+            for (unsigned b = a2; b > 0 && gn[b - 1] > gn[b]; --b) { int t2 = gn[b]; gn[b] = gn[b - 1]; gn[b - 1] = t2; }
+        if (m) printf("RANGE_DIAG last_10s seconds=%u cn_est_x10 median=%d min=%d gain median=%d (lower gain or higher "
+                      "C/N at the same spot = a better antenna/placement)\n", m, cn[m / 2], cn[0], gn[m / 2]);
+    }
     printf("RANGE_DIAG history seconds=%u video_ok_pct=%u at_max_gain_pct=%u dropouts=%lu", n, n ? ok * 100u / n : 0u,
            n ? max_gain * 100u / n : 0u, (unsigned long)events);
     for (int c = 0; c < DIAG_CATEGORIES; ++c) printf(" %s=%lu", diag_category_name(c), (unsigned long)drops[c]);

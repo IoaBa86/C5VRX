@@ -403,7 +403,14 @@ textbook numbers, not C5VRX measurements. Direct Gain fade hold (`v5/main/gain.c
 so a motion null no longer jumps to the table maximum and folds the
 returning carrier (model: 1.8 ms and 4 writes per null before, 0 after;
 a carrier that stays weaker recovers up to ~10 ms later). NO_CARRIER
-still returns to the table maximum, after at most the hold. Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
+still returns to the table maximum, after at most the hold. Open-field
+link model (`v5/research/field_antenna.py`, README section 9, textbook
+physics): at FPV grazing angles the ground bounce of an RHCP VTX returns in
+the opposite hand, so an RHCP receive antenna rejects it while a linear one
+gets the full two-ray nulls (model: ~0.4-0.55 km linear vs ~1.1-1.25 km RHCP
+omni vs ~3 km 8 dBi RHCP patch at 25 mW). The XIAO's bundled FPC antenna
+is listed as a 2.4 GHz part; ESP32-C5 5 GHz sensitivity (-92.5 dBm, 11a
+6 Mbps) implies a ~5 dB NF, so the chip is not the open-field limit. Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
 operator report 2026-10-11: much less static but little more range, so no
 range gain is claimed; firmware is build-tested, board test pending. No options menu, labs, native AGC, AutoFit/Fusion,
 flywheel, level servo or idle raster. NVS namespace `c5vrx5`. CI:
