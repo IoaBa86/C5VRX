@@ -136,15 +136,25 @@ static void sphase_service(void)
  * 14 MHz (enough for every tested VTX deviation, docs/FINDINGS.md) and whose
  * noise stays incoherent (so Direct Gain still recognises "no carrier")
  * is kept. Built on ESPARGOS esp-sdr's C5 BANDWIDTH control (GPL-3.0). */
-#define FILTER_VERSION     1u
-#define FILTER_MIN_KHZ     14000u
+#define FILTER_VERSION     2u
+/* Two classes from one sweep (v5/research: 12 MHz helps every tested VTX
+ * deviation and keeps strong-signal sharpness; 10 MHz adds up to ~1.7 dB
+ * for deviation <= ~1.1 but hurts wide VTXs, so it is used only when the
+ * deviation was measured). */
+#define FILTER_MIN_KHZ     12000u
+#define FILTER_NARROW_KHZ  10000u
 #define QUIET_QPHASE       34     /* V5 coherence < 25 */
 #define QUIET_CLIP_PM      50
 #define CAL_WINDOWS        96u
 typedef struct {
-    uint8_t version, valid, bw20, skirt;
+    uint8_t valid, bw20, skirt;
     int8_t code;
-    uint16_t width_khz, nbw_khz, calibrated_nbw_khz;
+    uint16_t width_khz, nbw_khz;
+} filter_entry_t;
+typedef struct {
+    uint8_t version;
+    filter_entry_t normal, narrow;
+    uint16_t calibrated_nbw_khz;
 } filter_blob_t;
 static filter_blob_t s_filter_cal;
 static uint16_t s_original_mhz;
@@ -252,8 +262,9 @@ bool filter_calibrate(bool automatic)
     unsigned width = 0, nbw = 0, cal_nbw = 0;
     bool quiet = false, carrier = false;
     if (ok) ok = measure_setting(calibrated, &width, &cal_nbw, &quiet, &carrier) && quiet;
-    rf_filter_t best = calibrated;
+    rf_filter_t best = calibrated, narrow = calibrated;
     unsigned best_nbw = ok && width >= FILTER_MIN_KHZ ? cal_nbw : 0, best_width = width;
+    unsigned narrow_nbw = ok && width >= FILTER_NARROW_KHZ ? cal_nbw : 0, narrow_width = width;
     static const int8_t codes[] = {PHY_FILTER_CALIBRATED, 0, 8, 16, 24, 32, 40, 48, 56, 60};
     static const uint8_t skirts[] = {0, 8, 16, 24, 32};
     for (unsigned d = 0; ok && d < 2u; ++d)
@@ -265,20 +276,26 @@ bool filter_calibrate(bool automatic)
                 if (quiet && nbw && width >= FILTER_MIN_KHZ && (!best_nbw || nbw < best_nbw)) {
                     best = f; best_nbw = nbw; best_width = width;
                 }
+                if (quiet && nbw && width >= FILTER_NARROW_KHZ && (!narrow_nbw || nbw < narrow_nbw)) {
+                    narrow = f; narrow_nbw = nbw; narrow_width = width;
+                }
             }
     /* Re-check on the calibrated bytes before trusting the sweep. */
     if (ok) ok = measure_setting(calibrated, &width, &nbw, &quiet, &carrier) && quiet;
     if (rf_channel_index() != original) (void)rf_set_channel(original);
     if (ok) {
-        s_filter_cal = (filter_blob_t){FILTER_VERSION, 1u, best.bw20, best.skirt, best.code,
-                                       (uint16_t)best_width, (uint16_t)(best_nbw > 65535u ? 65535u : best_nbw),
-                                       (uint16_t)(cal_nbw > 65535u ? 65535u : cal_nbw)};
+#define KHZ16(v) ((uint16_t)((v) > 65535u ? 65535u : (v)))
+        s_filter_cal = (filter_blob_t){FILTER_VERSION,
+            {1u, best.bw20, best.skirt, best.code, KHZ16(best_width), KHZ16(best_nbw)},
+            {narrow_nbw ? 1u : 0u, narrow.bw20, narrow.skirt, narrow.code, KHZ16(narrow_width), KHZ16(narrow_nbw)},
+            KHZ16(cal_nbw)};
         (void)blob_store("filter", &s_filter_cal, sizeof(s_filter_cal));
         rf_set_filter(best);
         s_filter_result = "stored";
-        printf("FILTER_CAL chosen bw=%s code=%d skirt=%u width_khz=%u nbw_khz=%u calibrated_nbw_khz=%u "
-               "gain_db=%.1f\n", best.bw20 ? "BW20" : "BW40", best.code, best.skirt, best_width, best_nbw,
-               cal_nbw, best_nbw && cal_nbw ? 10.0 * log10((double)cal_nbw / best_nbw) : 0.0);
+        printf("FILTER_CAL normal bw=%s code=%d skirt=%u width_khz=%u nbw_khz=%u | narrow bw=%s code=%d "
+               "skirt=%u width_khz=%u nbw_khz=%u | calibrated_nbw_khz=%u\n", best.bw20 ? "BW20" : "BW40",
+               best.code, best.skirt, best_width, best_nbw, narrow.bw20 ? "BW20" : "BW40", narrow.code,
+               narrow.skirt, narrow_width, narrow_nbw, cal_nbw);
     } else {
         rf_set_filter(previous);
         s_filter_result = carrier ? "carrier_present" : quiet ? "sample_failure" : "no_quiet_channel";
@@ -295,6 +312,14 @@ bool filter_calibrate(bool automatic)
     return ok;
 }
 
+bool filter_setting(bool narrow, rf_filter_t *out)
+{
+    const filter_entry_t *e = narrow ? &s_filter_cal.narrow : &s_filter_cal.normal;
+    if (s_filter_cal.version != FILTER_VERSION || !e->valid) return false;
+    *out = (rf_filter_t){e->code, e->skirt, e->bw20 != 0};
+    return true;
+}
+
 /* Console request: runs in this task, so the console keeps draining USB. */
 static volatile bool s_filter_requested;
 void filter_request(void) { s_filter_requested = true; }
@@ -307,7 +332,7 @@ static void filter_service(void)
     static unsigned quiet_ticks;
     static int64_t last_try;
     if (s_filter_requested && !s_menu_active) { s_filter_requested = false; (void)filter_calibrate(false); return; }
-    if (s_filter_cal.valid || phy_filter_calibrated_code() < 0 || !quiet_owner()) { quiet_ticks = 0; return; }
+    if (s_filter_cal.normal.valid || phy_filter_calibrated_code() < 0 || !quiet_owner()) { quiet_ticks = 0; return; }
     const int64_t now = esp_timer_get_time();
     bool own_quiet = s_current_gain == rf_gain_table()->max_index && s_gain.state != DG_SETTLE &&
                      s_obs_coherence < 25;
@@ -327,7 +352,7 @@ static void filter_service(void)
  * envelope for 5 s, never on a channel where a carrier was seen this boot)
  * and held right after every gain write by the post-gain hook (board,
  * 2026-10-07: DC median ~134 LSB without the hook, ~11 with it). */
-#define DCO_VERSION      5u
+#define DCO_VERSION      6u   /* 6: context without the filter class */
 #define DCO_RESEARCH_US  120000000LL
 #define DCO_NO_SYNC_US   3000000LL
 #define DCO_QUIET_US     5000000LL
@@ -373,8 +398,7 @@ static void dco_context(dco_table_t *t, uint16_t freq)
 static bool dco_same_context(const dco_table_t *a, const dco_table_t *b)
 {
     return a->version == b->version && a->freq == b->freq && a->lo == b->lo && a->hi == b->hi &&
-           a->band5 == b->band5 && a->iq_scale_sel == b->iq_scale_sel && a->filter_code == b->filter_code &&
-           a->filter_skirt == b->filter_skirt && a->filter_bw20 == b->filter_bw20;
+           a->band5 == b->band5 && a->iq_scale_sel == b->iq_scale_sel;
 }
 
 static void dco_select(void)
@@ -648,9 +672,9 @@ static void calibration_task(void *arg)
 
 void calibration_start(void)
 {
-    if (blob_load("filter", &s_filter_cal, sizeof(s_filter_cal)) && s_filter_cal.version == FILTER_VERSION &&
-        s_filter_cal.valid) {
-        rf_set_filter((rf_filter_t){s_filter_cal.code, s_filter_cal.skirt, s_filter_cal.bw20});
+    rf_filter_t loaded;
+    if (blob_load("filter", &s_filter_cal, sizeof(s_filter_cal)) && filter_setting(false, &loaded)) {
+        rf_set_filter(loaded);
         s_filter_result = "loaded";
     } else memset(&s_filter_cal, 0, sizeof(s_filter_cal));
     ESP_ERROR_CHECK(xTaskCreate(calibration_task, "calibration", 4096, NULL, 2, NULL) == pdPASS ?
@@ -662,8 +686,10 @@ void calibration_print(void)
     rf_filter_t f = rf_filter();
     unsigned valid = 0;
     for (unsigned g = 0; g <= ARC_VENDOR_GAIN_MAX; ++g) valid += s_dco.e[g].valid;
-    printf("FILTER %s bw=%s code=%d skirt=%u width_khz=%u nbw_khz=%u calibrated_nbw_khz=%u\n", s_filter_result,
-           f.bw20 ? "BW20" : "BW40", f.code, f.skirt, s_filter_cal.width_khz, s_filter_cal.nbw_khz,
+    printf("FILTER %s active bw=%s code=%d skirt=%u | normal width_khz=%u nbw_khz=%u | narrow valid=%u "
+           "width_khz=%u nbw_khz=%u | calibrated_nbw_khz=%u\n", s_filter_result, f.bw20 ? "BW20" : "BW40",
+           f.code, f.skirt, s_filter_cal.normal.width_khz, s_filter_cal.normal.nbw_khz,
+           s_filter_cal.narrow.valid, s_filter_cal.narrow.width_khz, s_filter_cal.narrow.nbw_khz,
            s_filter_cal.calibrated_nbw_khz);
     printf("DCO held=%u gains_valid=%u floor=%u searches=%lu carrier_searches=%lu hook_holds=%lu carrier_refusals=%lu aborts=%lu "
            "drift_avg_mcells=%d/%d nudges=%lu temp_c=%.1f\n", phy_dco_held(), valid, s_dco_floor,

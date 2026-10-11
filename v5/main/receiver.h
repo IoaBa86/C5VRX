@@ -16,6 +16,7 @@
 #include "hal/dma_types.h"
 #include "gain.h"
 #include "menu_raster.h"
+#include "rf.h"
 
 #define IQ_RATE_HZ          40000000u
 #define RAW_RING_BYTES      32768u
@@ -58,6 +59,9 @@ esp_err_t transport_start(void);
 void transport_stop_tx(void);
 void transport_resume_live(void);
 void transport_start_chain(dma_descriptor_t *first);
+enum { TRACKER_KP085, TRACKER_KP060, TRACKER_KP050 };
+bool transport_set_tracker(int tracker);
+int transport_tracker(void);
 void transport_stop_chain(void);
 void transport_poll_faults(void);
 void transport_print(void);
@@ -111,6 +115,9 @@ void control_print(void);
 void calibration_start(void);
 bool filter_calibrate(bool automatic);
 void filter_request(void);
+/* Calibrated analog filter settings: normal (>= 12 MHz, every VTX) and
+ * narrow (>= 10 MHz, low-deviation VTXs). false when not calibrated. */
+bool filter_setting(bool narrow, rf_filter_t *out);
 void calibration_print(void);
 void dco_post_gain(uint8_t gain);
 

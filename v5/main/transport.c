@@ -24,6 +24,16 @@
  * tracker on the PAIR4411 shared word, origin cells as coarse quadrant
  * tokens, linear -6..+9 MHz output window. docs/FINDINGS.md. */
 BITSCRAMBLER_PROGRAM(s_u85q, "u85q");
+/* Calmer loop gains of the same formula (kp 0.6 / 0.5), for low-deviation
+ * VTXs: narrower tracking bandwidth extends the FM threshold
+ * (v5/research, docs/FINDINGS.md). */
+BITSCRAMBLER_PROGRAM(s_u85q_kp060, "u85q_kp060");
+BITSCRAMBLER_PROGRAM(s_u85q_kp050, "u85q_kp050");
+static volatile int s_tracker = TRACKER_KP085;
+static const void *tracker_program(int t)
+{
+    return t == TRACKER_KP050 ? s_u85q_kp050 : t == TRACKER_KP060 ? s_u85q_kp060 : s_u85q;
+}
 
 /* 6-bit resistor DAC, LSB first (XIAO D4..D9; 8.2k/3.9k/2k/1k/470R/240R
  * plus 200R). Do not change the tested pin order. */
@@ -134,7 +144,7 @@ static esp_err_t start_tx(void)
 static void start_demodulator(void)
 {
     ESP_ERROR_CHECK(bitscrambler_enable(s_bs));
-    ESP_ERROR_CHECK(bitscrambler_load_program(s_bs, s_u85q));
+    ESP_ERROR_CHECK(bitscrambler_load_program(s_bs, tracker_program(s_tracker)));
     ESP_ERROR_CHECK(bitscrambler_reset(s_bs));
     ESP_ERROR_CHECK(bitscrambler_start(s_bs));
 }
@@ -211,6 +221,24 @@ esp_err_t transport_start(void)
     start_rings();
     return ESP_OK;
 }
+
+/* Swap the tracker program in the running pipeline: the engine halts only
+ * between load and start (a few ms, C5VRX-4 FusionDemod swaps measured
+ * 3.8-5.1 ms). With the menu open it is applied on the way back. */
+bool transport_set_tracker(int tracker)
+{
+    if (tracker == s_tracker) return true;
+    s_tracker = tracker;
+    if (s_menu_active) return true;
+    esp_err_t err = bitscrambler_load_program(s_bs, tracker_program(tracker));
+    if (err == ESP_OK) err = bitscrambler_reset(s_bs);
+    if (err == ESP_OK) err = bitscrambler_start(s_bs);
+    if (err != ESP_OK) printf("TRACKER swap failed: %s
+", esp_err_to_name(err));
+    return err == ESP_OK;
+}
+
+int transport_tracker(void) { return s_tracker; }
 
 /* Live -> menu: stop the producer once; the menu raster takes TX. */
 void transport_stop_tx(void)

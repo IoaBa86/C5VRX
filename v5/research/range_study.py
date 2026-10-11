@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-CNRS = np.arange(float(os.environ.get("CN_MIN", -3)), 9.0, 1.0)
+CNRS = np.array([float(x) for x in os.environ["CNRS"].split(",")]) if "CNRS" in os.environ else np.arange(float(os.environ.get("CN_MIN", -3)), 9.0, 1.0)
 SEEDS = (11, 12, 13, 14)          # two PAL, two NTSC
 THRESHOLD = 0.9
 
@@ -67,6 +67,16 @@ def configs(exp):
             for f in (14e6, 12e6, 10e6):
                 for k in ('kp0.50', 'kp0.60', 'kp0.70', 'kp0.85'):
                     out[f'dev{dev}-{f / 1e6:g}MHz-{k}'] = dict(deviation=dev, filter_hz=f, lut=k)
+        return out
+    if exp == 'strong':
+        # Matched settings against v5 on strong signals and with residual
+        # carrier error after AFC.
+        sets = {'v5': (14e6, 'kp0.85'), 'm069': (10e6, 'kp0.50'), 'm100': (10e6, 'kp0.60'), 'm140': (12e6, 'kp0.85')}
+        out = {}
+        for dev in (0.69, 1.0, 1.4):
+            for name, (f, k) in sets.items():
+                for off in (0.0, 0.5e6, -0.5e6):
+                    out[f'dev{dev}-{name}-off{off / 1e6:+.1f}'] = dict(deviation=dev, filter_hz=f, lut=k, offset_hz=off)
         return out
     if exp == 'tracker':
         return {f'{k}-dev{dev}': dict(deviation=dev, filter_hz=14e6, lut=k)
