@@ -530,8 +530,10 @@ static const char *noise_check(unsigned *env_out, int *clip_out)
 static bool noise_like(void) { return noise_check(NULL, NULL) == NULL; }
 
 /* A search needs noise wide enough to dither the quantizer: >= 3 cells
- * per axis each with >= 5 % of the samples. */
-static bool noise_measurable(void)
+ * per axis each with >= 5 % of the samples. A failed probe is not a floor:
+ * it used to mark every lower row FLOOR in NVS and stop the DC bar half way. */
+enum { NOISE_MEASURABLE, NOISE_BELOW_STEP, NOISE_PROBE_FAILED };
+static int noise_measurable(void)
 {
     uint8_t buf[PROBE_BYTES];
     unsigned hi[16] = {0}, hq[16] = {0}, n = 0;
@@ -541,10 +543,10 @@ static bool noise_measurable(void)
         for (unsigned k = 0; k < sizeof(buf); ++k) { ++hi[dsp_i(buf[k]) & 15]; ++hq[dsp_q(buf[k]) & 15]; }
         n += sizeof(buf);
     }
-    if (n < 4u * sizeof(buf)) return false;
+    if (n < 4u * sizeof(buf)) return NOISE_PROBE_FAILED;
     unsigned ci = 0, cq = 0;
     for (unsigned c = 0; c < 16u; ++c) { ci += hi[c] * 20u >= n; cq += hq[c] * 20u >= n; }
-    return ci >= 3u && cq >= 3u;
+    return ci >= 3u && cq >= 3u ? NOISE_MEASURABLE : NOISE_BELOW_STEP;
 }
 
 /* With a VTX on: a strong FM carrier lies on a circle around the true DC,
@@ -586,17 +588,20 @@ static bool dco_carrier_search(bool manual)
     return res.measured;
 }
 
-/* One quiet search of gain row g (receiver noise). False when the noise
- * is below one quantizer step there (no codes at or below g). */
-static bool dco_quiet_search(uint8_t g)
+/* One quiet search of gain row g (receiver noise). NOISE_BELOW_STEP when
+ * the noise is below one quantizer step there (no codes at or below g),
+ * NOISE_PROBE_FAILED when nothing could be measured (rows untouched). */
+static int dco_quiet_search(uint8_t g)
 {
-    if (!receiver_pause("DCO")) return false;
+    if (!receiver_pause("DCO")) return NOISE_PROBE_FAILED;
     const uint8_t restore = s_current_gain;
     (void)phy_dco_release();
     receiver_set_gain(g);
     vTaskDelay(pdMS_TO_TICKS(20));
-    bool measurable = noise_measurable();
-    if (!measurable) {
+    const int measurable = noise_measurable();
+    if (measurable == NOISE_PROBE_FAILED) {
+        printf("DCO row=%u probe_failed (rows kept for the next boot)\n", g);
+    } else if (measurable == NOISE_BELOW_STEP) {
         /* Less gain, even less noise: the rows below cannot be searched on
          * noise either. Codes measured on a carrier stay. */
         for (int k = g; k >= (int)s_dco.lo; --k) if (s_dco.e[k].valid != DCO_ROW_OK) s_dco.e[k].valid = DCO_ROW_FLOOR;
@@ -610,7 +615,7 @@ static bool dco_quiet_search(uint8_t g)
         s_dco_found_us[g] = esp_timer_get_time();
         ++s_dco_searches;
     }
-    s_dco_dirty = true;
+    if (measurable != NOISE_PROBE_FAILED) s_dco_dirty = true;
     receiver_set_gain(restore);
     receiver_resume();
     return measurable;
@@ -663,12 +668,21 @@ static void dco_startup(bool manual, int64_t deadline)
         status_screen("CALIBRATING DC", "KEEP THE VTX OFF", line2, (int)(done * 100u / rows));
         if (esp_timer_get_time() > deadline) { why = "timeout"; break; }
         if (!noise_like()) { why = "carrier_detected"; break; }   /* VTX switched on */
-        if (!dco_quiet_search((uint8_t)g)) break;                  /* floor reached */
+        const int r = dco_quiet_search((uint8_t)g);
+        if (r == NOISE_PROBE_FAILED) { why = "probe_failed"; break; }
+        if (r == NOISE_BELOW_STEP) { why = "floor"; break; }     /* the rest needs no correction */
         ++done;
     }
+    /* The noise floor ends the search before the last row: that is the
+     * normal end, not a stall, so the bar completes and says so. */
+    if (!strcmp(why, "floor") || !strcmp(why, "done"))
+        status_screen("DC CALIBRATED", "LOWER GAINS NEED NO DC CORRECTION", "", 100);
+    else
+        status_screen("DC NOT COMPLETE", why, "SAFE DEFAULT, RETRY NEXT BOOT", -1);
+    vTaskDelay(pdMS_TO_TICKS(800));
     if (s_dco_dirty && blob_store("dco", &s_dco, sizeof(s_dco))) s_dco_dirty = false;
-    printf("DCO startup quiet result=%s searched=%u rows=%u floor_rows=%u\n", why, done, dco_valid_rows(),
-           dco_rows(DCO_ROW_FLOOR));
+    printf("DCO startup quiet result=%s searched=%u rows=%u floor_rows=%u floor_from_gain=%u\n", why, done,
+           dco_valid_rows(), dco_rows(DCO_ROW_FLOOR), s_dco_floor);
 }
 
 /* Live: hold the stored codes after gain writes and guard them; never a

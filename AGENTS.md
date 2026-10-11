@@ -427,7 +427,15 @@ re-arm (`v5/main/afc_ctrl.h` `AFC2_CTRL_REARM_WINDOWS`, host test
 `v5/test/test_afc.c`): the 4 x 250 kHz budget only came back after a lost
 lock, so a VTX > 1 MHz off never centred or locked (0.2-0.45 MHz residual
 all session); it now re-arms after 3 s while unlocked, and the offset clamp
-is +-2.5 MHz (was 1.5; vendor helper range not yet hardware-tested).
+is +-2.5 MHz (was 1.5; vendor helper range not yet hardware-tested). AFC
+offset sign self-check (`AFC2_CTRL_SIGN_CHECK_KHZ`, NVS `afc_sign`, `T`
+afc_sign): the sign was never hardware-confirmed (C5VRX-4 INTEGRATION.md),
+and with the opposite sign the AFC walked to the clamp (host test: 2.8-4.5
+MHz residual); after a step >= 150 kHz the next stable estimate must move
+toward the target, else the sign flips and is stored. DC startup: a failed
+probe is no longer recorded as a noise floor (it marked every lower row
+FLOOR in NVS and stopped the bar half way); the floor end now completes the
+bar with an explanation.
 Stress matrix `v5/research/situations.py` (README section 11): -0.75 /
 -1.0 MHz residual already costs the picture at 4 dB C/N; long echoes hurt
 all profiles alike (no equaliser possible). Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
