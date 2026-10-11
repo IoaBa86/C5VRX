@@ -397,7 +397,13 @@ host model: +65..250 kHz at 0-2 dB C/N, which passed the MAD gate), so the
 old gate could walk the offset the wrong way at the range edge. Open-field
 propagation (two-ray/Fresnel with low antennas: +6 dB at 500 m, +12 dB at
 1 km for 1 m heights) is documented in `v5/research/README.md` section 7;
-textbook numbers, not C5VRX measurements. Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
+textbook numbers, not C5VRX measurements. Direct Gain fade hold (`v5/main/gain.c`
+`DG_FADE_HOLD_US` 10 ms, host test `v5/test/test_gain_fade.c`): within
+10 ms of a healthy window an empty or weak window does not raise the gain,
+so a motion null no longer jumps to the table maximum and folds the
+returning carrier (model: 1.8 ms and 4 writes per null before, 0 after;
+a carrier that stays weaker recovers up to ~10 ms later). NO_CARRIER
+still returns to the table maximum, after at most the hold. Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
 operator report 2026-10-11: much less static but little more range, so no
 range gain is claimed; firmware is build-tested, board test pending. No options menu, labs, native AGC, AutoFit/Fusion,
 flywheel, level servo or idle raster. NVS namespace `c5vrx5`. CI:

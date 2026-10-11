@@ -51,6 +51,8 @@ typedef struct {
     uint64_t saturated_since_us;  /* interference-burst gate */
     bool saturated_run;
     uint32_t bursts_ignored;
+    uint64_t last_healthy_us;     /* fade hold: last window in the healthy band */
+    uint32_t fade_holds;          /* windows held through a fade */
     uint32_t magic;
 } direct_gain_t;
 

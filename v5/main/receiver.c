@@ -198,11 +198,11 @@ void receiver_start(void)
 void receiver_print(void)
 {
     printf("GAIN owner=direct_gain_v5 gain=%u state=%u p50=%d p95=%d coherence=%d origin_pm=%d clip_pm=%d "
-           "writes=%lu holds=%lu overloads=%lu bursts=%lu damp=%lu map_learned=%lu map_imports=%lu "
+           "writes=%lu holds=%lu overloads=%lu bursts=%lu fade_holds=%lu damp=%lu map_learned=%lu map_imports=%lu "
            "obs_windows=%lu obs_us_max=%lu\n",
            s_current_gain, (unsigned)s_gain.state, s_obs_p50, s_obs_p95, s_obs_coherence,
            s_obs_origin_pm, s_obs_clip_pm, (unsigned long)s_gain.writes, (unsigned long)s_gain.holds,
-           (unsigned long)s_gain.overloads, (unsigned long)s_gain.bursts_ignored,
+           (unsigned long)s_gain.overloads, (unsigned long)s_gain.bursts_ignored, (unsigned long)s_gain.fade_holds,
            (unsigned long)s_gain.damp_events, (unsigned long)s_gain.learned,
            (unsigned long)s_map_imports, (unsigned long)s_obs_windows, (unsigned long)s_obs_us_max);
 }

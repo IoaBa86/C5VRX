@@ -31,6 +31,20 @@ static bool s_lut_ready;
 /* Wi-Fi bursts clip every sample for 0.1-0.5 ms (zerowidth/C5VRX PR #3);
  * saturation counts as overload only after it lasted this long. */
 #define DG_BURST_US        1000u
+/* Fade hold. A moving drone in an open field passes ground-reflection and
+ * multipath nulls of a few milliseconds, after which the carrier is back at
+ * its old level. Jumping to the table maximum on the first empty window
+ * (+~22 dB from G60) made the returning carrier fold in the ultrafine
+ * window: the 1 ms burst gate plus a staged recovery turned every null into
+ * ~2 ms of extra loss and 4 writes, and a partial null into ~10 writes
+ * (v5/test/test_gain_fade.c, host model). Within DG_FADE_HOLD_US of the last
+ * healthy window an empty or weak window does not raise the gain. Motion
+ * nulls last ~lambda/2 / speed (2.6 cm: ~3 ms at 10 m/s); a longer hold made
+ * a carrier that stays weaker (obstacle) wait: 81 ms instead of 1 ms for a
+ * -12 dB step with 100 ms. With 10 ms the cost of a sustained drop is
+ * bounded by the hold. A carrier that is really gone still reaches the
+ * table maximum; distance fades are slower and tracked as before. */
+#define DG_FADE_HOLD_US    10000u
 
 static int clamp_i(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 static int abs_i(int v) { return v < 0 ? -v : v; }
@@ -440,6 +454,13 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
         if (g->state == DG_SETTLE &&
             (o->observed_us <= g->write_us || o->observed_us - g->write_us < settle_guard_us(g)))
             return g->current_gain;
+        /* Fade hold: an empty window right after a healthy carrier is a
+         * null, not a lost VTX; keep the gain the carrier will need again. */
+        if (!g->overload_recovery && !at_max && g->last_healthy_us &&
+            o->observed_us - g->last_healthy_us < DG_FADE_HOLD_US) {
+            ++g->fade_holds;
+            return g->current_gain;
+        }
         /* After an overload a low radius is no proof the carrier vanished:
          * walk back through physical tuples instead of jumping to max. */
         if (g->overload_recovery && !at_max)
@@ -496,6 +517,7 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
         return start_write(g, o, &prior, emergency_drop(g));
     }
     if (healthy(o)) {
+        g->last_healthy_us = o->observed_us;
         g->overload_recovery = false;
         g->state = DG_HOLD;
         g->corrections = 0;
@@ -539,9 +561,13 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
     /* Severe excursions act on one window, moderate ones on two windows
      * and 20 ms; damping after reversals needs eight. */
     bool damped = o->observed_us < g->damp_until_us;
+    /* Weak right after a healthy carrier is treated as moderate (it must
+     * last 20 ms): a partial null would otherwise raise the gain on one
+     * window and fold the returning carrier. Too strong always acts at once. */
+    const bool fading = g->last_healthy_us && o->observed_us - g->last_healthy_us < DG_FADE_HOLD_US;
     bool severe = high ? ((int)o->clip_pm >= BAND_CLIP_PM || (int)o->p95 > HIGH_P95 ||
                           (int)o->p50 > BAND_HI + 8)
-                       : ((int)o->p50 + 4 < BAND_LO);
+                       : ((int)o->p50 + 4 < BAND_LO && !fading);
     unsigned need_high = damped ? DG_DAMPED_WINDOWS : severe ? DG_HIGH_WINDOWS : 2u;
     unsigned need_weak = damped ? DG_DAMPED_WINDOWS : severe ? DG_WEAK_WINDOWS : 2u;
     if ((high && g->high_windows < need_high) || (weak && g->weak_windows < need_weak))

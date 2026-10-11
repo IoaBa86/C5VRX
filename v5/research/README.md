@@ -144,6 +144,32 @@ demodulator.
 `docs/FIELD_TEST.md` separates propagation (height and position A/B),
 antenna/polarisation and receiver sensitivity (conducted attenuation).
 
+## 8. Open field: Direct Gain through fast nulls (`test/test_gain_fade.c`)
+
+A moving drone passes multipath and ground-reflection nulls lasting about
+λ/2 ÷ speed (2.6 cm, ~3 ms at 10 m/s), after which the carrier is back at
+its old level. Direct Gain V5 jumped to the table maximum on the first
+empty window. From G60 that is about +22 dB, but the ultrafine window has
+only ~4 dB of headroom above the healthy radius, so the returning carrier
+folded. The 1 ms burst gate plus a staged recovery added time on top.
+
+The real `dg_tick()` was run on a rough receiver model (gain from the
+decoded tuples, noise at P50 ~9 at the maximum, fold above 7.5 cells):
+
+| event (carrier healthy at G60) | before | fade hold 10 ms |
+| --- | --- | --- |
+| null 1-3 ms, -40 dB | +1.8 ms after the carrier returns, 4 writes | 0 ms, 0 writes |
+| null 1-3 ms, -12 dB | 0-1 ms, 4-9 writes | 0 ms, 0 writes |
+| null >= 10 ms | +1.8 ms, 4 writes | unchanged |
+| carrier stays 12 / 22 dB weaker | 1.2 / 10.6 ms | 11 / 20 ms |
+| VTX off | table maximum | table maximum (after <= 10 ms) |
+| +20 dB jump | cut at once | unchanged |
+
+The price is up to ~10 ms longer recovery when a carrier stays weaker, for
+example behind an obstacle. A 100 ms hold cost 81 ms there, so it was
+rejected. These are model numbers; every gain write is also a short PHY
+transient on the board. `fade_holds` in `T` counts the windows held.
+
 ## Not firmware levers
 
 - The second IQ40 sample of every span (+0.5..1.1 dB in the C5VRX-4 ledger)
