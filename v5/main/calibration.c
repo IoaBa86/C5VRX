@@ -825,14 +825,17 @@ static void drift_service(void)
     ++s_drift_nudges;
 }
 
-/* Persist the measured gain map: at most every 2 minutes, while holding,
- * only when it changed (flash wear). */
+/* Persist the measured gain map: at most every 30 s, while holding, only
+ * when it changed. Short flights end with the battery pulled, so 2 minutes
+ * lost most of a flight's learning. Flash wear: a ~540-byte blob in the
+ * 24 KiB NVS partition, even written every 30 s, is > 30,000 flight hours
+ * of page erase cycles; unchanged maps are never written. */
 static void gain_map_service(void)
 {
     static int64_t last;
     static uint32_t last_learned;
     int64_t now = esp_timer_get_time();
-    if (now - last < 120000000LL || s_gain.state != DG_HOLD || s_gain.learned == last_learned) return;
+    if (now - last < 30000000LL || s_gain.state != DG_HOLD || s_gain.learned == last_learned) return;
     last = now;
     last_learned = s_gain.learned;
     dg_map_blob_t blob;
