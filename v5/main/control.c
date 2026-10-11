@@ -206,6 +206,7 @@ static void menu_action(void)
 static void command(int c, unsigned *menu_idle)
 {
     *menu_idle = 0;
+    if (menu_status_active()) return;   /* a calibration owns the picture */
     switch (c) {
     case 'o': if (s_menu_active) menu_close(); else if (menu_open()) s_menu_cursor = 0; break;
     case 'n': if (s_menu_active) { s_menu_cursor = (s_menu_cursor + 1) % MENU_ITEMS; menu_render(); } break;
@@ -242,6 +243,8 @@ static void control_task(void *arg)
 
         /* BOOT button: short = next channel (menu: next item); 0.6 s = menu
          * (menu: do the selected item). */
+        /* A calibration status screen owns the picture: no menu, no idle exit. */
+        if (menu_status_active()) { btn = 0; long_fired = false; menu_idle = 0; continue; }
         if (boot_grace) { --boot_grace; btn = 0; long_fired = false; }
         else if (gpio_get_level(BOOT_BUTTON) == 0) {
             ++btn;

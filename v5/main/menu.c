@@ -27,6 +27,10 @@ static DMA_ATTR __attribute__((aligned(64))) menu_raster_t s_raster;
 static dma_descriptor_t *s_chunks[NODE_CHUNKS];
 static unsigned s_chunk_count, s_node_capacity, s_node_count;
 volatile int s_menu_cursor;
+/* Status screen: a full-screen message on the menu raster (calibration). */
+static volatile bool s_status;
+static char s_status_title[40], s_status_line1[48], s_status_line2[48];
+static volatile int s_status_percent;
 
 static const uint8_t s_icons[MENU_ITEMS][8] = {
     {0x10, 0x38, 0x54, 0x10, 0x10, 0x38, 0x7c, 0x00},   /* band */
@@ -91,10 +95,48 @@ static void title(const char *t, const char *hint)
     rect(100, 19, 276, 1, UI_DIVIDER);
 }
 
+static void render_status(void)
+{
+    memset(s_raster.ui, UI_ROOT, sizeof(s_raster.ui));
+    rect(0, 0, MENU_UI_WIDTH, 8, UI_HEADER);
+    text("C5VRX-5", 6, 0, UI_WHITE, 1);
+    text(rf_channel()->name, 96, 0, UI_MUTED, 1);
+    text(s_status_title, (MENU_UI_WIDTH - 16 * (int)strlen(s_status_title)) / 2, 12, UI_WHITE, 2);
+    text(s_status_line1, (MENU_UI_WIDTH - 8 * (int)strlen(s_status_line1)) / 2, 31, UI_WHITE, 1);
+    text(s_status_line2, (MENU_UI_WIDTH - 8 * (int)strlen(s_status_line2)) / 2, 40, UI_MUTED, 1);
+    if (s_status_percent >= 0) meter(40, 50, MENU_UI_WIDTH - 80, s_status_percent);
+    sync_dma_c2m(s_raster.ui, sizeof(s_raster.ui));
+}
+
+bool menu_status_active(void) { return s_status; }
+
+/* Show (or update) a full-screen status message; percent < 0 hides the bar.
+ * The menu raster owns TX meanwhile, like the menu itself. */
+void status_screen(const char *title, const char *line1, const char *line2, int percent)
+{
+    snprintf(s_status_title, sizeof(s_status_title), "%s", title);
+    snprintf(s_status_line1, sizeof(s_status_line1), "%s", line1);
+    snprintf(s_status_line2, sizeof(s_status_line2), "%s", line2);
+    s_status_percent = percent;
+    if (!s_status) {
+        s_status = true;
+        if (!s_menu_active && !menu_open()) { s_status = false; return; }
+    }
+    render_status();
+}
+
+void status_screen_end(void)
+{
+    if (!s_status) return;
+    s_status = false;
+    menu_close();
+}
+
 void menu_render(void)
 {
     char buf[32];
     const fpv_channel_t *ch = rf_channel();
+    if (s_status) { render_status(); return; }
     memset(s_raster.ui, UI_ROOT, sizeof(s_raster.ui));
     rect(0, 0, MENU_UI_WIDTH, MENU_UI_LINES, UI_PANEL);
     /* Header: name, channel, frequency, gain, signal, standard. */
