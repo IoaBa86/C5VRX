@@ -638,6 +638,75 @@ bool calibration_dc_ok(uint8_t g)
     return s_dco.e[g].valid == DCO_ROW_FLOOR || g < s_dco_floor;
 }
 
+/* The quiet-noise row search, from the top row down; shared by the own
+ * channel (VTX off) and a quiet channel (VTX on). */
+static const char *dco_quiet_rows(bool manual, int64_t deadline, const char *line1, unsigned *done_out)
+{
+    const int64_t t0 = esp_timer_get_time();
+    const unsigned rows = manual ? (unsigned)(s_dco.hi - s_dco.lo + 1u) : dco_rows(0);
+    unsigned done = 0;
+    const char *why = "done";
+    for (int g = s_dco.hi; g >= (int)s_dco.lo; --g) {
+        if (!manual && s_dco.e[g].valid) continue;               /* stored codes or floor */
+        char line2[48];
+        unsigned left = done ? (unsigned)((esp_timer_get_time() - t0) / done * (rows - done) / 1000000) + 1u : rows * 2u;
+        snprintf(line2, sizeof(line2), "ABOUT %u S LEFT, THEN LIVE VIDEO", left);
+        status_screen("CALIBRATING DC", line1, line2, rows ? (int)(done * 100u / rows) : 0);
+        if (esp_timer_get_time() > deadline) { why = "timeout"; break; }
+        if (!noise_like()) { why = "carrier_detected"; break; }   /* VTX switched on / leaking */
+        const int r = dco_quiet_search((uint8_t)g);
+        if (r == NOISE_PROBE_FAILED) { why = "probe_failed"; break; }
+        if (r == NOISE_BELOW_STEP) { why = "floor"; break; }     /* the rest needs no correction */
+        ++done;
+    }
+    *done_out = done;
+    return why;
+}
+
+/* With the VTX on, the own channel never shows plain receiver noise, so the
+ * high gain rows (the ones used far out) stayed without DC codes: board
+ * DC without correction is ~1.1 cell (C5VRX-4 video_dco.c), and in the
+ * stress matrix a 1-cell DC at 4 dB C/N broke the goggle line lock
+ * (picture 0.25-0.97: lines shifting in bands). Like the filter sweep, the
+ * rows are measured on a quiet channel >= 40 MHz away and the exact tuning
+ * is restored. The DC DAC offsets are baseband offsets per gain row, so the
+ * codes are stored for the own channel; the live drift nudges trim the
+ * remaining difference. Startup only, behind the status screen. */
+static const char *dco_remote_search(bool manual, int64_t deadline, unsigned *done)
+{
+    *done = 0;
+    const size_t original = rf_channel_index();
+    const int original_offset = rf_offset_khz();
+    const uint8_t saved_gain = s_current_gain;
+    s_original_mhz = rf_frequency_mhz();
+    if (!receiver_pause("DCO_REMOTE")) return "busy";
+    s_scan_active = true;                       /* control loop and AFC stand aside */
+    receiver_set_gain(rf_gain_table()->max_index);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    status_screen("CALIBRATING DC", "LOOKING FOR A QUIET CHANNEL", "VTX MAY STAY ON", -1);
+    const bool quiet = find_quiet_channel(original) && rf_channel_index() != original;
+    receiver_resume();
+    char line1[48];
+    snprintf(line1, sizeof(line1), "ON QUIET CHANNEL %s (VTX MAY STAY ON)", rf_channel()->name);
+    const char *why = quiet ? dco_quiet_rows(manual, deadline, line1, done) : "no_quiet_channel";
+    /* Back to the exact original tuning, checked like the filter sweep. */
+    (void)receiver_pause("DCO_REMOTE");
+    bool restored = rf_channel_index() == original;
+    for (unsigned t = 0; !restored && t < 3u; ++t) {
+        restored = rf_set_channel(original) == ESP_OK;
+        if (!restored) vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (rf_offset_khz() != original_offset) rf_set_offset_khz(original_offset);
+    if (!restored || rf_offset_khz() != original_offset) {
+        printf("DCO error: own channel %u MHz / offset %d kHz not restored\n", s_original_mhz, original_offset);
+        why = "restore_failed";
+    }
+    receiver_set_gain(saved_gain);
+    s_scan_active = false;
+    receiver_resume();
+    return why;
+}
+
 /* Startup: only the rows of the channel that are still missing (all rows
  * on a manual request). Rows that have codes or a measured noise floor are
  * kept, so a boot after a complete calibration does nothing here. */
@@ -650,28 +719,22 @@ static void dco_startup(bool manual, int64_t deadline)
         return;
     }
     const bool carrier = video_recent();
-    if (carrier || !noise_like()) {
-        bool ok = carrier && dco_carrier_search(manual);
-        printf("DCO startup carrier=%u result=%s gain=%u missing_rows=%u\n", carrier, ok ? "stored" : "skip",
-               s_current_gain, missing);
-        return;
-    }
-    const int64_t t0 = esp_timer_get_time();
-    const unsigned rows = manual ? (unsigned)(s_dco.hi - s_dco.lo + 1u) : missing;
     unsigned done = 0;
-    const char *why = "done";
-    for (int g = s_dco.hi; g >= (int)s_dco.lo; --g) {
-        if (!manual && s_dco.e[g].valid) continue;               /* stored codes or floor */
-        char line2[48];
-        unsigned left = done ? (unsigned)((esp_timer_get_time() - t0) / done * (rows - done) / 1000000) + 1u : rows * 2u;
-        snprintf(line2, sizeof(line2), "ABOUT %u S LEFT, THEN LIVE VIDEO", left);
-        status_screen("CALIBRATING DC", "KEEP THE VTX OFF", line2, (int)(done * 100u / rows));
-        if (esp_timer_get_time() > deadline) { why = "timeout"; break; }
-        if (!noise_like()) { why = "carrier_detected"; break; }   /* VTX switched on */
-        const int r = dco_quiet_search((uint8_t)g);
-        if (r == NOISE_PROBE_FAILED) { why = "probe_failed"; break; }
-        if (r == NOISE_BELOW_STEP) { why = "floor"; break; }     /* the rest needs no correction */
-        ++done;
+    const char *why;
+    const char *where = "own";
+    if (!carrier && noise_like()) {
+        why = dco_quiet_rows(manual, deadline, "KEEP THE VTX OFF", &done);
+    } else {
+        /* A carrier on the own channel: measure on a quiet channel; only if
+         * there is none, the current row on the carrier's circle. */
+        where = "quiet_channel";
+        why = dco_remote_search(manual, deadline, &done);
+        if (!strcmp(why, "no_quiet_channel") || !strcmp(why, "busy")) {
+            bool ok = carrier && dco_carrier_search(manual);
+            printf("DCO startup carrier=%u result=%s gain=%u missing_rows=%u\n", carrier, ok ? "stored" : "skip",
+                   s_current_gain, missing);
+            where = "carrier";
+        }
     }
     /* The noise floor ends the search before the last row: that is the
      * normal end, not a stall, so the bar completes and says so. */
@@ -681,8 +744,8 @@ static void dco_startup(bool manual, int64_t deadline)
         status_screen("DC NOT COMPLETE", why, "SAFE DEFAULT, RETRY NEXT BOOT", -1);
     vTaskDelay(pdMS_TO_TICKS(800));
     if (s_dco_dirty && blob_store("dco", &s_dco, sizeof(s_dco))) s_dco_dirty = false;
-    printf("DCO startup quiet result=%s searched=%u rows=%u floor_rows=%u floor_from_gain=%u\n", why, done,
-           dco_valid_rows(), dco_rows(DCO_ROW_FLOOR), s_dco_floor);
+    printf("DCO startup where=%s result=%s searched=%u rows=%u floor_rows=%u missing=%u floor_from_gain=%u\n", where,
+           why, done, dco_valid_rows(), dco_rows(DCO_ROW_FLOOR), dco_rows(0), s_dco_floor);
 }
 
 /* Live: hold the stored codes after gain writes and guard them; never a

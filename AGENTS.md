@@ -435,7 +435,13 @@ MHz residual); after a step >= 150 kHz the next stable estimate must move
 toward the target, else the sign flips and is stored. DC startup: a failed
 probe is no longer recorded as a noise floor (it marked every lower row
 FLOOR in NVS and stopped the bar half way); the floor end now completes the
-bar with an explanation.
+bar with an explanation. With the VTX on at boot, missing DC rows (the high
+gain rows used far out) are measured on a quiet channel >= 40 MHz away with
+an exact, checked restore (startup only): before, they stayed uncorrected
+(~1.1 cell, C5VRX-4 video_dco.c), which in the stress matrix broke the
+goggle line lock at 4 dB C/N (lines shifting in bands). Codes measured on
+another channel are assumed close (baseband offsets per gain row); live
+drift nudges trim the rest; board confirmation pending.
 Stress matrix `v5/research/situations.py` (README section 11): -0.75 /
 -1.0 MHz residual already costs the picture at 4 dB C/N; long echoes hurt
 all profiles alike (no equaliser possible). Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);

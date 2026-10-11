@@ -32,6 +32,9 @@ research is not a demonstrated video or range improvement.
 - **Field diagnostics** (serial `D`, `R`): what is really active, and why
   each dropout happened as far as the receiver can tell
   ([docs/FIELD_TEST.md](docs/FIELD_TEST.md)).
+- **DC correction for every gain row, also with the VTX on**: missing rows
+  are measured once at startup on a quiet channel, so far-out (high gain)
+  reception has no uncorrected DC.
 - **Automatic receive-chain care**: per-gain DC correction, DC drift
   tracking, sampling-phase check, AFC that centres the VTX.
 - **Simple menu**: band, channel, scan, video standard, exit.
