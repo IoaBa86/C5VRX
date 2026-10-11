@@ -350,6 +350,7 @@ static uint8_t select_destination(const direct_gain_t *g, const dg_observation_t
 
 static void learn_transition(direct_gain_t *g, const dg_observation_t *after)
 {
+    if (!g->learn_enabled) { ++g->learn_refused; return; }
     if (!valid_learning(&g->before) || !valid_learning(after) ||
         abs_i((int)g->before.coherence - (int)after->coherence) > 15) return;
     const dg_observation_t *prior = &g->before_previous;

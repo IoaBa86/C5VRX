@@ -52,12 +52,18 @@ typedef struct {
     bool saturated_run;
     uint32_t bursts_ignored;
     uint64_t last_healthy_us;     /* fade hold: last window in the healthy band */
+    /* Map learning only with a confirmed VTX (set by the caller every
+     * window). The coherence test alone passes plain 4-bit receiver noise
+     * through the 12 / 10 MHz filters (~58 / 61 % coherent), so with the VTX
+     * off noise ratios were learned and persisted. */
+    bool learn_enabled;
+    uint32_t learn_refused;       /* transitions not learned: no confirmed VTX */
     uint32_t fade_holds;          /* windows held through a fade */
     uint32_t magic;
 } direct_gain_t;
 
 /* Measured gain map, persisted so a boot does not explore blindly. */
-#define DG_MAP_VERSION 3u
+#define DG_MAP_VERSION 4u   /* 4: maps learned from receiver noise (VTX off) are dropped */
 typedef struct {
     uint8_t version, max_index;
     uint16_t freq_mhz;            /* context: channel it was measured on */

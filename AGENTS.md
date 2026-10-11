@@ -441,7 +441,12 @@ an exact, checked restore (startup only): before, they stayed uncorrected
 (~1.1 cell, C5VRX-4 video_dco.c), which in the stress matrix broke the
 goggle line lock at 4 dB C/N (lines shifting in bands). Codes measured on
 another channel are assumed close (baseband offsets per gain row); live
-drift nudges trim the rest; board confirmation pending.
+drift nudges trim the rest; board confirmation pending. Direct Gain learns
+its gain map only with a confirmed VTX (burst-confirmed sync within 500 ms,
+`learn_enabled`): the coherence test alone passes plain 4-bit noise through
+the 12/10 MHz filters, so VTX-off noise ratios were learned and persisted;
+map version 4 drops such maps once. The map is saved every 30 s when it
+changed.
 Stress matrix `v5/research/situations.py` (README section 11): -0.75 /
 -1.0 MHz residual already costs the picture at 4 dB C/N; long echoes hurt
 all profiles alike (no equaliser possible). Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
