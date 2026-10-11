@@ -233,8 +233,7 @@ bool transport_set_tracker(int tracker)
     esp_err_t err = bitscrambler_load_program(s_bs, tracker_program(tracker));
     if (err == ESP_OK) err = bitscrambler_reset(s_bs);
     if (err == ESP_OK) err = bitscrambler_start(s_bs);
-    if (err != ESP_OK) printf("TRACKER swap failed: %s
-", esp_err_to_name(err));
+    if (err != ESP_OK) printf("TRACKER swap failed: %s\n", esp_err_to_name(err));
     return err == ESP_OK;
 }
 
