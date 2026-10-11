@@ -84,7 +84,7 @@ def coherence_table():
     import sys
     sys.path.insert(0, str(HERE))
     import sim
-    for filt in (None, 12e6, 10e6):
+    for filt in (None, 16e6, 12e6, 10e6):
         row = []
         for c in (-40, 0, 2, 4, 6, 8, 10, 15):
             vals = []

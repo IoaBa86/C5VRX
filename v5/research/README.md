@@ -212,6 +212,31 @@ Model ranges (25 mW, 2 dBi RHCP VTX, -93 dBm, 95 % of positions):
   C5 plus a video switch).
 - Firmware cannot turn a linear antenna into a circular one.
 
+## 10. Wide VTXs: the default 12 MHz class clips them (`range_study.py wide`)
+
+On the board's own VTX the sync tip sat at -5.0 MHz and white at
++6.25 MHz (docs/FINDINGS.md). By the firmware's formula, that 11.25 MHz
+swing is a deviation of ~1.7, wider than the 0.69-1.4 studied above.
+
+Range limit (worse of lock and usable), bit-exact U85Q, kp 0.85, C/N per
+20 MHz (`data/wide.txt`):
+
+| deviation | 12 MHz (default) | 14 MHz | 16 MHz | 20 MHz chan |
+| ---: | ---: | ---: | ---: | ---: |
+| 1.4 | **2.08** | 2.31 | 2.54 | 3.06 |
+| 1.7 | 3.64 | 3.28 | **3.26** | 3.63 |
+| 2.0 | 8.03 | 5.98 | 5.27 | **5.18** |
+
+Picture quality at 8 dB C/N (SINAD) for deviation 1.7 is 5.9 dB at 12 MHz
+and 7.9 dB at 16 MHz. A calmer tracker (kp 0.70) is worse for every wide
+VTX. The firmware adds a WIDE profile: the same tracker (kp 0.85) with a
+filter class >= 16 MHz from the same sweep, chosen at a measured deviation
+>= 1.6. The break-even is ~1.55, so a wrong WIDE on a narrow VTX costs only
+~0.5-0.8 dB. The host test sends no VTX <= 1.45 into WIDE.
+
+The filter blob gets a new version, so the receiver runs one new filter
+sweep after the update (startup, as before).
+
 ## Not firmware levers
 
 - The second IQ40 sample of every span (+0.5..1.1 dB in the C5VRX-4 ledger)

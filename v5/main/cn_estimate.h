@@ -4,7 +4,7 @@
  *
  * The same coherence means a different C/N per analog filter: 4-bit
  * receiver noise alone reads ~42 % through the ~20 MHz chip channel but
- * ~58 % / ~61 % through the 12 / 10 MHz classes, because the narrower noise
+ * ~51 / 58 / 61 % through the 16 / 12 / 10 MHz classes, because the narrower noise
  * is more correlated from sample to sample. A fixed coherence threshold is
  * therefore wrong as soon as the filter class changes.
  *
@@ -19,18 +19,19 @@
 
 #define CN_UNKNOWN_X10 (-990)   /* at or below the noise-only coherence */
 
-/* filter_mhz: 10, 12 or 20 (uncalibrated chip channel); others use the
+/* filter_mhz: 10, 12, 16 or 20 (uncalibrated chip channel); others use the
  * nearest. Returns C/N x10 dB, clamped to 0..20 dB above the noise-only
  * point; CN_UNKNOWN_X10 when the coherence is noise-like. */
 static inline int cn_estimate_x10(int coherence, int filter_mhz)
 {
     /* C/N (dB) :          0     2     4     6     8    10    15    20 */
     static const int16_t c20[] = {572, 632, 700, 772, 842, 902, 986, 1000};
+    static const int16_t c16[] = {650, 704, 764, 828, 888, 936, 994, 1000};
     static const int16_t c12[] = {705, 756, 814, 868, 918, 957, 997, 1000};
     static const int16_t c10[] = {732, 782, 838, 890, 936, 968, 998, 1000};
     static const int16_t cn[] = {0, 20, 40, 60, 80, 100, 150, 200};
-    const int16_t *t = filter_mhz <= 11 ? c10 : filter_mhz <= 16 ? c12 : c20;
-    const int noise = filter_mhz <= 11 ? 610 : filter_mhz <= 16 ? 577 : 419;   /* noise only */
+    const int16_t *t = filter_mhz <= 11 ? c10 : filter_mhz <= 14 ? c12 : filter_mhz <= 18 ? c16 : c20;
+    const int noise = filter_mhz <= 11 ? 610 : filter_mhz <= 14 ? 577 : filter_mhz <= 18 ? 508 : 419;   /* noise only */
     int c = coherence * 10;
     if (c <= noise + 20) return CN_UNKNOWN_X10;
     if (c <= t[0]) return -1 - (t[0] - c) * 30 / (t[0] - noise);   /* below 0 dB: -0.1..-3 dB */

@@ -4,7 +4,9 @@
  * (v5/research, simulation, usable-picture threshold):
  *   deviation 0.69: 10 MHz + kp 0.5, 3.2 dB better than 14 MHz + kp 0.85;
  *   deviation 1.0:  10 MHz + kp 0.6, 1.7 dB better;
- *   deviation 1.4:  12 MHz + kp 0.85 (the default) is already best.
+ *   deviation 1.4:  12 MHz + kp 0.85 (the default) is already best;
+ *   deviation 1.7:  16 MHz + kp 0.85, 0.4 dB better and +2 dB SINAD at 8 dB;
+ *   deviation 2.0:  16 MHz + kp 0.85, 2.8 dB better (data/wide.txt).
  * The narrow profiles hurt a wide VTX badly, so a profile is only taken
  * from a clear measurement, kept per channel in NVS, and chosen before live
  * TX starts. It never changes under live video: a different profile is
@@ -36,7 +38,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const char *const s_names[PROFILES] = {"DEFAULT 12MHZ KP0.85", "MATCHED 10MHZ KP0.6", "MATCHED 10MHZ KP0.5"};
+static const char *const s_names[PROFILES] = {"DEFAULT 12MHZ KP0.85", "MATCHED 10MHZ KP0.6", "MATCHED 10MHZ KP0.5",
+                                              "WIDE 16MHZ KP0.85"};
 static uint16_t s_dev_table[FPV_CHANNELS];    /* last deviation x100 per channel, provisional */
 static volatile int s_profile = PROFILE_DEFAULT;
 static const char *volatile s_reason = "boot_default";
@@ -57,8 +60,8 @@ int profile_deviation_x100(size_t channel) { return channel < FPV_CHANNELS ? s_d
 
 int profile_for_deviation(int dev_x100)
 {
-    rf_filter_t narrow;
-    return profile_class(dev_x100, filter_setting(true, &narrow));
+    rf_filter_t f;
+    return profile_class(dev_x100, filter_setting(FILTER_NARROW, &f), filter_setting(FILTER_WIDE, &f));
 }
 
 /* Filter class and tracker of a profile. Only while TX is not live: before
@@ -68,7 +71,8 @@ bool profile_set(int p)
 {
     if (p < 0 || p >= PROFILES) return false;
     rf_filter_t f;
-    if (!filter_setting(p != PROFILE_DEFAULT, &f)) {
+    const int cls = p == PROFILE_DEFAULT ? FILTER_NORMAL : p == PROFILE_WIDE ? FILTER_WIDE : FILTER_NARROW;
+    if (!filter_setting(cls, &f)) {
         if (p != PROFILE_DEFAULT) return false;
         f = rf_filter();            /* uncalibrated: keep what is set */
     }
@@ -79,7 +83,7 @@ bool profile_set(int p)
                phy_filter_code(), phy_filter_skirt());
         if (p != PROFILE_DEFAULT) {
             rf_filter_t d;
-            if (filter_setting(false, &d)) (void)rf_set_filter(d);
+            if (filter_setting(FILTER_NORMAL, &d)) (void)rf_set_filter(d);
             (void)transport_set_tracker(TRACKER_KP085);
             s_profile = PROFILE_DEFAULT;
             return false;
@@ -197,9 +201,10 @@ void profile_commit(int dev_x100)
     s_live_channel = ch;
     int p = profile_for_deviation(dev_x100);
     if (p == PROFILE_DEFAULT) {
-        s_reason = dev_x100 > DEV_KP060_MAX ? "measured_wide_vtx" : "no_narrow_filter";
+        s_reason = dev_x100 >= DEV_WIDE_MIN ? "no_wide_filter" : dev_x100 > DEV_KP060_MAX ? "measured_default_vtx" :
+                   "no_narrow_filter";
         if (s_profile != PROFILE_DEFAULT) {
-            status_screen("VTX MEASURED", "WIDE VTX", profile_name(PROFILE_DEFAULT), 100);
+            status_screen("VTX MEASURED", "DEFAULT PROFILE", profile_name(PROFILE_DEFAULT), 100);
             (void)profile_set(PROFILE_DEFAULT);
             vTaskDelay(pdMS_TO_TICKS(800));
             status_screen_end();

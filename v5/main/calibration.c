@@ -167,13 +167,16 @@ bool calibration_sphase_settled(void) { return strcmp(s_sphase_state, "settled")
  * 14 MHz (enough for every tested VTX deviation, docs/FINDINGS.md) and whose
  * noise stays incoherent (so Direct Gain still recognises "no carrier")
  * is kept. Built on ESPARGOS esp-sdr's C5 BANDWIDTH control (GPL-3.0). */
-#define FILTER_VERSION     2u
+#define FILTER_VERSION     3u   /* 3: wide class (one new sweep after the update) */
 /* Two classes from one sweep (v5/research: 12 MHz helps every tested VTX
  * deviation and keeps strong-signal sharpness; 10 MHz adds up to ~1.7 dB
  * for deviation <= ~1.1 but hurts wide VTXs, so it is used only when the
  * deviation was measured). */
 #define FILTER_MIN_KHZ     12000u
 #define FILTER_NARROW_KHZ  10000u
+/* Wide VTXs (deviation >= 1.6): the 12 MHz class clips their spectrum
+ * (v5/research/data/wide.txt). */
+#define FILTER_WIDE_KHZ    16000u
 /* Quiet test: dsp_quiet_reason() (dsp.h). */
 #define QUIET_NO_SYNC_US   2000000LL
 #define QUIET_CARRIER_X100 DSP_QUIET_CARRIER_X100
@@ -192,7 +195,7 @@ typedef struct {
 } filter_entry_t;
 typedef struct {
     uint8_t version;
-    filter_entry_t normal, narrow;
+    filter_entry_t normal, narrow, wide;
     uint16_t calibrated_nbw_khz;
 } filter_blob_t;
 static filter_blob_t s_filter_cal;
@@ -321,6 +324,8 @@ bool filter_calibrate(bool automatic)
     rf_filter_t best = calibrated, narrow = calibrated;
     unsigned best_nbw = ok && width >= FILTER_MIN_KHZ ? cal_nbw : 0, best_width = width;
     unsigned narrow_nbw = ok && width >= FILTER_NARROW_KHZ ? cal_nbw : 0, narrow_width = width;
+    rf_filter_t wide = calibrated;
+    unsigned wide_nbw = ok && width >= FILTER_WIDE_KHZ ? cal_nbw : 0, wide_width = width;
     static const int8_t codes[] = {PHY_FILTER_CALIBRATED, 0, 8, 16, 24, 32, 40, 48, 56, 60};
     static const uint8_t skirts[] = {0, 8, 16, 24, 32};
     for (unsigned d = 0; ok && d < 2u; ++d)
@@ -334,6 +339,9 @@ bool filter_calibrate(bool automatic)
                 }
                 if (quiet && nbw && width >= FILTER_NARROW_KHZ && (!narrow_nbw || nbw < narrow_nbw)) {
                     narrow = f; narrow_nbw = nbw; narrow_width = width;
+                }
+                if (quiet && nbw && width >= FILTER_WIDE_KHZ && (!wide_nbw || nbw < wide_nbw)) {
+                    wide = f; wide_nbw = nbw; wide_width = width;
                 }
             }
     /* Re-check on the calibrated bytes before trusting the sweep. */
@@ -363,6 +371,7 @@ bool filter_calibrate(bool automatic)
         const filter_blob_t cal = {FILTER_VERSION,
             {1u, best.bw20, best.skirt, best.code, KHZ16(best_width), KHZ16(best_nbw)},
             {narrow_nbw ? 1u : 0u, narrow.bw20, narrow.skirt, narrow.code, KHZ16(narrow_width), KHZ16(narrow_nbw)},
+            {wide_nbw ? 1u : 0u, wide.bw20, wide.skirt, wide.code, KHZ16(wide_width), KHZ16(wide_nbw)},
             KHZ16(cal_nbw)};
         if (!rf_set_filter(best)) { ok = false; fail = "best_not_applied"; }
         else if (!blob_store("filter", &cal, sizeof(cal))) { ok = false; fail = "nvs_failed"; }
@@ -371,9 +380,11 @@ bool filter_calibrate(bool automatic)
     if (ok) {
         s_filter_result = "stored";
         printf("FILTER_CAL normal bw=%s code=%d skirt=%u width_khz=%u nbw_khz=%u | narrow bw=%s code=%d "
-               "skirt=%u width_khz=%u nbw_khz=%u | calibrated_nbw_khz=%u\n", best.bw20 ? "BW20" : "BW40",
+               "skirt=%u width_khz=%u nbw_khz=%u | wide bw=%s code=%d skirt=%u width_khz=%u nbw_khz=%u | "
+               "calibrated_nbw_khz=%u\n", best.bw20 ? "BW20" : "BW40",
                best.code, best.skirt, best_width, best_nbw, narrow.bw20 ? "BW20" : "BW40", narrow.code,
-               narrow.skirt, narrow_width, narrow_nbw, cal_nbw);
+               narrow.skirt, narrow_width, narrow_nbw, wide.bw20 ? "BW20" : "BW40", wide.code, wide.skirt,
+               wide_width, wide_nbw, cal_nbw);
     } else {
         if (!rf_set_filter(previous)) printf("FILTER_CAL error: previous filter not applied\n");
         s_filter_result = fail ? fail : "sweep_failed";
@@ -392,18 +403,20 @@ bool filter_calibrate(bool automatic)
 const char *calibration_filter_result(void) { return s_filter_result; }
 
 /* Width class of the active analog filter, for model tables keyed on it
- * (cn_estimate.h): 10 narrow, 12 normal, 20 the chip's own ~20 MHz. */
+ * (cn_estimate.h): 10 narrow, 12 normal, 16 wide, 20 the chip's own ~20 MHz. */
 int calibration_filter_class_mhz(void)
 {
     rf_filter_t f, now = rf_filter();
-    if (filter_setting(true, &f) && rf_filter_equal(f, now)) return 10;
-    if (filter_setting(false, &f) && rf_filter_equal(f, now)) return 12;
+    if (filter_setting(FILTER_NARROW, &f) && rf_filter_equal(f, now)) return 10;
+    if (filter_setting(FILTER_NORMAL, &f) && rf_filter_equal(f, now)) return 12;
+    if (filter_setting(FILTER_WIDE, &f) && rf_filter_equal(f, now)) return 16;
     return 20;
 }
 
-bool filter_setting(bool narrow, rf_filter_t *out)
+bool filter_setting(int filter_class, rf_filter_t *out)
 {
-    const filter_entry_t *e = narrow ? &s_filter_cal.narrow : &s_filter_cal.normal;
+    const filter_entry_t *e = filter_class == FILTER_NARROW ? &s_filter_cal.narrow :
+                              filter_class == FILTER_WIDE ? &s_filter_cal.wide : &s_filter_cal.normal;
     if (s_filter_cal.version != FILTER_VERSION || !e->valid) return false;
     if (!e->nbw_khz) return false;      /* never measured: not a usable class */
     *out = (rf_filter_t){e->code, e->skirt, e->bw20 != 0};
@@ -763,10 +776,10 @@ static void gain_map_service(void)
 #define DEVIATION_MEASURE_US 15000000LL
 static void deviation_startup(int64_t deadline)
 {
-    rf_filter_t narrow;
-    if (!filter_setting(true, &narrow)) {
-        profile_set_reason("no_narrow_filter");
-        printf("PROFILE startup skip=no_narrow_filter\n");
+    rf_filter_t matched;
+    if (!filter_setting(FILTER_NARROW, &matched) && !filter_setting(FILTER_WIDE, &matched)) {
+        profile_set_reason("no_matched_filter");
+        printf("PROFILE startup skip=no_matched_filter\n");
         return;
     }
     const int64_t wait_until = esp_timer_get_time() + DEVIATION_WAIT_US;
@@ -920,7 +933,7 @@ static void calibration_task(void *arg)
 void calibration_start(void)
 {
     rf_filter_t loaded;
-    if (blob_load("filter", &s_filter_cal, sizeof(s_filter_cal)) && filter_setting(false, &loaded)) {
+    if (blob_load("filter", &s_filter_cal, sizeof(s_filter_cal)) && filter_setting(FILTER_NORMAL, &loaded)) {
         rf_set_filter(loaded);
         s_filter_result = "loaded";
     } else memset(&s_filter_cal, 0, sizeof(s_filter_cal));
@@ -933,10 +946,11 @@ void calibration_print(void)
     rf_filter_t f = rf_filter();
     const unsigned valid = dco_valid_rows();
     printf("FILTER %s active bw=%s code=%d skirt=%u | normal width_khz=%u nbw_khz=%u | narrow valid=%u "
-           "width_khz=%u nbw_khz=%u | calibrated_nbw_khz=%u\n", s_filter_result, f.bw20 ? "BW20" : "BW40",
-           f.code, f.skirt, s_filter_cal.normal.width_khz, s_filter_cal.normal.nbw_khz,
-           s_filter_cal.narrow.valid, s_filter_cal.narrow.width_khz, s_filter_cal.narrow.nbw_khz,
-           s_filter_cal.calibrated_nbw_khz);
+           "width_khz=%u nbw_khz=%u | wide valid=%u width_khz=%u nbw_khz=%u | calibrated_nbw_khz=%u\n",
+           s_filter_result, f.bw20 ? "BW20" : "BW40", f.code, f.skirt, s_filter_cal.normal.width_khz,
+           s_filter_cal.normal.nbw_khz, s_filter_cal.narrow.valid, s_filter_cal.narrow.width_khz,
+           s_filter_cal.narrow.nbw_khz, s_filter_cal.wide.valid, s_filter_cal.wide.width_khz,
+           s_filter_cal.wide.nbw_khz, s_filter_cal.calibrated_nbw_khz);
     printf("DCO held=%u gains_valid=%u floor_rows=%u missing_rows=%u floor=%u searches=%lu carrier_searches=%lu hook_holds=%lu aborts=%lu "
            "drift_avg_mcells=%d/%d nudges=%lu temp_c=%.1f\n", phy_dco_held(), valid, dco_rows(DCO_ROW_FLOOR), dco_rows(0),
            s_dco_floor,

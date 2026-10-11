@@ -37,7 +37,7 @@ static int run(const scenario_t *sc, int *dev_out)
         double span = dev * DEV_SYNC_KHZ * (1.0 + sc->noise_pct / 100.0 * gauss());
         if (uniform() < sc->outlier_frac) span = 300.0 + 3500.0 * uniform();   /* anything */
         int r = dev_add(&e, (int32_t)span);
-        if (r >= 0) { *dev_out = r; return profile_class(r, true); }
+        if (r >= 0) { *dev_out = r; return profile_class(r, true, true); }
     }
     *dev_out = -1;
     return -1;
@@ -52,29 +52,32 @@ static void check(const char *name, bool ok, const char *detail)
 
 int main(void)
 {
-    static const char *const names[] = {"DEFAULT", "KP0.6", "KP0.5"};
+    static const char *const names[] = {"DEFAULT", "KP0.6", "KP0.5", "WIDE"};
     char name[96], detail[96];
     /* Wide and medium VTXs, adversarial conditions, 2000 trials each. */
-    const double devs[] = {0.95, 1.0, 1.15, 1.2, 1.4, 1.8};
+    const double devs[] = {0.95, 1.0, 1.15, 1.2, 1.4, 1.45, 1.8};
     const double noises[] = {2.0, 5.0, 8.0, 15.0};
     const double outliers[] = {0.0, 0.1, 0.3};
-    for (unsigned a = 0; a < 6u; ++a)
+    for (unsigned a = 0; a < 7u; ++a)
         for (unsigned b = 0; b < 4u; ++b)
             for (unsigned c = 0; c < 3u; ++c) {
                 scenario_t sc = {devs[a], noises[b], outliers[c], 0.0};
-                unsigned count[3] = {0}, none = 0, worst = PROFILE_DEFAULT;
+                unsigned count[PROFILES] = {0}, none = 0, worst = PROFILE_DEFAULT;
                 for (unsigned t = 0; t < 2000u; ++t) {
                     int dev, p = run(&sc, &dev);
                     if (p < 0) { ++none; continue; }
                     ++count[p];
                     if (p == PROFILE_KP050 || (p == PROFILE_KP060 && worst == PROFILE_DEFAULT)) worst = (unsigned)p;
                 }
-                bool ok = devs[a] >= 1.15 ? count[PROFILE_KP060] + count[PROFILE_KP050] == 0
-                                          : count[PROFILE_KP050] == 0;
+                /* Never narrow on a wide VTX, never kp 0.5 on a medium one,
+                 * never WIDE below 1.45 (it would cost ~0.5-0.8 dB there). */
+                bool ok = (devs[a] >= 1.15 ? count[PROFILE_KP060] + count[PROFILE_KP050] == 0
+                                           : count[PROFILE_KP050] == 0) &&
+                          (devs[a] > 1.45 || count[PROFILE_WIDE] == 0);
                 snprintf(name, sizeof(name), "dev=%.2f noise=%2.0f%% outliers=%2.0f%%", devs[a], noises[b],
                          outliers[c] * 100);
-                snprintf(detail, sizeof(detail), "default=%u kp06=%u kp05=%u undecided=%u", count[0], count[1],
-                         count[2], none);
+                snprintf(detail, sizeof(detail), "default=%u kp06=%u kp05=%u wide=%u undecided=%u", count[0],
+                         count[1], count[2], count[3], none);
                 check(name, ok, detail);
             }
     /* A VTX that changes mid-measurement (channel neighbour, camera switch)
@@ -88,8 +91,9 @@ int main(void)
     }
     /* Clean narrow VTXs still get their profile. */
     const struct { double dev; int want; } clean[] = {{0.69, PROFILE_KP050}, {0.75, PROFILE_KP050},
-                                                     {1.0, PROFILE_KP060}, {1.02, PROFILE_KP060}, {1.4, PROFILE_DEFAULT}};
-    for (unsigned a = 0; a < 5u; ++a) {
+                                                     {1.0, PROFILE_KP060}, {1.02, PROFILE_KP060}, {1.4, PROFILE_DEFAULT},
+                                                     {1.7, PROFILE_WIDE}, {2.0, PROFILE_WIDE}};
+    for (unsigned a = 0; a < 7u; ++a) {
         unsigned hit = 0;
         for (unsigned t = 0; t < 500u; ++t) {
             scenario_t sc = {clean[a].dev, 3.0, 0.05, 0.0};
@@ -101,8 +105,9 @@ int main(void)
         check(name, hit >= 490u, detail);
     }
     /* No narrow filter calibrated: always DEFAULT. */
-    check("no narrow filter -> DEFAULT", profile_class(69, false) == PROFILE_DEFAULT, "");
-    check("unknown deviation -> DEFAULT", profile_class(0, true) == PROFILE_DEFAULT, "");
+    check("no narrow filter -> DEFAULT", profile_class(69, false, true) == PROFILE_DEFAULT, "");
+    check("no wide filter -> DEFAULT", profile_class(180, true, false) == PROFILE_DEFAULT, "");
+    check("unknown deviation -> DEFAULT", profile_class(0, true, true) == PROFILE_DEFAULT, "");
     printf("%s (%d failures)\n", s_fail ? "FAILED" : "PASSED", s_fail);
     return s_fail != 0;
 }

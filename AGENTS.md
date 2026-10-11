@@ -370,7 +370,8 @@ rows still missing; carrier: current row), and the VTX deviation. Quiet = envelo
 statistic of receiver noise (not phase coherence: 4-bit noise reads 36-61 %
 coherent, which rejected every channel, board 2026-10-11). Optional receive
 profiles per channel (12 MHz + kp 0.85 default; 10 MHz + kp 0.6 for
-deviation <= 1.05; 10 MHz + kp 0.5 for <= 0.80), chosen from three
+deviation <= 1.05; 10 MHz + kp 0.5 for <= 0.80; 16 MHz + kp 0.85 for
+>= 1.60), chosen from three
 consistent deviation batches (highest batch median; host test
 `v5/test/test_profile.c`: no wide VTX >= 1.15 enters a narrow profile),
 applied only while the menu/status screen owns TX. A stored deviation is
@@ -410,7 +411,11 @@ the opposite hand, so an RHCP receive antenna rejects it while a linear one
 gets the full two-ray nulls (model: ~0.4-0.55 km linear vs ~1.1-1.25 km RHCP
 omni vs ~3 km 8 dBi RHCP patch at 25 mW). The XIAO's bundled FPC antenna
 is listed as a 2.4 GHz part; ESP32-C5 5 GHz sensitivity (-92.5 dBm, 11a
-6 Mbps) implies a ~5 dB NF, so the chip is not the open-field limit. Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
+6 Mbps) implies a ~5 dB NF, so the chip is not the open-field limit. WIDE profile (filter class >= 16 MHz, kp 0.85, deviation
+>= 1.6; filter blob v3): the board VTX swung -5.0..+6.25 MHz (deviation
+~1.7), and the 12 MHz default clips wide VTXs (bit-exact U85Q,
+`v5/research/data/wide.txt`: 1.7 3.64 vs 3.26 dB at 16 MHz, 2.0 8.03 vs
+5.27 dB; 1.4 stays best at 12 MHz). Simulation; board test pending. Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
 operator report 2026-10-11: much less static but little more range, so no
 range gain is claimed; firmware is build-tested, board test pending. No options menu, labs, native AGC, AutoFit/Fusion,
 flywheel, level servo or idle raster. NVS namespace `c5vrx5`. CI:

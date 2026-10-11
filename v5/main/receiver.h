@@ -120,9 +120,11 @@ void filter_request(void);
  * intrusive (searches, sweeps, slips, retunes) runs for the rest of the
  * boot. A manual calibration from the menu reopens it once. */
 bool calibration_in_startup(void);
-/* Calibrated analog filter settings: normal (>= 12 MHz, every VTX) and
- * narrow (>= 10 MHz, low-deviation VTXs). false when not calibrated. */
-bool filter_setting(bool narrow, rf_filter_t *out);
+/* Calibrated analog filter classes: normal (>= 12 MHz, the default),
+ * narrow (>= 10 MHz, low-deviation VTXs), wide (>= 16 MHz, wide VTXs).
+ * false when that class was not calibrated. */
+enum { FILTER_NORMAL, FILTER_NARROW, FILTER_WIDE };
+bool filter_setting(int filter_class, rf_filter_t *out);
 void calibration_print(void);
 void dco_post_gain(uint8_t gain);
 /* Chain state for the diagnostics (no side effects). */

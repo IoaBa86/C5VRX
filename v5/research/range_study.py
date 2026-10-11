@@ -10,6 +10,8 @@ Experiments:
   filter    narrower analog filter before the ADC, per VTX deviation
   sync      upper bound of perfect sync regeneration (ideal flywheel)
   tracker   lower U85Q loop gain (threshold extension), fixed program
+  wide      wide VTXs (the board VTX swung sync -5.0 to white +6.25 MHz,
+            deviation ~1.7): filter width per deviation, kp 0.85 / 0.70
 Usage: python range_study.py <experiment> <out.json>
 """
 import json
@@ -78,6 +80,14 @@ def configs(exp):
                 for off in (0.0, 0.5e6, -0.5e6):
                     out[f'dev{dev}-{name}-off{off / 1e6:+.1f}'] = dict(deviation=dev, filter_hz=f, lut=k, offset_hz=off)
         return out
+    if exp == 'wide':
+        out = {}
+        for dev in (1.4, 1.7, 2.0):
+            for f in (12e6, 14e6, 16e6, None):
+                for k in ('kp0.85', 'kp0.70'):
+                    out[f'dev{dev}-{"chan20" if f is None else "%gMHz" % (f / 1e6)}-{k}'] = dict(
+                        deviation=dev, filter_hz=f, **({} if k == 'kp0.85' else {'lut': k}))
+        return out
     if exp == 'tracker':
         return {f'{k}-dev{dev}': dict(deviation=dev, filter_hz=14e6, lut=k)
                 for k in ('kp0.50', 'kp0.60', 'kp0.70', 'kp0.85') for dev in (0.69, 1.0, 1.4)}
@@ -111,7 +121,7 @@ def main():
     exp, out = sys.argv[1], Path(sys.argv[2])
     cfgs = configs(exp)
     specs = [(exp, label, cfg, s, float(c)) for label, cfg in cfgs.items() for s in SEEDS for c in CNRS]
-    with mp.get_context('spawn').Pool(7) as pool:
+    with mp.get_context('spawn').Pool(int(os.environ.get('JOBS', 7))) as pool:
         rows = pool.map(job, specs, chunksize=4)
     out.write_text(json.dumps(rows))
     print(f'{"configuration":26s} lock_dB  usable_dB  SINAD@4dB  SINAD@8dB')

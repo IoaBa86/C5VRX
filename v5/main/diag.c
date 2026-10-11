@@ -212,10 +212,12 @@ void diag_report(void)
 {
     const uint16_t mhz = rf_frequency_mhz();
     const rf_filter_t f = rf_filter();
-    rf_filter_t normal, narrow;
-    const bool have_normal = filter_setting(false, &normal), have_narrow = filter_setting(true, &narrow);
+    rf_filter_t normal, narrow, wide;
+    const bool have_normal = filter_setting(FILTER_NORMAL, &normal), have_narrow = filter_setting(FILTER_NARROW, &narrow);
+    const bool have_wide = filter_setting(FILTER_WIDE, &wide);
     const char *cls = have_narrow && rf_filter_equal(f, narrow) ? "narrow" :
-                      have_normal && rf_filter_equal(f, normal) ? "normal" : "uncalibrated";
+                      have_normal && rf_filter_equal(f, normal) ? "normal" :
+                      have_wide && rf_filter_equal(f, wide) ? "wide" : "uncalibrated";
     const arc_gain_table_t *table = rf_gain_table();
     const uint8_t g = s_current_gain;
     arc_gain_tuple_t t = {0};

@@ -136,10 +136,10 @@ int main(void)
     /* C/N estimate: monotonic in coherence, noise alone is "unknown", and
      * the model table points map back to their C/N. */
     {
-        const int filters[] = {10, 12, 20};
-        const int noise[] = {61, 58, 42};                 /* afc_bias.py --coherence, noise only */
-        const int at2db[] = {78, 76, 63}, at8db[] = {94, 92, 84};
-        for (unsigned f = 0; f < 3u; ++f) {
+        const int filters[] = {10, 12, 16, 20};
+        const int noise[] = {61, 58, 51, 42};             /* afc_bias.py --coherence, noise only */
+        const int at2db[] = {78, 76, 70, 63}, at8db[] = {94, 92, 89, 84};
+        for (unsigned f = 0; f < 4u; ++f) {
             int prev = -10000;
             for (int c = 0; c <= 100; ++c) {
                 int v = cn_estimate_x10(c, filters[f]);
@@ -164,7 +164,8 @@ int main(void)
         }
         /* The same coherence means a weaker carrier through a narrower filter. */
         ++s_run;
-        if (!(cn_estimate_x10(80, 10) < cn_estimate_x10(80, 12) && cn_estimate_x10(80, 12) < cn_estimate_x10(80, 20))) {
+        if (!(cn_estimate_x10(80, 10) < cn_estimate_x10(80, 12) && cn_estimate_x10(80, 12) < cn_estimate_x10(80, 16) &&
+              cn_estimate_x10(80, 16) < cn_estimate_x10(80, 20))) {
             ++s_fail;
             printf("FAIL filter ordering\n");
         }

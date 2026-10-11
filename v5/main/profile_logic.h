@@ -6,7 +6,11 @@
  * 6.7 MHz). A decision needs three batches of 32 estimates, each with a
  * spread (MAD) <= 8 % of its median, and all batch medians within 5 % of
  * each other. A batch that fails restarts the count, so a burst of bad
- * windows can delay a decision but never shape it. */
+ * windows can delay a decision but never shape it.
+ *
+ * Profiles: DEFAULT (normal >= 12 MHz class, kp 0.85), KP060 / KP050
+ * (narrow >= 10 MHz class, calmer tracker) for low deviations, WIDE (wide
+ * >= 16 MHz class, kp 0.85) for deviations >= 1.6. */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -22,8 +26,16 @@
  * break-even points 0.85 / 1.15 (v5/research). */
 #define DEV_KP050_MAX    80
 #define DEV_KP060_MAX    105
+/* Wide VTXs: the 12 MHz default clips their FM spectrum. Range limit,
+ * bit-exact U85Q (v5/research/data/wide.txt): deviation 1.7 3.64 dB at
+ * 12 MHz vs 3.26 at 16; deviation 2.0 8.03 vs 5.27; deviation 1.4 still
+ * best at 12 (2.08 vs 2.54). Break-even ~1.55; WIDE from 1.60. A wrong WIDE
+ * on a narrow VTX costs ~0.5-0.8 dB, far less than a wrong narrow profile
+ * on a wide one, so the highest-batch rule (errs wide) is kept. */
+#define DEV_WIDE_MIN     160
 
-enum { PROFILE_DEFAULT, PROFILE_KP060, PROFILE_KP050, PROFILES };
+/* Values are stable (NVS-independent, but logged and compared). */
+enum { PROFILE_DEFAULT, PROFILE_KP060, PROFILE_KP050, PROFILE_WIDE, PROFILES };
 
 typedef struct {
     int32_t span[DEV_BATCH], medians[DEV_BATCHES];
@@ -73,9 +85,12 @@ static inline int dev_add(dev_estimator_t *e, int32_t span_khz)
     return e->result_x100;
 }
 
-/* Profile for a measured deviation; anything unknown keeps DEFAULT. */
-static inline int profile_class(int dev_x100, bool narrow_filter_known)
+/* Profile for a measured deviation; anything unknown, or a profile whose
+ * filter class was not calibrated, keeps DEFAULT. */
+static inline int profile_class(int dev_x100, bool narrow_filter_known, bool wide_filter_known)
 {
-    if (dev_x100 <= 0 || !narrow_filter_known) return PROFILE_DEFAULT;
+    if (dev_x100 <= 0) return PROFILE_DEFAULT;
+    if (dev_x100 >= DEV_WIDE_MIN) return wide_filter_known ? PROFILE_WIDE : PROFILE_DEFAULT;
+    if (!narrow_filter_known) return PROFILE_DEFAULT;
     return dev_x100 <= DEV_KP050_MAX ? PROFILE_KP050 : dev_x100 <= DEV_KP060_MAX ? PROFILE_KP060 : PROFILE_DEFAULT;
 }

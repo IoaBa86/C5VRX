@@ -22,7 +22,8 @@ board or in held-out tests (see [docs/FINDINGS.md](docs/FINDINGS.md)).
 - **Calibration only at startup**: anything that interrupts the picture
   runs once after power-on (only what is missing) or from the menu item
   CALIBRATE, never during flight. The goggles show what it does and how long.
-- **VTX-matched profile only from a fresh measurement**: every boot starts
+- **VTX-matched profile** (narrow for low-deviation VTXs, wide 16 MHz for
+  wide ones) **only from a fresh measurement**: every boot starts
   with the default profile; the narrow profile is chosen only when this
   boot measured the VTX in the startup phase. Later readings are kept as
   pending for the next boot, never switched in flight.
