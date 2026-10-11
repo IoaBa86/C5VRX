@@ -69,6 +69,12 @@ jobs:
           OPENBLAS_NUM_THREADS=1 /tmp/iqf-test-env/bin/python v5/research/build_lane_shadow.py --check
           python3 "$IDF_PATH/tools/bsasm.py" v5/research/iq_lane_mixed468.bsasm /tmp/iq_lane_mixed468.bsbin \
             -c "$IDF_PATH/components/esp_driver_bitscrambler/bsasm_targets/esp32c5.json"
+      - name: U85Q-LP research program (assembles; emulator matches U85Q and the LP model)
+        shell: bash
+        run: |
+          python3 "$IDF_PATH/tools/bsasm.py" v5/main/u85q_lp.bsasm /tmp/u85q_lp.bsbin \
+            -c "$IDF_PATH/components/esp_driver_bitscrambler/bsasm_targets/esp32c5.json"
+          /tmp/iqf-test-env/bin/python v5/research/u85q_lp.py check
       - name: Build C5VRX-5
         shell: bash
         working-directory: v5

@@ -461,6 +461,20 @@ flywheel, level servo or idle raster. NVS namespace `c5vrx5`. CI:
 for the flasher's C5VRX-5 tab. Board: runs and holds video; range is not
 yet measured. Evidence: `v5/docs/FINDINGS.md`.
 
+U85Q-LP (`v5/research/u85q_lp.py`, README section 12, `v5/main/u85q_lp.bsasm`,
+research only, not selected by firmware): U85Q plus a post-detection IIR
+low-pass with pole 1/2 in counter A (controller LDCTIA, worker ADDCTIAH). It
+uses the same LUT and the same two bundles. It is the only post-detection
+filter found to fit: in LUT16 mode counter B cannot be routed next to LUT
+bits, and the counter operand shares output[25:16] with the LUT address.
+- Evidence: an emulator on the ESP-IDF assembler parse reproduces U85Q and
+  U85Q-LP bit-exactly; CI assembles the program for esp32c5.
+- Simulation: the range limit improves by 1.6 dB at deviation 1.0 and by
+  0.4 dB at deviation 1.4 (lock-limited). The low-pass wins below ~9-12 dB
+  C/N and costs ~2-3.5 dB SINAD on a strong signal.
+- Selecting it needs an in-flight program switch, which is an open operator
+  decision. Board timing and the goggle colour killer are untested.
+
 ### Instructions for future pipeline work
 
 IQLaneFusion research extends U85 and the older adaptive-lane/history work:

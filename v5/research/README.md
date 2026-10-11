@@ -277,6 +277,63 @@ signal at the top of the gain band.
 - **WIDE vs DEFAULT on a deviation-1.7 VTX:** equal or better in every
   situation (+2 dB SINAD at 8 dB), so the WIDE profile stays.
 
+## 12. Post-detection low-pass in the TX BitScrambler (`u85q_lp.py`)
+
+FM detection noise rises with the video frequency, and the colour
+subcarrier sits where it is largest. An ideal 3 MHz low-pass after the
+detector (a soft black-and-white picture) moves the usable point by ~2 dB.
+The question: does any such filter fit next to U85Q in the TX BitScrambler?
+
+Constraints (ESP-IDF 6.0.2 `bsasm.py`, esp32c5 target): two bundles per
+50 ns, both LUT16 lookups used by U85Q, one opcode per bundle (U85Q uses
+`nop`, so both are free). In LUT16 mode counter B overlaps the LUT mux
+region, so only counter A can be routed next to LUT bits. The counter
+operand is output[31:16], shared with the LUT address output[25:16].
+
+- A sliding box filter needs subtraction or a delay line: neither fits.
+- Integrate-and-dump boxes need two readable counters, so they do not fit
+  either. A box of 4 at 5 MS/s aliases.
+- **What fits: a one-pole IIR with pole 1/2**, y <- (y >> 1) + (x >> 1), on
+  the U85Q DAC code x. The controller does `LDCTIA`, the worker does
+  `ADDCTIAH`, y lives in A[15:10], and the address bits below act as dither.
+  - Same LUT, same two bundles, same 20 MS/s [y, y] output, one span of
+    latency.
+  - The controller carries the phase and x >> 1 to the worker in output
+    bits 6..15. Bits 6 and 7 of the written byte drive no pin on the XIAO
+    DAC; an 8-bit custom-board output would see them.
+
+Evidence. `u85q_lp.py check` runs a small emulator on the ESP-IDF
+assembler's own parse:
+- it reproduces U85Q bit-exactly against `sim.u85q_codes`, which checks the
+  emulator itself;
+- it reproduces the generated `v5/main/u85q_lp.bsasm` bit-exactly against
+  the arithmetic model, with 0 mismatches.
+
+CI assembles the program for esp32c5 and runs the check. Board timing,
+FIFO throughput and the goggle colour killer are not tested.
+
+Picture model: `data/lowpass.json`, 4 seeds, 12 MHz filter. The range
+limit is the worse of goggle lock (90 % of lines) and usable (luma SINAD
+0 dB).
+
+| deviation | | U85Q | U85Q-LP | change |
+| --- | --- | ---: | ---: | ---: |
+| 1.0 | usable | 2.4 dB | 0.6 dB | -1.7 dB |
+| 1.0 | range limit | 2.4 dB | 0.8 dB (lock) | **-1.6 dB, ~1.2x** |
+| 1.4 | usable | 2.1 dB | 0.8 dB | -1.3 dB |
+| 1.4 | range limit | 2.1 dB | 1.7 dB (lock) | -0.4 dB |
+| 1.0 / 1.4 | SINAD at 20 dB C/N | 12.5 / 13.9 dB | 10.3 / 10.8 dB | softer, less colour |
+
+- **Crossover:** the low-pass wins below ~12 dB C/N at deviation 1.0 and
+  below ~9 dB at deviation 1.4. Above that it costs sharpness.
+- **Wide VTXs** become lock-limited, so most of their gain is lost.
+- **Firmware selection is an open decision.** Program changes are refused
+  while TX is live (operator rule 2026-10-11), and an in-flight switch on a
+  C/N estimate would interrupt the picture for a few ms. The firmware does
+  not select U85Q-LP.
+- Pole 1/2 attenuates PAL chroma by only ~6 dB. Whether a goggle then drops
+  colour is untested.
+
 ## Not firmware levers
 
 - The second IQ40 sample of every span (+0.5..1.1 dB in the C5VRX-4 ledger)
@@ -291,6 +348,8 @@ python range_study.py sync    data/sync.json
 python range_study.py tracker data/tracker.json
 python range_study.py matched data/matched.json
 CNRS=0,2,4,8,12,16,20,25 python range_study.py strong data/strong.json
+python u85q_lp.py study data/lowpass.json      # U85Q vs U85Q-LP (section 12)
+IDF_PATH=<esp-idf> python u85q_lp.py check     # emulator: U85Q and U85Q-LP bit-exact
 ```
 
 Needs numpy, scipy and numba. `data/tracker_luts.json` holds the kp variant
