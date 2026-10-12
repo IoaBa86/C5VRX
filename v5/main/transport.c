@@ -233,7 +233,12 @@ static bool program_words(const uint8_t *bin, const uint8_t **inst)
 bool transport_set_lp(bool lp)
 {
     if (lp == s_prog_lp) return true;
-    if (!s_lut_known || !s_started || s_menu_active || s_tracker != TRACKER_KP085) return false;
+    if (s_tracker != TRACKER_KP085) return false;
+    /* Menu open: no live rewrite; the choice is loaded by the proven start
+     * sequence (bitscrambler_load_program) at menu exit. Bench test that
+     * separates the LP program itself from the live switch. */
+    if (s_menu_active) { s_prog_lp = lp; return true; }
+    if (!s_lut_known || !s_started) return false;
     const uint8_t *inst;
     if (!program_words(lp ? s_u85q_lp : s_u85q, &inst)) return false;
     bool paused = false;

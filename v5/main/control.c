@@ -240,8 +240,10 @@ static void command(int c, unsigned *menu_idle)
     case 'P': {
         s_kp_auto = 0;
         const bool lp = !transport_lp();
-        printf("PROGRAM manual %s: %s\n", lp ? "U85Q-LP" : "U85Q", transport_set_lp(lp) ? "switched live" :
-               "refused (needs the U85Q tracker, live video; see prog_pause_fail in T)");
+        const bool menu = s_menu_active;
+        printf("PROGRAM manual %s: %s\n", lp ? "U85Q-LP" : "U85Q", !transport_set_lp(lp) ?
+               "refused (needs the U85Q tracker; see prog_pause_fail in T)" :
+               menu ? "loaded at menu exit through the normal start sequence" : "switched live");
         break;
     }
     case 'k': {
