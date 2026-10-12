@@ -19,21 +19,26 @@
  * channel session, taken in the bounded startup phase (or a manual
  * CALIBRATE) while the DEFAULT picture keeps running; only then the switch
  * happens behind a status screen. After startup the measurement continues
- * passively on live video (no retune, no filter or tracker change): its
- * result is stored as PENDING and verified at the next boot. A VTX that
- * reads wide while a matched profile is active is reported loudly; the
- * receiver returns to DEFAULT at the next boot, channel change or
- * CALIBRATE, never by itself in flight.
+ * passively on live video (no retune, no filter or tracker change): a new
+ * cycle every 30 s (continuous VTX matching, profile_logic.h). Each result
+ * updates the session deviation (the kp ladder's class) and is kept as
+ * PENDING for the next boot or CALIBRATE; agreement and mismatch streaks are
+ * reported. A VTX that reads wide while a matched profile is active is
+ * reported loudly; the receiver returns to DEFAULT at the next boot,
+ * channel change or CALIBRATE, never by itself in flight.
  *
  * Deviation: the AFC measures the sync tip and the burst-free porch of
  * burst-confirmed lines; their distance is deviation x 1.914 MHz (40 of 140
  * IRE over 6.7 MHz). A decision needs three batches of 32 estimates, each
  * with a spread <= 8 % and all medians within 5 % of each other, on a
- * centred (AFC locked), coherent carrier in the healthy gain band. The
+ * centred (AFC locked), coherent carrier in the healthy gain band, at a
+ * C/N estimate >= 8 dB (a weak carrier reads the deviation narrow). The
  * estimator and thresholds are pure (profile_logic.h) and host-tested. */
 #include "receiver.h"
 #include "profile_logic.h"
 #include "phy.h"
+#include "cn_estimate.h"
+#include "esp_timer.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,7 +56,8 @@ static volatile int s_measuring = MEASURE_OFF;
 static dev_estimator_t s_dev;
 static volatile int s_live_dev = -1;          /* this channel session, -1 = none yet */
 static volatile size_t s_live_channel = (size_t)-1;
-static volatile uint32_t s_observed, s_gated;
+static volatile uint32_t s_observed, s_gated, s_gated_cn;
+static dev_monitor_t s_mon;                   /* continuous matching (live only) */
 
 const char *profile_name(int p) { return p >= 0 && p < PROFILES ? s_names[p] : "?"; }
 int profile_active(void) { return s_profile; }
@@ -138,54 +144,66 @@ void profile_measure_begin(void)
 void profile_measure_end(void) { s_measuring = MEASURE_OFF; }
 int profile_measure_result(void) { return s_dev.result_x100; }
 
-/* Passive measurement on live video for the rest of the channel session. */
+/* Continuous passive measurement on live video for the channel session. */
 void profile_live_begin(void)
 {
     if (calibration_in_startup()) return;   /* the startup step owns the estimator */
-    if (s_live_channel == rf_channel_index() && s_live_dev > 0) return;   /* measured this session */
+    const size_t ch = rf_channel_index();
+    if (s_measuring == MEASURE_LIVE && s_live_channel == ch) return;   /* already running */
     s_measuring = MEASURE_OFF;
     dev_reset(&s_dev);
-    s_live_channel = rf_channel_index();
+    dev_monitor_reset(&s_mon, esp_timer_get_time());
+    if (s_live_channel != ch) s_live_dev = -1;
+    s_live_channel = ch;
     s_measuring = MEASURE_LIVE;
 }
 
-static void live_decided(int dev_x100)
+static void live_decided(int dev_x100, int64_t now)
 {
     size_t ch = rf_channel_index();
     if (ch != s_live_channel) return;
     s_live_dev = dev_x100;
-    if (s_dev_table[ch] != dev_x100) {
+    const int want = profile_for_deviation(dev_x100);
+    const bool class_changed = s_dev_table[ch] == 0 || profile_for_deviation(s_dev_table[ch]) != want;
+    if (dev_monitor_should_store(s_dev_table[ch], dev_x100, class_changed, s_mon.stored_us, now)) {
         s_dev_table[ch] = (uint16_t)dev_x100;
-        (void)blob_store("vtxdev", s_dev_table, sizeof(s_dev_table));
+        if (blob_store("vtxdev", s_dev_table, sizeof(s_dev_table))) s_mon.stored_us = now;
     }
-    int want = profile_for_deviation(dev_x100);
-    if (want == s_profile)
-        printf("PROFILE live channel=%s deviation_x100=%d confirms profile=%s\n", rf_channel()->name, dev_x100,
-               s_names[s_profile]);
-    else if (s_profile != PROFILE_DEFAULT && want == PROFILE_DEFAULT)
-        printf("PROFILE WARNING live channel=%s deviation_x100=%d is too wide for active %s: DEFAULT at the next "
-               "boot, channel change or CALIBRATE (never switched in flight)\n", rf_channel()->name, dev_x100,
-               s_names[s_profile]);
-    else
-        printf("PROFILE live channel=%s deviation_x100=%d pending=%s (verified at the next boot or CALIBRATE; "
-               "active stays %s)\n", rf_channel()->name, dev_x100, s_names[want], s_names[s_profile]);
+    dev_monitor_decided(&s_mon, dev_x100, want, s_profile, now);
+    const char *what = want == s_profile ? "confirms" :
+                       s_profile != PROFILE_DEFAULT && want == PROFILE_DEFAULT ? "WARNING too wide for" :
+                       "pending for the next boot/CALIBRATE; active stays";
+    printf("PROFILE live n=%u channel=%s deviation_x100=%d want=%s %s %s agree=%u mismatch=%u (report only, "
+           "never switched in flight)\n", s_mon.decisions, rf_channel()->name, dev_x100, s_names[want], what,
+           s_names[s_profile], s_mon.agree_streak, s_mon.mismatch_streak);
 }
 
 /* One burst-confirmed AFC window; gates on a usable, centred carrier. */
 void profile_observe(const afc2_result_t *r)
 {
     const int mode = s_measuring;
-    if (mode == MEASURE_OFF || s_dev.result_x100 >= 0 || !r->sync_pairs || !r->porch_pairs || !s_afc_locked) return;
+    if (mode == MEASURE_OFF) return;
+    const int64_t now = esp_timer_get_time();
+    if (mode == MEASURE_LIVE) {
+        if (s_live_channel != rf_channel_index()) return;
+        if (dev_monitor_tick(&s_mon, now)) dev_reset(&s_dev);   /* new cycle, or a timed-out one */
+        if (!s_mon.collecting) return;
+    }
+    if (s_dev.result_x100 >= 0 || !r->sync_pairs || !r->porch_pairs || !s_afc_locked) return;
     ++s_observed;
     if (s_obs_p50 < 13 || s_obs_p50 > 32 || s_obs_coherence < 80 || s_obs_clip_pm || s_gain.state != DG_HOLD) {
         ++s_gated;
+        return;
+    }
+    if (cn_estimate_x10(s_obs_coherence, calibration_filter_class_mhz()) < DEV_MONITOR_MIN_CN_X10) {
+        ++s_gated_cn;
         return;
     }
     int32_t span = r->polarity < 0 ? r->porch_khz - r->sync_khz : r->sync_khz - r->porch_khz;
     unsigned rejected = s_dev.rejected;
     int dev = dev_add(&s_dev, span);
     if (s_dev.rejected != rejected) printf("PROFILE batch rejected (spread or disagreement), count=%u\n", s_dev.rejected);
-    if (dev >= 0 && mode == MEASURE_LIVE) { s_measuring = MEASURE_OFF; live_decided(dev); }
+    if (dev >= 0 && mode == MEASURE_LIVE) live_decided(dev, now);
 }
 
 /* Store a deviation measured in this channel session (startup or manual
@@ -229,9 +247,19 @@ void profile_print(void)
     size_t ch = rf_channel_index();
     int want = s_live_dev > 0 ? profile_for_deviation(s_live_dev) : -1;
     printf("PROFILE active=%s reason=%s measured_this_session_x100=%d pending=%s stored_x100=%u (provisional) "
-           "measuring=%s windows=%u batches=%u rejected_batches=%u observed=%lu gated=%lu\n", s_names[s_profile],
-           s_reason, s_live_channel == ch ? s_live_dev : -1,
+           "measuring=%s windows=%u batches=%u rejected_batches=%u observed=%lu gated=%lu gated_cn=%lu\n",
+           s_names[s_profile], s_reason, s_live_channel == ch ? s_live_dev : -1,
            want < 0 || want == s_profile ? "none" : s_names[want], s_dev_table[ch],
            s_measuring == MEASURE_STARTUP ? "startup" : s_measuring == MEASURE_LIVE ? "live" : "off",
-           s_dev.n, s_dev.batches, s_dev.rejected, (unsigned long)s_observed, (unsigned long)s_gated);
+           s_dev.n, s_dev.batches, s_dev.rejected, (unsigned long)s_observed, (unsigned long)s_gated,
+           (unsigned long)s_gated_cn);
+    if (s_measuring == MEASURE_LIVE) {
+        const int64_t now = esp_timer_get_time();
+        printf("PROFILE monitor period_s=30 collecting=%u next_in_s=%lld decisions=%u timeouts=%u last_x100=%d "
+               "last_age_s=%lld agree=%u mismatch=%u min_cn_db=%d (report only)\n", s_mon.collecting,
+               s_mon.collecting || s_mon.next_start_us <= now ? 0LL : (s_mon.next_start_us - now) / 1000000,
+               s_mon.decisions, s_mon.timeouts, s_mon.last_x100,
+               s_mon.decisions ? (now - s_mon.last_us) / 1000000 : -1LL, s_mon.agree_streak, s_mon.mismatch_streak,
+               DEV_MONITOR_MIN_CN_X10 / 10);
+    }
 }

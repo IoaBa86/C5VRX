@@ -377,9 +377,15 @@ consistent deviation batches (highest batch median; host test
 applied only while the menu/status screen owns TX. A stored deviation is
 not a VTX identity: every boot and channel change starts DEFAULT; a matched
 profile needs a fresh measurement in the bounded startup phase (waits up to
-20 s for a VTX switched on after a VTX-off calibration). Afterwards the
-deviation is measured passively and kept as PENDING for the next boot;
-nothing switches in flight. Filter writes are read back (requested vs
+20 s for a VTX switched on after a VTX-off calibration). Afterwards
+continuous VTX matching (`profile_logic.h` dev_monitor, host test
+`v5/test/test_profile.c`) starts a passive measurement every 30 s on live
+video, gated on burst-confirmed sync, AFC lock, C/N >= 8 dB (a weak carrier
+reads the deviation narrow), no clipping and held gain; a cycle that cannot
+decide within 120 s restarts. Each result updates the session deviation
+(kp ladder class), is logged with agree/mismatch streaks and kept as PENDING
+(NVS only on a class change or >= 0.03 change, at most every 5 min);
+nothing switches in flight (operator decision 2026-10-12: report only). Filter writes are read back (requested vs
 applied); a sweep is stored only after an exact channel/offset restore, a
 read-back best setting, nonzero noise bandwidth and a successful NVS write.
 Passive FIELD_DIAG (`v5/main/diag.c`, `diag_logic.h`, host test

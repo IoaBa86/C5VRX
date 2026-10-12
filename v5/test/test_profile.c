@@ -108,6 +108,65 @@ int main(void)
     check("no narrow filter -> DEFAULT", profile_class(69, false, true) == PROFILE_DEFAULT, "");
     check("no wide filter -> DEFAULT", profile_class(180, true, false) == PROFILE_DEFAULT, "");
     check("unknown deviation -> DEFAULT", profile_class(0, true, true) == PROFILE_DEFAULT, "");
+    /* Continuous VTX matching (report only): one cycle every 30 s. */
+    {
+        dev_monitor_t m;
+        dev_monitor_reset(&m, 0);
+        check("monitor: first cycle collects at once", m.collecting && !dev_monitor_tick(&m, 1000), "");
+        dev_monitor_decided(&m, 100, PROFILE_KP060, PROFILE_DEFAULT, 6000000);
+        check("monitor: idle until 30 s after the cycle start", !dev_monitor_tick(&m, 29999999) && !m.collecting, "");
+        check("monitor: next cycle at 30 s", dev_monitor_tick(&m, 30000000) && m.collecting, "");
+        check("monitor: no timeout before 120 s", !dev_monitor_tick(&m, 149999999), "");
+        check("monitor: a cycle without a decision restarts after 120 s",
+              dev_monitor_tick(&m, 150000000) && m.timeouts == 1u, "");
+        dev_monitor_decided(&m, 101, PROFILE_KP060, PROFILE_DEFAULT, 160000000);
+        check("monitor: agree and mismatch streaks", m.agree_streak == 2u && m.mismatch_streak == 2u, "");
+        dev_monitor_decided(&m, 140, PROFILE_DEFAULT, PROFILE_DEFAULT, 200000000);
+        check("monitor: a matching result clears the mismatch streak",
+              m.agree_streak == 1u && m.mismatch_streak == 0u && m.decisions == 3u, "");
+        /* NVS wear policy. */
+        check("store: class change at once", dev_monitor_should_store(100, 170, true, 0, 1), "");
+        check("store: small change never", !dev_monitor_should_store(100, 102, false, 0, 600000000), "");
+        check("store: larger change waits for the gap", !dev_monitor_should_store(100, 104, false, 0, 299999999) &&
+              dev_monitor_should_store(100, 104, false, 0, 300000000), "");
+        check("store: unchanged or invalid never", !dev_monitor_should_store(100, 100, true, 0, 1) &&
+              !dev_monitor_should_store(100, -1, true, 0, 1), "");
+    }
+    /* Ten minutes of live windows (50 ms, 60 % pass the gates, 5 % noise,
+     * 5 % outliers); the VTX widens from 1.00 to 1.70 after five minutes.
+     * Every cycle reports; after the change the wide VTX is reported within
+     * two cycles, and no decision mixes the two VTXs into a narrow one. */
+    {
+        dev_monitor_t m;
+        dev_estimator_t e;
+        dev_monitor_reset(&m, 0);
+        dev_reset(&e);
+        unsigned before = 0, after = 0, mixed = 0;
+        int64_t first_wide = -1;
+        for (int64_t t = 0; t < 600000000LL; t += 50000) {
+            if (dev_monitor_tick(&m, t)) dev_reset(&e);
+            if (!m.collecting || uniform() > 0.6) continue;
+            const double dev = t < 300000000LL ? 1.0 : 1.7;
+            double span = dev * DEV_SYNC_KHZ * (1.0 + 0.05 * gauss());
+            if (uniform() < 0.05) span = 300.0 + 3500.0 * uniform();
+            int r = dev_add(&e, (int32_t)span);
+            if (r < 0) continue;
+            int want = profile_class(r, true, true);
+            dev_monitor_decided(&m, r, want, PROFILE_KP060, t);
+            if (t < 300000000LL) before += want == PROFILE_KP060;
+            else {
+                after += want == PROFILE_WIDE;
+                if (first_wide < 0 && want == PROFILE_WIDE) first_wide = t;
+                mixed += want == PROFILE_KP050;
+            }
+        }
+        snprintf(detail, sizeof(detail), "decisions=%u timeouts=%u kp06_before=%u wide_after=%u first_wide_s=%.1f",
+                 m.decisions, m.timeouts, before, after, first_wide / 1e6);
+        check("live 10 min: a report every 30 s", m.decisions >= 19u && m.timeouts == 0u, detail);
+        check("live 10 min: widened VTX reported within two cycles",
+              first_wide >= 0 && first_wide - 300000000LL <= 60000000LL + 15000000LL && mixed == 0u, detail);
+        check("live 10 min: mismatch streak counts the wide reports", m.mismatch_streak >= 8u, detail);
+    }
     printf("%s (%d failures)\n", s_fail ? "FAILED" : "PASSED", s_fail);
     return s_fail != 0;
 }

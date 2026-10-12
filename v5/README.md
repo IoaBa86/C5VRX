@@ -27,8 +27,13 @@ research is not a demonstrated video or range improvement.
 - **VTX-matched profile** (narrow for low-deviation VTXs, wide 16 MHz for
   wide ones) **only from a fresh measurement**: every boot starts
   with the default profile; the narrow profile is chosen only when this
-  boot measured the VTX in the startup phase. Later readings are kept as
-  pending for the next boot, never switched in flight.
+  boot measured the VTX in the startup phase. **Continuous VTX matching**
+  then measures the deviation passively every 30 s on live video (burst-
+  confirmed sync, AFC lock, C/N >= 8 dB, no clipping, held gain). Each
+  result is logged (`PROFILE live`), shown in `T` with agree/mismatch
+  streaks, feeds the kp ladder's deviation class and is kept as pending for
+  the next boot or CALIBRATE. The active profile is never switched in
+  flight (report only).
 - **Field diagnostics** (serial `D`, `R`): what is really active, and why
   each dropout happened as far as the receiver can tell
   ([docs/FIELD_TEST.md](docs/FIELD_TEST.md)).

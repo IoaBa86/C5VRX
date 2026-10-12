@@ -94,3 +94,79 @@ static inline int profile_class(int dev_x100, bool narrow_filter_known, bool wid
     if (!narrow_filter_known) return PROFILE_DEFAULT;
     return dev_x100 <= DEV_KP050_MAX ? PROFILE_KP050 : dev_x100 <= DEV_KP060_MAX ? PROFILE_KP060 : PROFILE_DEFAULT;
 }
+
+/* ---- Continuous VTX matching: measure and report only -------------------
+ * After startup, a passive measurement cycle starts every 30 s on live video
+ * (no retune, filter or tracker change). A cycle uses the estimator above
+ * and only windows that pass the reliability gates (burst-confirmed sync,
+ * AFC lock, C/N >= DEV_MONITOR_MIN_CN_X10, no clipping, held gain): at a low
+ * C/N the porch estimate is pulled toward the receiver centre
+ * (v5/research/afc_bias.py), which would read the deviation too narrow and
+ * point at a narrow profile that hurts. A cycle that cannot decide within
+ * DEV_MONITOR_TIMEOUT_US starts over, so batches never mix situations far
+ * apart in time. The result updates the session deviation (kp ladder class)
+ * and is kept as PENDING for the next boot or CALIBRATE; the active profile
+ * never changes in flight (operator decision 2026-10-12). */
+#define DEV_MONITOR_PERIOD_US    30000000LL
+#define DEV_MONITOR_TIMEOUT_US   120000000LL
+#define DEV_MONITOR_MIN_CN_X10   80          /* 8 dB: 2 dB above the AFC retune gate */
+#define DEV_STORE_DELTA_X100     3           /* NVS: ignore smaller changes ... */
+#define DEV_STORE_GAP_US         300000000LL /* ... and rewrite at most every 5 min */
+
+typedef struct {
+    bool collecting;          /* a cycle is collecting windows */
+    int64_t cycle_start_us, next_start_us, last_us, stored_us;
+    unsigned decisions, timeouts, agree_streak, mismatch_streak;
+    int last_x100, want;      /* last decided deviation and its profile, -1 none */
+} dev_monitor_t;
+
+static inline void dev_monitor_reset(dev_monitor_t *m, int64_t now_us)
+{
+    memset(m, 0, sizeof(*m));
+    m->collecting = true;
+    m->cycle_start_us = now_us;
+    m->next_start_us = now_us;
+    m->stored_us = now_us - DEV_STORE_GAP_US;
+    m->last_x100 = -1;
+    m->want = -1;
+}
+
+/* True when the caller must reset its estimator: a new cycle is due, or the
+ * running one timed out. */
+static inline bool dev_monitor_tick(dev_monitor_t *m, int64_t now_us)
+{
+    if (!m->collecting) {
+        if (now_us < m->next_start_us) return false;
+        m->collecting = true;
+        m->cycle_start_us = now_us;
+        return true;
+    }
+    if (now_us - m->cycle_start_us < DEV_MONITOR_TIMEOUT_US) return false;
+    ++m->timeouts;
+    m->cycle_start_us = now_us;
+    return true;
+}
+
+/* A cycle decided `dev_x100`, which asks for profile `want` while `active`
+ * runs. The next cycle starts 30 s after this one started. */
+static inline void dev_monitor_decided(dev_monitor_t *m, int dev_x100, int want, int active, int64_t now_us)
+{
+    ++m->decisions;
+    m->agree_streak = want == m->want ? m->agree_streak + 1u : 1u;
+    m->mismatch_streak = want != active ? m->mismatch_streak + 1u : 0u;
+    m->want = want;
+    m->last_x100 = dev_x100;
+    m->last_us = now_us;
+    m->collecting = false;
+    m->next_start_us = m->cycle_start_us + DEV_MONITOR_PERIOD_US;
+}
+
+/* NVS wear: store when the profile class changes, otherwise only a change of
+ * at least DEV_STORE_DELTA_X100 and not more often than DEV_STORE_GAP_US. */
+static inline bool dev_monitor_should_store(int stored_x100, int dev_x100, bool class_changed, int64_t stored_us,
+                                            int64_t now_us)
+{
+    if (dev_x100 <= 0 || dev_x100 == stored_x100) return false;
+    if (class_changed) return true;
+    return abs(dev_x100 - stored_x100) >= DEV_STORE_DELTA_X100 && now_us - stored_us >= DEV_STORE_GAP_US;
+}
