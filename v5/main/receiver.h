@@ -66,6 +66,8 @@ bool transport_kp_set(int level);          /* seamless kp ladder level (kp_table
 int transport_kp_level(void);
 int transport_kp_target(void);
 unsigned transport_kp_tick(unsigned max_writes);
+bool transport_set_lp(bool lp);            /* live U85Q <-> U85Q-LP switch (paused rewrite) */
+bool transport_lp(void);
 void transport_stop_chain(void);
 void transport_poll_faults(void);
 uint32_t transport_fault_count(void);

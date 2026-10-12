@@ -11,6 +11,7 @@ idf_component_register(
 target_bitscrambler_add_src("u85q.bsasm")
 target_bitscrambler_add_src("u85q_kp060.bsasm")
 target_bitscrambler_add_src("u85q_kp050.bsasm")
+target_bitscrambler_add_src("u85q_lp.bsasm")
 
 # Filter capacitor and DC DAC access uses PHY internals recovered from this
 # exact ESP-IDF 6.0.2 libphy; any other PHY binary builds with them refused.

@@ -479,6 +479,52 @@ Mean true luma SINAD of the chosen kp on the held-out seeds:
 - What matters is knowing the VTX deviation, not measuring kp. The curve
   only goes deep for a deviation measured this session.
 
+## 16. U85Q close in, U85Q-LP at the edge: one ladder (`kp_ladder.h`, K mode 2)
+
+Section 14's best combination needs U85Q-LP at the range edge, so it now
+switches live.
+- **The switch.** `transport_set_lp()` pauses the TX core
+  (`TX_CTRL.pause`), rewrites the eight 9-word instructions and resumes.
+  The LUT is not rewritten, so it keeps its live kp level. There is no TX
+  restart, DMA stop or program reload.
+  - Both programs read 16 bits per span, share the LUT and have their
+    controller/worker slots in the same places.
+  - The bsasm emulator (`u85q_lp.py check`, in CI) switches at every slot,
+    both directions. The output equals the new program's steady output
+    within 16 bytes (400 ns).
+  - A switch just before a worker moves the DAC stream by one byte (25 ns):
+    the programs split their 16 bits per span differently.
+- **The policy.** The U85Q curve applies above the switch point and an LP
+  curve below it, with C/N smoothed over ~0.4 s.
+  - LP below 6.5 dB C/N (7 dB for the mid class, 8.5 dB wide or unknown),
+    back to U85Q 1.5 dB higher. The wanted program must hold 1 s, with at
+    least 3 s between switches.
+  - A wide VTX goes back to U85Q kp 0.85 at the floor (below 1.5 dB), where
+    it keeps lock better. At the same kp, LP keeps lock as well as U85Q.
+  - A switch lands on the new program's curve level at that C/N. The curves
+    cross there (deviation 1.0, 6-8 dB: U85Q kp 0.50-0.55 = LP kp 0.85 to
+    within 0.1-0.3 dB SINAD), so the picture does not jump.
+  - `test/test_kp_ladder.c` checks switch points, hysteresis, the wide
+    floor and the 3 s gap.
+
+Range limit (`data/best_combo.json`, 8 seeds):
+
+| deviation | U85Q kp 0.85 | kp ladder | kp + LP ladder |
+| --- | ---: | ---: | ---: |
+| 0.69 | 4.50 dB | 2.38 dB | **1.15 dB (+3.35)** |
+| 1.0 | 2.36 dB | 1.70 dB | **0.75 dB (+1.6)** |
+| 1.4 | 2.08 dB | 2.09 dB | **1.72 dB (+0.36)** |
+
+Close in it stays U85Q kp 0.75-0.80 (deviation 1.0: 12.95 vs 12.49 dB SINAD
+at 20 dB).
+
+Bench gate before K mode 2:
+- Under live video, toggle the program with `P` a few times.
+- `prog_pause_fail`, `prog_verify_fail`, `tx_empty` and `bs_overload` must
+  stay 0 and the picture must not visibly break.
+- Whether the core pauses and resumes cleanly with rewritten instructions is
+  not known until then.
+
 ## Not firmware levers
 
 - The second IQ40 sample of every span (+0.5..1.1 dB in the C5VRX-4 ledger)

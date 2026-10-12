@@ -30,10 +30,16 @@ BITSCRAMBLER_PROGRAM(s_u85q, "u85q");
  * (v5/research, docs/FINDINGS.md). */
 BITSCRAMBLER_PROGRAM(s_u85q_kp060, "u85q_kp060");
 BITSCRAMBLER_PROGRAM(s_u85q_kp050, "u85q_kp050");
+/* U85Q-LP: U85Q plus a post-detection IIR low-pass (pole 1/2) in counter A,
+ * same LUT and two bundles (v5/research/u85q_lp.py, README sections 12/16).
+ * Swapped in live by transport_set_lp(), never through a TX restart. */
+BITSCRAMBLER_PROGRAM(s_u85q_lp, "u85q_lp");
 static volatile int s_tracker = TRACKER_KP085;
 static bool s_started;   /* live TX running (set once at boot) */
+static bool s_prog_lp;   /* U85Q-LP instructions loaded (U85Q tracker only) */
 static const void *tracker_program(int t)
 {
+    if (t == TRACKER_KP085 && s_prog_lp) return s_u85q_lp;
     return t == TRACKER_KP050 ? s_u85q_kp050 : t == TRACKER_KP060 ? s_u85q_kp060 : s_u85q;
 }
 
@@ -202,6 +208,66 @@ unsigned transport_kp_tick(unsigned max_writes)
     return n;
 }
 
+/* Live program switch U85Q <-> U85Q-LP without stopping TX: pause the TX
+ * core, rewrite the eight 9-word instructions (not the LUT, which keeps its
+ * live kp level), resume. Both programs read 16 bits per 50 ns span, use the
+ * same LUT and the same controller/worker slots, so the stream stays aligned.
+ * In the bsasm emulator (u85q_lp.py check_switch) the output equals the new
+ * program's steady output within 16 bytes (400 ns) at every switch slot; a
+ * switch before a worker moves the DAC stream by one byte (25 ns), because
+ * the programs split their 16 bits per span differently. Whether the core
+ * pauses and resumes cleanly with rewritten instructions is a bench
+ * question: prog_pause_fail / prog_verify_fail and tx_empty / bs_overload. */
+static uint32_t s_prog_switches, s_prog_pause_fail, s_prog_verify_fail;
+static portMUX_TYPE s_prog_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static bool program_words(const uint8_t *bin, const uint8_t **inst)
+{
+    /* bitscrambler_program_hdr_t (esp_driver_bitscrambler): version, hw_rev,
+     * hdr_len (words), inst_ct, ... */
+    if (bin[3] != 8u) return false;
+    *inst = bin + (size_t)bin[2] * 4u;
+    return true;
+}
+
+bool transport_set_lp(bool lp)
+{
+    if (lp == s_prog_lp) return true;
+    if (!s_lut_known || !s_started || s_menu_active || s_tracker != TRACKER_KP085) return false;
+    const uint8_t *inst;
+    if (!program_words(lp ? s_u85q_lp : s_u85q, &inst)) return false;
+    bool paused = false;
+    taskENTER_CRITICAL(&s_prog_lock);
+    BITSCRAMBLER.ctrl[BITSCRAMBLER_DIR_TX].pause = 1;
+    for (unsigned k = 0; k < 64u && !paused; ++k) paused = BITSCRAMBLER.state[BITSCRAMBLER_DIR_TX].in_pause;
+    if (paused) {
+        for (unsigned i = 0; i < 8u; ++i)
+            for (unsigned w = 0; w < 9u; ++w) {
+                uint32_t v;
+                memcpy(&v, inst + (i * 9u + w) * 4u, 4);
+                BITSCRAMBLER.inst_cfg[BITSCRAMBLER_DIR_TX].cfg0.inst_idx = i;
+                BITSCRAMBLER.inst_cfg[BITSCRAMBLER_DIR_TX].cfg0.inst_pos = w;
+                BITSCRAMBLER.inst_cfg[BITSCRAMBLER_DIR_TX].cfg1.inst = v;
+            }
+    }
+    BITSCRAMBLER.ctrl[BITSCRAMBLER_DIR_TX].pause = 0;
+    taskEXIT_CRITICAL(&s_prog_lock);
+    if (!paused) { ++s_prog_pause_fail; return false; }
+    for (unsigned i = 0; i < 8u; ++i)
+        for (unsigned w = 0; w < 9u; ++w) {
+            uint32_t v;
+            memcpy(&v, inst + (i * 9u + w) * 4u, 4);
+            BITSCRAMBLER.inst_cfg[BITSCRAMBLER_DIR_TX].cfg0.inst_idx = i;
+            BITSCRAMBLER.inst_cfg[BITSCRAMBLER_DIR_TX].cfg0.inst_pos = w;
+            if (BITSCRAMBLER.inst_cfg[BITSCRAMBLER_DIR_TX].cfg1.inst != v) ++s_prog_verify_fail;
+        }
+    s_prog_lp = lp;
+    ++s_prog_switches;
+    return true;
+}
+
+bool transport_lp(void) { return s_prog_lp; }
+
 static void start_demodulator(void)
 {
     ESP_ERROR_CHECK(bitscrambler_enable(s_bs));
@@ -298,6 +364,7 @@ bool transport_set_tracker(int tracker)
         return false;
     }
     s_tracker = tracker;
+    if (tracker != TRACKER_KP085) s_prog_lp = false;   /* LP exists for the U85Q tracker only */
     return true;
 }
 
@@ -376,10 +443,13 @@ uint32_t transport_fault_count(void)
 void transport_print(void)
 {
     printf("TRANSPORT rx_descriptors=%d tx_empty=%lu rx_overflow=%lu dma_faults=%lu bs_overload=%lu "
-           "kp_level=%d kp_target=%d kp_writes=%lu kp_verify_fail=%lu\n",
+           "kp_level=%d kp_target=%d kp_writes=%lu kp_verify_fail=%lu program=%s prog_switches=%lu "
+           "prog_pause_fail=%lu prog_verify_fail=%lu\n",
            s_rx_node_count, (unsigned long)s_tx_empty, (unsigned long)s_rx_overflow,
            (unsigned long)s_dma_faults, (unsigned long)s_bs_overload, transport_kp_level(),
-           transport_kp_target(), (unsigned long)s_kp_writes, (unsigned long)s_kp_verify_fail);
+           transport_kp_target(), (unsigned long)s_kp_writes, (unsigned long)s_kp_verify_fail,
+           s_prog_lp ? "U85Q-LP" : "U85Q", (unsigned long)s_prog_switches, (unsigned long)s_prog_pause_fail,
+           (unsigned long)s_prog_verify_fail);
 }
 
 int ring_node_index(uint32_t addr)

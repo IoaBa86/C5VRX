@@ -40,8 +40,10 @@ static uint8_t s_window[CONTROL_BYTES];
 static uint8_t s_pal_votes, s_ntsc_votes;
 static uint8_t s_last_std = 0xFF;      /* last stable standard (NVS) */
 static unsigned s_afc_corrections, s_afc_weak_skips;
-/* Seamless kp ladder (kp_ladder.h): off until switched on with K (NVS
- * "kp_auto"); k steps one level by hand for the bench test (auto off). */
+/* Seamless kp ladder (kp_ladder.h), NVS "kp_auto": 0 off, 1 kp only,
+ * 2 kp plus the live U85Q <-> U85Q-LP switch. K cycles 0 -> 1 -> 2 -> 0;
+ * k steps one kp level and P toggles the program by hand for the bench test
+ * (both set auto off). */
 static kp_ladder_t s_kp;
 static uint8_t s_kp_auto;
 /* Learned offset sign (afc_ctrl.h sign check), persisted once observed. */
@@ -227,12 +229,21 @@ static void command(int c, unsigned *menu_idle)
     case 'b': rf_next_band(); after_retune(); break;
     case 's': scan(); break;
     case 'K':
-        s_kp_auto = !s_kp_auto;
+        s_kp_auto = (uint8_t)((s_kp_auto + 1u) % 3u);
         (void)blob_store("kp_auto", &s_kp_auto, 1);
         kp_ladder_reset(&s_kp);
         (void)transport_kp_set(0);
-        printf("KP ladder %s (seamless live kp, 0.85 close in .. calmer at the range edge)\n", s_kp_auto ? "AUTO" : "OFF");
+        (void)transport_set_lp(false);
+        printf("KP ladder %s\n", s_kp_auto == 2 ? "AUTO kp + LP (U85Q close in, U85Q-LP at the range edge)" :
+               s_kp_auto == 1 ? "AUTO kp (U85Q only)" : "OFF");
         break;
+    case 'P': {
+        s_kp_auto = 0;
+        const bool lp = !transport_lp();
+        printf("PROGRAM manual %s: %s\n", lp ? "U85Q-LP" : "U85Q", transport_set_lp(lp) ? "switched live" :
+               "refused (needs the U85Q tracker, live video; see prog_pause_fail in T)");
+        break;
+    }
     case 'k': {
         s_kp_auto = 0;
         int next = (transport_kp_target() + 1) % KP_LADDER_LEVELS;
@@ -369,7 +380,9 @@ static void control_task(void *arg)
         }
         if (s_kp_auto && !s_menu_active) {
             /* A noise-like window (CN_UNKNOWN) is the floor; only an unusable one holds. */
-            (void)transport_kp_set(kp_ladder_update(&s_kp, cn_x10, window_ok, profile_live_deviation_x100(), now));
+            (void)transport_kp_set(kp_ladder_update_lp(&s_kp, cn_x10, window_ok, profile_live_deviation_x100(), now,
+                                                       s_kp_auto == 2));
+            if (s_kp.lp != transport_lp() && !transport_set_lp(s_kp.lp)) s_kp.lp = transport_lp();
         }
         (void)transport_kp_tick(64);   /* ~0.3-0.6 s per change; each entry valid either way */
         diag_window(window_ok, valid, own_write);   /* own_write: an AFC step this window */
@@ -394,7 +407,7 @@ void control_start(void)
     if (!blob_load("last_std", &s_last_std, 1)) s_last_std = 0xFF;
     int8_t sign;
     if (blob_load("afc_sign", &sign, 1) && (sign == 1 || sign == -1)) s_afc_sign = sign;
-    if (!blob_load("kp_auto", &s_kp_auto, 1) || s_kp_auto > 1) s_kp_auto = 0;
+    if (!blob_load("kp_auto", &s_kp_auto, 1) || s_kp_auto > 2) s_kp_auto = 0;
     s_commands = xQueueCreate(16, sizeof(int));
     ESP_ERROR_CHECK(s_commands ? ESP_OK : ESP_ERR_NO_MEM);
     ESP_ERROR_CHECK(xTaskCreate(control_task, "control", 6144, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
@@ -404,12 +417,13 @@ void control_print(void)
 {
     printf("CONTROL channel=%s freq=%u offset_khz=%d cfo_khz=%d afc_locked=%u afc_corrections=%u "
            "afc_weak_skips=%u afc_sign=%+d(%s) standard=%s detected=%s signal=%d menu=%u deviation_x100=%d mode=%s "
-           "tracker=%d kp_auto=%u kp_steps=%lu\n",
+           "tracker=%d kp_auto=%u kp_steps=%lu lp_switches=%lu\n",
            rf_channel()->name, rf_frequency_mhz(), rf_offset_khz(), s_cfo_khz, s_afc_locked,
            s_afc_corrections, s_afc_weak_skips, s_afc_sign,
            s_afc_sign_state == AFC2_SIGN_FLIPPED ? "flipped" : s_afc_sign_state == AFC2_SIGN_CONFIRMED ? "confirmed" :
            "unverified", s_std_mode == STD_MODE_AUTO ? "AUTO" : s_std_mode == STD_MODE_PAL ? "PAL" : "NTSC",
            s_detected_std_valid ? (s_detected_std == VIDEO_STD_PAL ? "PAL" : "NTSC") : "none",
            s_signal_strength, s_menu_active, profile_deviation_x100(rf_channel_index()),
-           profile_name(profile_active()), transport_tracker(), s_kp_auto, (unsigned long)s_kp.steps);
+           profile_name(profile_active()), transport_tracker(), s_kp_auto, (unsigned long)s_kp.steps,
+           (unsigned long)s_kp.lp_switches);
 }

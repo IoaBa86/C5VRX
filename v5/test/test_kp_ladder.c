@@ -121,6 +121,47 @@ int main(void)
         if (v != prev) { if (t - last < min_gap) min_gap = t - last; last = t; prev = v; }
     }
     check("steps at least KP_STEP_GAP_UP_US apart", min_gap >= KP_STEP_GAP_UP_US);
+    /* Joint kp + LP ladder (kp_ladder_update_lp). */
+    {
+        kp_ladder_t j;
+        kp_ladder_reset(&j);
+        int64_t tj = 0;
+        for (int k = 0; k < 400; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, 200, true, 100, tj, true);
+        check("joint, deviation 1.0, 20 dB: U85Q kp 0.75", !j.lp && kp_level_x100[j.level] == 75);
+        for (int k = 0; k < 400; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, 40, true, 100, tj, true);
+        snprintf(name, sizeof(name), "joint, deviation 1.0, 4 dB: %s kp 0.%02u", j.lp ? "LP" : "U85Q", kp_level_x100[j.level]);
+        check(name, j.lp && kp_level_x100[j.level] == 65);
+        for (int k = 0; k < 400; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, 200, true, 100, tj, true);
+        check("joint, back to 20 dB: U85Q kp 0.75", !j.lp && kp_level_x100[j.level] == 75);
+        /* C/N wandering 5..9 dB around the switch point: few program switches. */
+        uint32_t sw0 = j.lp_switches;
+        for (int k = 0; k < 1200; ++k, tj += TICK_US)       /* 60 s */
+            (void)kp_ladder_update_lp(&j, 50 + rand() % 41, true, 100, tj, true);
+        snprintf(name, sizeof(name), "joint, C/N 5..9 dB random for 60 s: %u program switches", j.lp_switches - sw0);
+        check(name, j.lp_switches - sw0 <= 6);
+        for (int k = 0; k < 400; ++k, tj += TICK_US)        /* 20 s at 2..8 dB (mean 5) */
+            (void)kp_ladder_update_lp(&j, 20 + rand() % 61, true, 100, tj, true);
+        check("joint, C/N 2..8 dB random: LP", j.lp);
+        /* Wide VTX at the floor: U85Q keeps lock better. */
+        kp_ladder_reset(&j);
+        for (int k = 0; k < 400; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, 50, true, 140, tj, true);
+        check("joint, wide VTX at 5 dB: LP kp 0.85", j.lp && kp_level_x100[j.level] == 85);
+        for (int k = 0; k < 400; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, CN_UNKNOWN_X10, true, 140, tj, true);
+        check("joint, wide VTX at the noise floor: back to U85Q", !j.lp);
+        /* Not allowed: never LP, and leaves LP at once when disallowed. */
+        kp_ladder_reset(&j);
+        for (int k = 0; k < 400; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, 40, true, 100, tj, true);
+        (void)kp_ladder_update_lp(&j, 40, true, 100, tj, false);
+        check("joint disallowed: U85Q immediately", !j.lp);
+        int64_t last = -1, min_gap = 1LL << 62;
+        bool prev = j.lp;
+        kp_ladder_reset(&j);
+        for (int k = 0; k < 4000; ++k, tj += TICK_US) {
+            (void)kp_ladder_update_lp(&j, (k / 30) % 2 ? 30 : 150, true, 100, tj, true);
+            if (j.lp != prev) { if (last >= 0 && tj - last < min_gap) min_gap = tj - last; last = tj; prev = j.lp; }
+        }
+        check("program switches at least KP_LP_GAP_US apart", min_gap >= KP_LP_GAP_US);
+    }
     printf("%s: %u checks, %u failures\n", s_fail ? "FAIL" : "PASS", s_run, s_fail);
     return s_fail ? 1 : 0;
 }

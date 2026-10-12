@@ -34,6 +34,13 @@
 
 typedef struct {
     uint8_t level;          /* current target level, 0 = kp 0.85 */
+    bool lp;                /* U85Q-LP program (post-detection low-pass) */
+    int8_t lp_pending;      /* program wanted since lp_since: -1 none, 0 U85Q, 1 LP */
+    int64_t lp_since;
+    int64_t lp_switch_us;   /* last program switch */
+    uint32_t lp_switches;
+    int32_t cn_q4;          /* smoothed C/N (x10, Q4), window jitter filtered */
+    bool cn_init;
     int8_t pending_dir;     /* direction of the target seen since pending_since */
     int64_t pending_since;
     int64_t last_step_us;
@@ -43,6 +50,11 @@ typedef struct {
 static inline void kp_ladder_reset(kp_ladder_t *l)
 {
     l->level = 0;
+    l->lp = false;
+    l->lp_pending = -1;
+    l->lp_since = 0;
+    l->lp_switch_us = -(1LL << 40);
+    l->cn_init = false;
     l->pending_dir = 0;
     l->pending_since = 0;
     l->last_step_us = 0;
@@ -63,6 +75,24 @@ static const uint8_t kp_curve_x100[KP_CLASSES][6] = {
     {85, 85, 80, 80, 80, 80},   /* wider or unknown */
 };
 
+/* U85Q-LP (u85q_lp.bsasm: same LUT, IIR pole 1/2 after the tracker) beats
+ * U85Q below ~6.5 dB C/N for every deviation and loses ~2-3.5 dB SINAD on
+ * a strong carrier; at the same kp its goggle lock equals U85Q's
+ * (best_combo.json). Its best kp per class at the same C/N points, the C/N
+ * below which LP is used, and for wide VTXs the floor below which U85Q
+ * kp 0.85 keeps lock better (README section 16). */
+static const uint8_t kp_lp_curve_x100[KP_CLASSES][6] = {
+    {75, 55, 50, 50, 50, 50},
+    {80, 70, 65, 75, 75, 75},
+    {85, 75, 70, 80, 80, 80},
+    {85, 85, 85, 85, 85, 85},
+};
+static const int16_t kp_lp_on_x10[KP_CLASSES] = {65, 65, 70, 85};
+static const int16_t kp_lp_floor_x10[KP_CLASSES] = {-999, -999, -999, 15};
+#define KP_LP_HYST_X10   15            /* leave LP 1.5 dB above where it is entered */
+#define KP_LP_HOLD_US    1000000LL     /* the wanted program must hold this long */
+#define KP_LP_GAP_US     3000000LL     /* at least this between program switches */
+
 static inline int kp_ladder_class(int dev_x100)
 {
     if (dev_x100 <= 0) return KP_CLASS_WIDE;
@@ -73,9 +103,9 @@ static inline int kp_ladder_class(int dev_x100)
 }
 
 /* kp (x100) the curve asks for at a C/N, linear between the points. */
-static inline int kp_ladder_curve_x100(int cls, int cn_x10)
+static inline int kp_ladder_curve_lp_x100(int cls, int cn_x10, bool lp)
 {
-    const uint8_t *k = kp_curve_x100[cls];
+    const uint8_t *k = lp ? kp_lp_curve_x100[cls] : kp_curve_x100[cls];
     if (cn_x10 <= kp_cn_points_x10[0]) return k[0];
     for (int i = 1; i < 6; ++i)
         if (cn_x10 <= kp_cn_points_x10[i])
@@ -91,16 +121,35 @@ static inline uint8_t kp_ladder_level_for(int kp_x100)
     return (uint8_t)(lv < 0 ? 0 : lv >= KP_LADDER_LEVELS ? KP_LADDER_LEVELS - 1 : lv);
 }
 
-static inline uint8_t kp_ladder_target(int cn_x10, int dev_x100)
+static inline int kp_ladder_curve_x100(int cls, int cn_x10) { return kp_ladder_curve_lp_x100(cls, cn_x10, false); }
+
+static inline uint8_t kp_ladder_target_lp(int cn_x10, int dev_x100, bool lp)
 {
-    return kp_ladder_level_for(kp_ladder_curve_x100(kp_ladder_class(dev_x100), cn_x10));
+    return kp_ladder_level_for(kp_ladder_curve_lp_x100(kp_ladder_class(dev_x100), cn_x10, lp));
+}
+
+static inline uint8_t kp_ladder_target(int cn_x10, int dev_x100) { return kp_ladder_target_lp(cn_x10, dev_x100, false); }
+
+/* Program the C/N asks for, with hysteresis around the current one. */
+static inline bool kp_ladder_want_lp(int cls, int cn_x10, bool lp)
+{
+    const int on = kp_lp_on_x10[cls], floor = kp_lp_floor_x10[cls];
+    if (lp) return cn_x10 < on + KP_LP_HYST_X10 && cn_x10 >= floor;
+    return cn_x10 < on && cn_x10 >= floor + KP_LP_HYST_X10 / 3;
 }
 
 /* One control window. window_ok false = unusable window (hold); a usable
  * noise-like window passes cn_x10 = CN_UNKNOWN_X10 and means the floor.
  * Returns the level the LUT should move to. */
-static inline uint8_t kp_ladder_update(kp_ladder_t *l, int cn_x10, bool window_ok, int dev_x100, int64_t now_us)
+static inline uint8_t kp_ladder_update_lp(kp_ladder_t *l, int cn_x10, bool window_ok, int dev_x100, int64_t now_us,
+                                          bool allow_lp)
 {
+    if (!allow_lp && l->lp) {                   /* LP not allowed (mode change): back to U85Q at once */
+        l->lp = false;
+        l->lp_pending = -1;
+        l->lp_switch_us = now_us;
+        ++l->lp_switches;
+    }
     /* Deeper than the wide row ever goes (deviation lost on a channel
      * change, or measured wide): back to that row's deepest level at once. */
     const uint8_t safe = kp_ladder_class(dev_x100) == KP_CLASS_WIDE ? kp_ladder_level_for(80) : KP_LADDER_LEVELS - 1;
@@ -111,8 +160,34 @@ static inline uint8_t kp_ladder_update(kp_ladder_t *l, int cn_x10, bool window_o
         ++l->steps;
         return l->level;
     }
-    if (!window_ok) { l->pending_dir = 0; return l->level; }
-    const uint8_t target = kp_ladder_target(cn_x10 <= CN_UNKNOWN_X10 ? 0 : cn_x10, dev_x100);
+    if (!window_ok) { l->pending_dir = 0; l->lp_pending = -1; return l->level; }
+    /* Per-window estimates jitter by a few dB: decide on a smoothed C/N
+     * (first-order, 1/8 per 50 ms window, ~0.4 s). A noise-like window
+     * counts as 0 dB. */
+    const int raw_cn = cn_x10 <= CN_UNKNOWN_X10 ? 0 : cn_x10;
+    if (!l->cn_init) { l->cn_q4 = raw_cn * 16; l->cn_init = true; }
+    else l->cn_q4 += (raw_cn * 16 - l->cn_q4) / 8;
+    const int cn = l->cn_q4 / 16;
+    if (allow_lp) {
+        /* Program first: a switch lands on the new program's curve level at
+         * this C/N, a quality-matched point (the curves cross near the
+         * switch C/N), then kp steps on as usual. */
+        const int8_t want = kp_ladder_want_lp(kp_ladder_class(dev_x100), cn, l->lp) ? 1 : 0;
+        if (want == (int8_t)l->lp) l->lp_pending = -1;
+        else if (want != l->lp_pending) { l->lp_pending = want; l->lp_since = now_us; }
+        else if (now_us - l->lp_since >= KP_LP_HOLD_US && now_us - l->lp_switch_us >= KP_LP_GAP_US) {
+            l->lp = want != 0;
+            l->lp_pending = -1;
+            l->lp_switch_us = now_us;
+            ++l->lp_switches;
+            l->level = kp_ladder_target_lp(cn, dev_x100, l->lp);
+            l->pending_dir = 0;
+            l->last_step_us = now_us;
+            ++l->steps;
+            return l->level;
+        }
+    }
+    const uint8_t target = kp_ladder_target_lp(cn, dev_x100, l->lp);
     const int8_t dir = target > l->level ? 1 : target < l->level ? -1 : 0;
     if (dir != l->pending_dir) {
         l->pending_dir = dir;
@@ -126,4 +201,9 @@ static inline uint8_t kp_ladder_update(kp_ladder_t *l, int cn_x10, bool window_o
         ++l->steps;
     }
     return l->level;
+}
+
+static inline uint8_t kp_ladder_update(kp_ladder_t *l, int cn_x10, bool window_ok, int dev_x100, int64_t now_us)
+{
+    return kp_ladder_update_lp(l, cn_x10, window_ok, dev_x100, now_us, false);
 }

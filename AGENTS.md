@@ -461,8 +461,8 @@ flywheel, level servo or idle raster. NVS namespace `c5vrx5`. CI:
 for the flasher's C5VRX-5 tab. Board: runs and holds video; range is not
 yet measured. Evidence: `v5/docs/FINDINGS.md`.
 
-U85Q-LP (`v5/research/u85q_lp.py`, README section 12, `v5/main/u85q_lp.bsasm`,
-research only, not selected by firmware): U85Q plus a post-detection IIR
+U85Q-LP (`v5/research/u85q_lp.py`, README sections 12 and 16, `v5/main/u85q_lp.bsasm`;
+the range-edge program of the kp + LP ladder, K mode 2): U85Q plus a post-detection IIR
 low-pass with pole 1/2 in counter A (controller LDCTIA, worker ADDCTIAH). It
 uses the same LUT and the same two bundles. It is the only post-detection
 filter found to fit: in LUT16 mode counter B cannot be routed next to LUT
@@ -472,8 +472,17 @@ bits, and the counter operand shares output[25:16] with the LUT address.
 - Simulation: the range limit improves by 1.6 dB at deviation 1.0 and by
   0.4 dB at deviation 1.4 (lock-limited). The low-pass wins below ~9-12 dB
   C/N and costs ~2-3.5 dB SINAD on a strong signal.
-- Selecting it needs an in-flight program switch, which is an open operator
-  decision. Board timing and the goggle colour killer are untested.
+- Live switch (`transport_set_lp`): pause the TX core, rewrite the 8
+  instructions (not the LUT), resume. In the emulator the output converges
+  to the new program within 16 bytes at every slot, with at most a 1-byte
+  stream shift.
+- Policy: LP below ~6.5 dB C/N (smoothed, 1.5 dB hysteresis, at least 3 s
+  apart); a wide VTX returns to U85Q at the floor.
+- Simulated limit vs today: +3.35 dB (deviation 0.69), +1.6 dB (1.0),
+  +0.36 dB (1.4).
+- Bench gate on `P` toggles: `prog_pause_fail`, `prog_verify_fail`,
+  `tx_empty`, `bs_overload`. Board timing and the goggle colour killer are
+  untested.
 
 Seamless kp ladder (`v5/main/kp_ladder.h`, `kp_tables.h`, `transport_kp_tick`,
 `v5/research/kp_morph.py`, README section 13; off by default, `K` AUTO, `k`
