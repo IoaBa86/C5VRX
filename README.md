@@ -228,11 +228,19 @@ The **Terminal** view has a visual receiver menu matching the module:
 BAND, CHANNEL, SCAN, VIDEO, CALIBRATE, OUTPUT and EXIT. Selecting a menu
 page only changes the browser view; its action button sends the command.
 It identifies C5VRX-5 from firmware help/status and displays the last reported
-channel, frequency, signal, video standard and output level. Use **Receiver
-status** to refresh; there is no background status polling. VIDEO/EXIT direct
-actions require firmware advertising `v`/`e` in its help; older C5VRX-5 builds
-can still use the on-screen menu controls. Legacy builds do not enable the
-C5VRX-5 action menu.
+band, channel, frequency, signal, video standard, output level, screen-menu
+state, scan result and calibration state. After a command that changes one of
+these it requests one status report (`T`); scan and calibration refresh when
+they finish (`SCAN result`, heartbeat `startup=0`). There is no periodic
+polling; **Refresh status** asks again. VIDEO/EXIT direct actions require
+firmware advertising `v`/`e` in its help; older C5VRX-5 builds can still use
+the on-screen menu controls. Legacy builds do not enable the C5VRX-5 action
+menu. `#terminal` opens the Terminal view directly.
+
+While a status screen owns the picture (first-boot calibration, CALIBRATE,
+lane test) the firmware ignores menu keys; it now answers each with
+`COMMAND <key> refused=busy` and reports `busy=` in `CONTROL` and the `HB`
+heartbeat, and the web menu greys out those buttons until it ends.
 
 Diagnostics and bench controls are collapsed by default. Commands send one
 case-sensitive byte without Enter. Actions that change reception or stored

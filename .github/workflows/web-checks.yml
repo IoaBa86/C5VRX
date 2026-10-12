@@ -1,10 +1,10 @@
 name: Web tools checks
 on:
   pull_request:
-    paths: ["web/**", "main/**", ".github/workflows/web-checks.yml"]
+    paths: ["web/**", "main/**", "tools/prepare_pages_site.sh", ".github/workflows/web-checks.yml"]
   push:
     branches: [main]
-    paths: ["web/**", "main/**", ".github/workflows/web-checks.yml"]
+    paths: ["web/**", "main/**", "tools/prepare_pages_site.sh", ".github/workflows/web-checks.yml"]
 permissions:
   contents: read
 jobs:

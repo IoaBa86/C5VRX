@@ -243,7 +243,10 @@ static void menu_action(void)
 static void command(int c, unsigned *menu_idle)
 {
     *menu_idle = 0;
-    if (menu_status_active()) return;   /* a calibration owns the picture */
+    if (menu_status_active()) {   /* a calibration owns the picture */
+        printf("COMMAND %c refused=busy (a calibration or lane test owns the picture; retry when it ends)\n", c);
+        return;
+    }
     switch (c) {
     case 'o': if (s_menu_active) menu_close(); else if (menu_open()) s_menu_cursor = 0; break;
     case 'e': menu_close(); break;  /* idempotent web-menu EXIT */
@@ -502,7 +505,7 @@ void control_print(void)
 {
     printf("CONTROL channel=%s freq=%u offset_khz=%d cfo_khz=%d afc_locked=%u afc_corrections=%u "
            "afc_weak_skips=%u afc_sign=%+d(%s) standard=%s detected=%s signal=%d menu=%u deviation_x100=%d mode=%s "
-           "kp_auto=%u%s kp_steps=%lu lp_switches=%lu\n",
+           "kp_auto=%u%s kp_steps=%lu lp_switches=%lu busy=%u\n",
            rf_channel()->name, rf_frequency_mhz(), rf_offset_khz(), s_cfo_khz, s_afc_locked,
            s_afc_corrections, s_afc_weak_skips, s_afc_sign,
            s_afc_sign_state == AFC2_SIGN_FLIPPED ? "flipped" : s_afc_sign_state == AFC2_SIGN_CONFIRMED ? "confirmed" :
@@ -511,6 +514,6 @@ void control_print(void)
            s_signal_strength, s_menu_active, profile_deviation_x100(rf_channel_index()),
            profile_name(profile_active()), s_kp_auto,
            s_kp_auto && transport_kp_level() < 0 ? "(inactive: kp level unverified)" : "", (unsigned long)s_kp.steps,
-           (unsigned long)s_kp.lp_switches);
+           (unsigned long)s_kp.lp_switches, menu_status_active());
 }
 
