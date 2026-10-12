@@ -4,16 +4,26 @@ on:
   push:
     branches: [main]
     paths:
-      - 'v5/**'
+      - 'main/**'
+      - 'test/**'
+      - 'research/**'
+      - 'tools/**'
+      - 'CMakeLists.txt'
+      - 'partitions.csv'
+      - 'sdkconfig.defaults'
       - '!**/*.md'
-      - 'tools/firmware_input_hash.py'
       - '.github/workflows/c5vrx5.yml'
   pull_request:
     types: [opened, synchronize, reopened, closed]
     paths:
-      - 'v5/**'
+      - 'main/**'
+      - 'test/**'
+      - 'research/**'
+      - 'tools/**'
+      - 'CMakeLists.txt'
+      - 'partitions.csv'
+      - 'sdkconfig.defaults'
       - '!**/*.md'
-      - 'tools/firmware_input_hash.py'
       - '.github/workflows/c5vrx5.yml'
 permissions:
   contents: read
@@ -47,9 +57,40 @@ jobs:
             echo "version=5.0.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
             echo "tag=c5vrx5-v5.0.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           fi
+      - name: Host tests (quiet test, VTX deviation profile, dropout classifier, AFC, gain fade)
+        shell: bash
+        working-directory: test
+        run: |
+          set -euo pipefail
+          for t in test_quiet test_profile test_diag test_afc test_kp_ladder test_kp_lut_io test_kp_switch_guard test_transport_recovery test_calibration_noise test_sphase; do
+            cc -O2 -std=c11 -Wall -Wextra -Werror -I../main "$t.c" -lm -o "/tmp/$t" && "/tmp/$t" | tail -1
+          done
+          cc -O2 -std=c11 -Wall -Wextra -Werror -DEXPECT_FADE_HOLD -I../main test_gain_fade.c \
+            ../main/gain.c ../main/arc_phy.c -lm -o /tmp/test_gain_fade && /tmp/test_gain_fade | tail -1
+          cc -O2 -std=c11 -Wall -Wextra -Werror -I../main test_gain_preset.c \
+            ../main/gain.c ../main/arc_phy.c -lm -o /tmp/test_gain_preset && /tmp/test_gain_preset | tail -1
+      - name: Diagnostic log semantics
+        run: python3 test/test_field_diag_compare.py
+      - name: Analytic IQ lane reference
+        shell: bash
+        run: |
+          python3 -m venv /tmp/iqf-test-env
+          /tmp/iqf-test-env/bin/pip install numpy scipy numba
+          OPENBLAS_NUM_THREADS=1 /tmp/iqf-test-env/bin/python test/test_iq_lane_fusion.py
+          python3 "$IDF_PATH/tools/bsasm.py" research/iq_lane_mixed468.bsasm /tmp/iq_lane_mixed468.bsbin \
+            -c "$IDF_PATH/components/esp_driver_bitscrambler/bsasm_targets/esp32c5.json"
+      - name: U85Q-LP research program (assembles; emulator matches U85Q and the LP model)
+        shell: bash
+        run: |
+          python3 "$IDF_PATH/tools/bsasm.py" main/u85q_lp.bsasm /tmp/u85q_lp.bsbin \
+            -c "$IDF_PATH/components/esp_driver_bitscrambler/bsasm_targets/esp32c5.json"
+          /tmp/iqf-test-env/bin/python research/u85q_lp.py check
+      - name: Kp ladder tables (generator reproduces the U85Q LUTs; kp_tables.h current)
+        run: /tmp/iqf-test-env/bin/python research/kp_morph.py check
+      - name: OUTPUT research invariants (DAC-only changes and bounded policy)
+        run: /tmp/iqf-test-env/bin/python research/output_level.py --check
       - name: Build C5VRX-5
         shell: bash
-        working-directory: v5
         run: |
           . "$IDF_PATH/export.sh"
           idf.py -DC5VRX5_VERSION="${{ steps.version.outputs.version }}" build
@@ -58,8 +99,8 @@ jobs:
         run: |
           . "$IDF_PATH/export.sh"
           mkdir -p release
-          cp v5/build/c5vrx5.bin v5/build/bootloader/bootloader.bin \
-             v5/build/partition_table/partition-table.bin v5/build/flasher_args.json release/
+          cp build/c5vrx5.bin build/bootloader/bootloader.bin \
+             build/partition_table/partition-table.bin build/flasher_args.json release/
           esptool.py --chip esp32c5 merge_bin -o release/c5vrx5_merged.bin \
             --flash_mode dio --flash_size 8MB --flash_freq 80m \
             0x2000 release/bootloader.bin 0x8000 release/partition-table.bin 0x10000 release/c5vrx5.bin

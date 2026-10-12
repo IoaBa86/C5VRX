@@ -1,158 +1,65 @@
+/* C5VRX-5 by Twotoz and the C5VRX contributors: ESP32-C5 receive-only RF
+ * front end. Wi-Fi/PHY tunes the channel; MODEM_DIAG streams the ADC's
+ * ultrafine Q4/I4 bits {9,6,5,4} to the PARLIO RX pins. Firmware owns the
+ * gain (vendor AGC disabled), the analog filter and the frequency offset. */
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
 #include "arc_phy.h"
 
-/**
- * rf_start() - Initialize the ESP32-C5 Wi-Fi/PHY receive-only frontend.
- *
- * Configures:
- *   - 5 GHz band only (WIFI_BAND_MODE_5G_ONLY)
- *   - Channel 173 = 5865 MHz / BW40
- *   - No power saving (WIFI_PS_NONE)
- *   - Promiscuous RX to keep MODEM_DIAG active
- *   - All 5 LMAC TX queues hardware-disabled (receive-only)
- *   - MODEM_DIAG DIAG[6:9] (Q[9:6]) and DIAG[16:19] (I[9:6]) routed to GPIO
- *
- * Returns ESP_OK on success.
- * Returns an error if BW40 is not available -- NO BW20 fallback.
- * Returns an error if channel verification fails.
- */
 esp_err_t rf_start(void);
+/* Stop the dump writer and Wi-Fi, request a USB download boot and restart,
+ * so esptool can flash with --before no-reset. Never returns. */
+void rf_reboot_to_download(void);
 
-/**
- * Erase only Espressif's stored PHY calibration namespace. This does not
- * recalibrate the already-running receiver; callers must reboot afterwards so
- * the next Wi-Fi/PHY initialization performs a fresh calibration.
- *
- * PRE-Q4 lab only: production must never trigger calibration while live video
- * owns the RF chain.
- */
-esp_err_t rf_prepare_fresh_phy_calibration(void);
+/* Firmware gain (vendor table index). True only when written under the
+ * expected PHY generation. */
+bool rf_set_gain(uint8_t gain, uint32_t expected_generation);
+void rf_force_gain(uint8_t gain);           /* caller owns the receiver */
+/* Called after every gain write and PHY restore (DC hold re-assert). */
+void rf_set_post_gain_hook(void (*hook)(uint8_t gain));
+const arc_gain_table_t *rf_gain_table(void);
+uint32_t rf_table_generation(void);
 
-/**
- * Dump all vendor timers intercepted during Wi-Fi operation.
- */
-void rf_dump_tracked_timers(void);
+/* Analog receive filter. code PHY_FILTER_CALIBRATED = the chip's own
+ * calibration; skirt = second stage offset; bw20 = digital filter BW20. */
+typedef struct { int8_t code; uint8_t skirt; bool bw20; } rf_filter_t;
+/* True only when the PHY read back exactly the requested code and skirt;
+ * on a failed write the PHY layer puts the calibrated bytes back, and
+ * rf_filter_applied() then reports the mismatch. */
+bool rf_set_filter(rf_filter_t filter);
+rf_filter_t rf_filter(void);
+bool rf_filter_applied(void);
+static inline bool rf_filter_equal(rf_filter_t a, rf_filter_t b)
+{
+    return a.code == b.code && a.skirt == b.skirt && a.bw20 == b.bw20;
+}
 
-/**
- * Control PHY receiver frontend gain.
- * force = true sets fixed gain index (0 = min gain / max attenuation, ~30-60 = high gain).
- * force = false restores automatic / default PHY gain.
- */
-/** Runtime analog receive filter: true=BW40, false=BW20. */
-void rf_set_analog_bandwidth(bool bw40);
-bool rf_get_analog_bandwidth(void);
+/* MODEM_DIAG IQ lane. Production is fixed ULTRAFINE; the others exist only
+ * for the explicit bench lane comparison (console L), which owns TX behind
+ * a status screen and always routes ULTRAFINE back. */
+enum { RF_LANE_COARSE, RF_LANE_FINE, RF_LANE_ULTRAFINE, RF_LANES };
+esp_err_t rf_set_lane(unsigned lane);
+unsigned rf_lane(void);
+const char *rf_lane_name(unsigned lane);
 
-void rf_set_rx_gain(bool force, uint8_t gain_idx);
-uint32_t rf_get_rx_gain_reg(void);
-
-/**
- * Read-only snapshot of known ESP32-C5 RX PHY registers used for lab
- * characterization. No undocumented PHY function is called by this helper.
- */
-typedef struct {
-    uint32_t gain_reg;
-    uint32_t rx_filter_reg;
-    uint32_t adc_rate_reg;
-    uint32_t source_mux_reg;
-    uint32_t iq_correction_reg;
-    uint8_t rx_filter_mode;
-    uint8_t adc_rate_sel;
-    arc_iq_correction_t iq_correction;
-    arc_gain_tuple_t gain_tuple;
-} rf_phy_snapshot_t;
-
-void rf_get_phy_snapshot(rf_phy_snapshot_t *snapshot);
-/* Vendor-calibrated, read-only receive tuple captured atomically with the ARC
- * gain table after PHY init or a successful channel retune. It is diagnostic
- * state only; undocumented fields are never swept or reapplied in LOCK. */
-const rf_phy_snapshot_t *rf_get_arc_receive_tuple(void);
-
-/**
- * Force/release the PHY FFT scaling stage. This is exposed only so the lab can
- * prove whether FFT gain sits upstream or downstream of the MODEM_DIAG Q4/I4
- * tap. Production receive control must not depend on this until hardware data
- * demonstrates a Q4/I4 effect.
- */
-void rf_set_fft_scale_force(bool force, int8_t value);
-
-/**
- * Native hardware AGC (#117/#119): opt-in; Direct Gain V4 is the default.
- *
- * Selected for the NEXT boot only (persisted in NVS, caller reboots); no
- * stored value means firmware gain (Direct Gain V4). When
- * active, rf_start() never calls phy_disable_agc()/phy_rfagc_disable(), releases
- * forced gain and FFT scale once, and every later rf_set_rx_gain() or FFT force
- * is refused and counted in blocked_writes. The registers are raw read-only
- * telemetry; their field semantics are not yet decoded.
- */
-typedef struct {
-    bool active;
-    uint32_t gain_status_reg;  /* 0x600A702C: forced-gain / index state */
-    uint32_t agc_ctrl_reg;     /* 0x600A7030: phy_disable_agc() state */
-    uint32_t blocked_writes;
-} rf_native_agc_state_t;
-
-esp_err_t rf_request_native_agc_boot(bool enable);
-void rf_dump_agc_regs(void);
-bool rf_native_agc_active(void);
-
-/* Range lanes (rf.c): 0 coarse, 1 fine (+6 dB), 2 ultrafine (+12 dB).
- * Exact power-of-two rescale of the Q4 nibble inside each set's window; a
- * live GPIO-matrix remap. Only Direct Gain selects finer sets. */
-#define RF_IQ_LANE_SETS 3u
-void rf_set_iq_lanes(uint8_t set);
-uint8_t rf_get_iq_lanes(void);
-void rf_get_native_agc_state(rf_native_agc_state_t *state);
-
-/**
- * Experimental PHY observability/control used only by explicit RX profiles.
- * These wrappers keep undocumented symbols isolated in rf.c.
- *
- * Hardware AGC mode is opt-in and reversible. Normal C5VRX operation keeps
- * Espressif packet AGC disabled and uses the fixed-gain C5VRX controller.
- */
-bool rf_try_get_noise_floor_dbm(int *dbm);
-bool rf_try_get_wideband_rssi_dbm(int *dbm);
-const arc_gain_table_t *rf_get_arc_gain_table(void);
-uint8_t rf_get_arc_survival_gain(void);
-/* Changes after every successful PHY init/channel retune and lets the ARC
- * supervisor discard controller state derived from an older vendor table. */
-uint32_t rf_get_arc_generation(void);
-
-/**
- * FPV Channel and Carrier Frequency Fine-Tuning:
- */
-typedef struct {
-    const char *name;     /* e.g. "A1", "R5", etc. */
-    uint16_t freq_mhz;   /* Base channel center frequency in MHz */
-} fpv_channel_t;
-
-typedef enum {
-    FPV_BAND_R = 0,  /* RaceBand (R1..R8) */
-    FPV_BAND_A = 1,  /* Boscam A (A1..A8) */
-    FPV_BAND_B = 2,  /* Boscam B (B1..B8) */
-    FPV_BAND_E = 3,  /* Boscam E (E1..E8) */
-    FPV_BAND_F = 4,  /* FatShark / Airwave (F1..F8) */
-    FPV_BAND_L = 5,  /* LowBand (L1..L8) */
-    FPV_BAND_COUNT = 6
-} fpv_band_t;
-
-const fpv_channel_t *rf_get_current_channel(void);
-size_t rf_get_channel_index(void);
-size_t rf_get_channel_count(void);
+typedef struct { const char *name; uint16_t freq_mhz; } fpv_channel_t;
+enum { FPV_BAND_R, FPV_BAND_A, FPV_BAND_B, FPV_BAND_E, FPV_BAND_F, FPV_BAND_L, FPV_BANDS };
+#define FPV_CHANNELS (FPV_BANDS * 8u)
+const fpv_channel_t *rf_channel(void);
+size_t rf_channel_index(void);
+uint16_t rf_channel_freq(size_t index);
+const char *rf_band_name(unsigned band);
 esp_err_t rf_set_channel(size_t index);
-esp_err_t rf_cycle_channel(void);
-
-fpv_band_t rf_get_current_band(void);
-const char *rf_get_band_name(fpv_band_t band);
-void rf_cycle_band(void);
-uint8_t rf_get_current_channel_number(void);
-void rf_cycle_channel_in_band(void);
-
-uint16_t rf_get_frequency_mhz(void);
-int rf_get_frequency_offset_khz(void);
-void rf_set_frequency_offset_khz(int offset_khz);
-void rf_step_frequency_offset_khz(int delta_khz);
+void rf_next_band(void);
+void rf_next_channel(void);
+uint16_t rf_frequency_mhz(void);
+/* Espressif documents C5 channel centres 5180..5885 MHz; R8, E6..E8 sit
+ * above that (tuned with phy_set_freq) and are not characterised. */
+#define RF_SPEC_MIN_MHZ 5180u
+#define RF_SPEC_MAX_MHZ 5885u
+static inline bool rf_freq_in_spec(uint16_t mhz) { return mhz >= RF_SPEC_MIN_MHZ && mhz <= RF_SPEC_MAX_MHZ; }
+int rf_offset_khz(void);
+void rf_set_offset_khz(int offset_khz);

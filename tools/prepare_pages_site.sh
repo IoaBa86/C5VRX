@@ -45,7 +45,7 @@ echo "Fetching GitHub releases for Pages firmware mirror..."
 gh api --paginate --slurp "repos/${REPO}/releases?per_page=100" \
   | jq 'add // []' > "${tmp_dir}/all-releases.json"
 
-# Keep a bounded history of C5VRX-3 releases plus the C5VRX-5 channel
+# Keep a bounded history of legacy C5VRX-3 releases plus the C5VRX-5 channel
 # (versioned main builds and unmerged PR builds). Legacy archive, C5VRX-3 PR
 # and C5VRX-4 alpha releases are no longer offered by the flasher.
 jq '
