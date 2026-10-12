@@ -54,3 +54,54 @@ test('every web shortcut is an actual current console byte, with bench confirmat
       assert.match(markup, /data-confirm=/, `${key} requires its action warning`);
   }
 });
+
+test('command acknowledgements update the menu before the next status report', () => {
+  const state = new ReceiverConsole();
+  state.push('C5VRX5 version=v5.0.9 demod=U85Q\nCONTROL channel=R1 freq=5658 afc_locked=1 standard=AUTO detected=PAL signal=63 menu=0 mode=DEFAULT kp_auto=2\nOUTPUT level=1.0x live=1\n');
+  assert.deepEqual(state.push('[CHANNEL] A1 5865 MHz\n'), ['changed']);
+  let view = state.view();
+  assert.equal(view.channel, 'A1');
+  assert.equal(view.band, 'BOSCAM A');
+  assert.equal(view.signal, null, 'a retune invalidates the old signal');
+  state.push('OUTPUT manual 2.0x result=applied wait_ms=0\nOUTPUT manual 2.5x result=refused wait_ms=4000\n');
+  assert.equal(state.view().output, '2.0x', 'a refused change keeps the applied level');
+  state.push('KP ladder AUTO kp (brief restarts; bench test)\nPROFILE live switch OFF (saved): report only\n');
+  view = state.view();
+  assert.equal(view.kpMode, 'AUTO kp');
+  assert.equal(view.liveProfile, false);
+  state.push('KP ladder AUTO kp + LP (program changes briefly restart video; bench test)\n');
+  assert.equal(state.view().kpMode, 'AUTO kp+LP');
+});
+
+test('heartbeat tracks the screen menu and reports the end of a calibration', () => {
+  const state = new ReceiverConsole();
+  state.push('C5VRX-5 keys: T status\nCONTROL channel=R1 freq=5658 menu=0\n');
+  assert.deepEqual(state.push('HB t_s=5 stage=live gain=40 menu=1 startup=1\n'), []);
+  assert.equal(state.view().menu, true);
+  assert.equal(state.view().calibrating, true);
+  assert.deepEqual(state.push('HB t_s=10 stage=live gain=40 menu=0 startup=0\n'), ['calibration-done']);
+  assert.equal(state.view().menu, false);
+  state.push('[MENU] closed after 30 s idle\n');
+  assert.equal(state.view().menu, false);
+});
+
+test('scan progress and result come from the scan lines', () => {
+  const state = new ReceiverConsole();
+  state.push('C5VRX-5 keys: T status\n');
+  state.startScan();
+  assert.match(state.view().scan, /^SCANNING · 0/);
+  state.push('SCAN candidate R3 5732 MHz video=80 offset_khz=200 quality=50 PAL\n');
+  assert.match(state.view().scan, /^SCANNING · 1/);
+  assert.deepEqual(state.push('SCAN result=found channel=R3\n'), ['scan-done']);
+  assert.equal(state.view().scan, 'FOUND R3');
+  state.push('SCAN result=none_kept channel=A1\n');
+  assert.equal(state.view().scan, 'NO VIDEO FOUND · KEPT A1');
+});
+
+test('a reboot discards values the firmware resets', () => {
+  const state = new ReceiverConsole();
+  state.push('C5VRX5 version=v5.0.9\nCONTROL channel=R1 freq=5658 menu=1\nOUTPUT level=2.5x\n');
+  assert.deepEqual(state.push('C5VRX5 v5.0.9 ready: R1 5658 MHz, U85Q\n'), ['ready']);
+  assert.equal(state.view().output, '');
+  assert.equal(state.view().menu, null);
+});
