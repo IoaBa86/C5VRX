@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "afc_ctrl.h"
+#include "kp_ladder.h"
 #include "cn_estimate.h"
 #include "analog_video_detect.h"
 #include "driver/gpio.h"
@@ -39,6 +40,10 @@ static uint8_t s_window[CONTROL_BYTES];
 static uint8_t s_pal_votes, s_ntsc_votes;
 static uint8_t s_last_std = 0xFF;      /* last stable standard (NVS) */
 static unsigned s_afc_corrections, s_afc_weak_skips;
+/* Seamless kp ladder (kp_ladder.h): off until switched on with K (NVS
+ * "kp_auto"); k steps one level by hand for the bench test (auto off). */
+static kp_ladder_t s_kp;
+static uint8_t s_kp_auto;
 /* Learned offset sign (afc_ctrl.h sign check), persisted once observed. */
 static volatile int8_t s_afc_sign = 1;
 static volatile uint8_t s_afc_sign_state;
@@ -221,6 +226,20 @@ static void command(int c, unsigned *menu_idle)
     case 'c': rf_next_channel(); after_retune(); break;
     case 'b': rf_next_band(); after_retune(); break;
     case 's': scan(); break;
+    case 'K':
+        s_kp_auto = !s_kp_auto;
+        (void)blob_store("kp_auto", &s_kp_auto, 1);
+        kp_ladder_reset(&s_kp);
+        (void)transport_kp_set(0);
+        printf("KP ladder %s (seamless live kp, 0.85 close in .. calmer at the range edge)\n", s_kp_auto ? "AUTO" : "OFF");
+        break;
+    case 'k': {
+        s_kp_auto = 0;
+        int next = (transport_kp_target() + 1) % KP_LADDER_LEVELS;
+        printf("KP manual level=%d %s\n", next, transport_kp_set(next) ? "moving" :
+               "refused (needs the U85Q program: DEFAULT/WIDE profile, live video)");
+        break;
+    }
     default: break;
     }
 }
@@ -348,6 +367,11 @@ static void control_task(void *arg)
             int8_t sign = afc.sign < 0 ? -1 : 1;
             if (sign != s_afc_sign) { s_afc_sign = sign; (void)blob_store("afc_sign", &sign, 1); }
         }
+        if (s_kp_auto && !s_menu_active) {
+            const bool cn_valid = window_ok && cn_x10 > CN_UNKNOWN_X10;
+            (void)transport_kp_set(kp_ladder_update(&s_kp, cn_x10, cn_valid, profile_live_deviation_x100(), now));
+        }
+        (void)transport_kp_tick(64);   /* ~0.3-0.6 s per change; each entry valid either way */
         diag_window(window_ok, valid, own_write);   /* own_write: an AFC step this window */
         lane_shadow_window(s_window, sizeof(s_window), ctx, gain_epoch,
                            window_ok && !own_write && gain_epoch == s_gain_epoch && ctx == afc_context());
@@ -370,6 +394,7 @@ void control_start(void)
     if (!blob_load("last_std", &s_last_std, 1)) s_last_std = 0xFF;
     int8_t sign;
     if (blob_load("afc_sign", &sign, 1) && (sign == 1 || sign == -1)) s_afc_sign = sign;
+    if (!blob_load("kp_auto", &s_kp_auto, 1) || s_kp_auto > 1) s_kp_auto = 0;
     s_commands = xQueueCreate(16, sizeof(int));
     ESP_ERROR_CHECK(s_commands ? ESP_OK : ESP_ERR_NO_MEM);
     ESP_ERROR_CHECK(xTaskCreate(control_task, "control", 6144, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
@@ -379,12 +404,12 @@ void control_print(void)
 {
     printf("CONTROL channel=%s freq=%u offset_khz=%d cfo_khz=%d afc_locked=%u afc_corrections=%u "
            "afc_weak_skips=%u afc_sign=%+d(%s) standard=%s detected=%s signal=%d menu=%u deviation_x100=%d mode=%s "
-           "tracker=%d\n",
+           "tracker=%d kp_auto=%u kp_steps=%lu\n",
            rf_channel()->name, rf_frequency_mhz(), rf_offset_khz(), s_cfo_khz, s_afc_locked,
            s_afc_corrections, s_afc_weak_skips, s_afc_sign,
            s_afc_sign_state == AFC2_SIGN_FLIPPED ? "flipped" : s_afc_sign_state == AFC2_SIGN_CONFIRMED ? "confirmed" :
            "unverified", s_std_mode == STD_MODE_AUTO ? "AUTO" : s_std_mode == STD_MODE_PAL ? "PAL" : "NTSC",
            s_detected_std_valid ? (s_detected_std == VIDEO_STD_PAL ? "PAL" : "NTSC") : "none",
            s_signal_strength, s_menu_active, profile_deviation_x100(rf_channel_index()),
-           profile_name(profile_active()), transport_tracker());
+           profile_name(profile_active()), transport_tracker(), s_kp_auto, (unsigned long)s_kp.steps);
 }

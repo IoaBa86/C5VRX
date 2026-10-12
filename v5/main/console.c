@@ -64,6 +64,7 @@ static void help(void)
 {
     printf("C5VRX-5 keys: T status, D range/health report, M gain map (for a preset), R per-second FIELD_DIAG lines on/off,\n"
            "  J analytic IQLaneFusion shadow on/off (model proposals only, no RF writes),\n"
+           "  K seamless kp ladder auto on/off, k kp one level calmer by hand (bench test; T shows kp_verify_fail),\n"
            "  I IQ snapshot, o menu open/close, n/x menu next/select, c next channel, b next band, s scan,\n"
            "  F calibrate (startup steps again; video stops), L bench IQ lane comparison (video stops ~3 s),\n"
            "  ` reboot to USB download (flashing)\n");
@@ -112,7 +113,7 @@ static void console_task(void *arg)
             case 'L': lane_compare_request(); break;
             case 'J': lane_shadow_toggle(); break;
             case 'h': case '?': help(); break;
-            case 'o': case 'n': case 'x': case 'c': case 'b': case 's': {
+            case 'o': case 'n': case 'x': case 'c': case 'b': case 's': case 'K': case 'k': {
                 int command = c;
                 if (s_commands) (void)xQueueSend(s_commands, &command, 0);
                 break;

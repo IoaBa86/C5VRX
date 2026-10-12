@@ -14,6 +14,7 @@
 #include "esp_timer.h"
 #include "hal/misc.h"
 #include "hal/parlio_ll.h"
+#include "kp_tables.h"
 #include "snapshot.h"
 #include "soc/ahb_dma_struct.h"
 #include "soc/bitscrambler_struct.h"
@@ -142,10 +143,70 @@ static esp_err_t start_tx(void)
     return parlio_tx_unit_transmit(s_tx, s_raw_ring, sizeof(s_raw_ring) * 8u, &cfg);
 }
 
+/* Seamless kp (kp_ladder.h): with the U85Q program loaded, the live LUT moves
+ * between kp_tables levels entry by entry while video runs. Every level has
+ * the same token bits and phase states, so each entry is valid in either
+ * table and a half-written table is a valid tracker; nothing is stopped,
+ * flushed or resynced. Entries are written in the execution width
+ * (lut_mode 1, lut_idx = entry), never via bitscrambler_load_lut(), which
+ * switches the running program to a 32-bit LUT while it writes. Each write
+ * is read back; a CPU write colliding with a BitScrambler read is a bench
+ * question, counted in kp_verify_fail and the TRANSPORT counters. */
+static uint16_t s_lut_live[1024];   /* what the LUT RAM holds */
+static bool s_lut_known;            /* shadow valid: U85Q program, LUT16 */
+static uint8_t s_kp_target;
+static uint16_t s_kp_cursor;
+static uint32_t s_kp_writes, s_kp_verify_fail;
+
+static void kp_reset_shadow(void)
+{
+    s_lut_known = s_tracker == TRACKER_KP085 && BITSCRAMBLER.lut_cfg[BITSCRAMBLER_DIR_TX].cfg0.lut_mode == 1;
+    if (s_lut_known) memcpy(s_lut_live, kp_tables[0], sizeof(s_lut_live));
+    s_kp_target = 0;
+    s_kp_cursor = 0;
+}
+
+bool transport_kp_set(int level)
+{
+    if (!s_lut_known || level < 0 || level >= KP_LEVELS) return false;
+    s_kp_target = (uint8_t)level;
+    return true;
+}
+
+/* Level the LUT holds completely, -1 while moving or unknown. */
+int transport_kp_level(void)
+{
+    if (!s_lut_known) return -1;
+    return memcmp(s_lut_live, kp_tables[s_kp_target], sizeof(s_lut_live)) ? -1 : s_kp_target;
+}
+
+int transport_kp_target(void) { return s_lut_known ? s_kp_target : -1; }
+
+/* Writes up to max_writes entries toward the target level. Control task only. */
+unsigned transport_kp_tick(unsigned max_writes)
+{
+    if (!s_lut_known || !s_started || s_menu_active) return 0;
+    const uint16_t *want = kp_tables[s_kp_target];
+    unsigned n = 0;
+    for (unsigned scanned = 0; scanned < 1024u && n < max_writes; ++scanned) {
+        const unsigned k = s_kp_cursor;
+        s_kp_cursor = (uint16_t)((k + 1u) & 1023u);
+        if (s_lut_live[k] == want[k]) continue;
+        BITSCRAMBLER.lut_cfg[BITSCRAMBLER_DIR_TX].cfg0.lut_idx = k;
+        BITSCRAMBLER.lut_cfg[BITSCRAMBLER_DIR_TX].cfg1.lut = want[k];
+        if ((BITSCRAMBLER.lut_cfg[BITSCRAMBLER_DIR_TX].cfg1.lut & 0xffffu) != want[k]) ++s_kp_verify_fail;
+        s_lut_live[k] = want[k];
+        ++n;
+    }
+    s_kp_writes += n;
+    return n;
+}
+
 static void start_demodulator(void)
 {
     ESP_ERROR_CHECK(bitscrambler_enable(s_bs));
     ESP_ERROR_CHECK(bitscrambler_load_program(s_bs, tracker_program(s_tracker)));
+    kp_reset_shadow();   /* the program brought its own (kp 0.85) LUT */
     ESP_ERROR_CHECK(bitscrambler_reset(s_bs));
     ESP_ERROR_CHECK(bitscrambler_start(s_bs));
 }
@@ -314,9 +375,11 @@ uint32_t transport_fault_count(void)
 
 void transport_print(void)
 {
-    printf("TRANSPORT rx_descriptors=%d tx_empty=%lu rx_overflow=%lu dma_faults=%lu bs_overload=%lu\n",
+    printf("TRANSPORT rx_descriptors=%d tx_empty=%lu rx_overflow=%lu dma_faults=%lu bs_overload=%lu "
+           "kp_level=%d kp_target=%d kp_writes=%lu kp_verify_fail=%lu\n",
            s_rx_node_count, (unsigned long)s_tx_empty, (unsigned long)s_rx_overflow,
-           (unsigned long)s_dma_faults, (unsigned long)s_bs_overload);
+           (unsigned long)s_dma_faults, (unsigned long)s_bs_overload, transport_kp_level(),
+           transport_kp_target(), (unsigned long)s_kp_writes, (unsigned long)s_kp_verify_fail);
 }
 
 int ring_node_index(uint32_t addr)

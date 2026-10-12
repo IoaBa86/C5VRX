@@ -57,6 +57,7 @@ const char *profile_name(int p) { return p >= 0 && p < PROFILES ? s_names[p] : "
 int profile_active(void) { return s_profile; }
 const char *profile_reason(void) { return s_reason; }
 int profile_deviation_x100(size_t channel) { return channel < FPV_CHANNELS ? s_dev_table[channel] : 0; }
+int profile_live_deviation_x100(void) { return s_live_channel == rf_channel_index() ? s_live_dev : -1; }
 
 int profile_for_deviation(int dev_x100)
 {

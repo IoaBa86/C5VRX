@@ -475,6 +475,21 @@ bits, and the counter operand shares output[25:16] with the LUT address.
 - Selecting it needs an in-flight program switch, which is an open operator
   decision. Board timing and the goggle colour killer are untested.
 
+Seamless kp ladder (`v5/main/kp_ladder.h`, `kp_tables.h`, `transport_kp_tick`,
+`v5/research/kp_morph.py`, README section 13; off by default, `K` AUTO, `k`
+manual):
+- All U85Q kp LUTs share the token bits and phase states, so the live LUT
+  moves between kp 0.85 .. 0.50 entry by entry while video runs, in the
+  LUT16 execution width, without `bitscrambler_load_lut` and without a TX
+  restart.
+- Level from the C/N estimate (12 -> 4 dB), capped by the deviation
+  measured this session; unknown or wide deviation stays at 0.85.
+- Evidence: the generator reproduces all U85Q LUTs bit-exactly; mid-field
+  live changes in the host model stay at steady-state error and sync; the
+  ladder host test passes.
+- Write/read collisions on the board are unknown: bench gate on
+  `kp_verify_fail`, `tx_empty` and `bs_overload` before AUTO.
+
 ### Instructions for future pipeline work
 
 IQLaneFusion research extends U85 and the older adaptive-lane/history work:

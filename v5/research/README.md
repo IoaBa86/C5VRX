@@ -351,6 +351,61 @@ live.
 A dynamic low-pass therefore means a CPU-side program switch on the C/N
 estimate, with hysteresis, or switching in the analog domain.
 
+## 13. Seamless live kp (`kp_morph.py`, `main/kp_ladder.h`)
+
+The U85Q loop gain kp is a dynamic setting already. `u85q.bsasm`,
+`u85q_kp060` and `u85q_kp050` are the same program with different LUTs.
+- The token bits of every word (the raw -> phase observation) are
+  identical at every kp, and the 32 phase states mean the same angles. Only
+  the (phase, token) -> (next phase, DAC) half differs: 352 to 824 of 1024
+  entries.
+- So every entry is valid in either table. A table in the middle of a
+  rewrite is a valid tracker with a mixed kp, and the tracker state carries
+  over. Nothing stops, flushes or resyncs.
+- The C5 LUT port writes one entry per register write in the execution
+  width (`lut_mode` 1, `lut_idx` = entry). `bitscrambler_load_lut()` is
+  avoided: it switches the running program to a 32-bit LUT while it
+  writes.
+
+Evidence:
+- `kp_morph.py check`: the generator (the C5VRX-4 untrained formula of
+  PR #190) reproduces `data/tracker_luts.json` and all three `.bsasm` LUTs
+  bit-exactly. Every ladder level (kp 0.85 .. 0.50 in 0.05 steps,
+  `main/kp_tables.h`) keeps the token bits.
+- `kp_morph.py study` (`data/kp_morph.json`, 4 seeds, C/N 4 / 8 / 20 dB)
+  starts a live change mid-field: 0.85 -> 0.6, 0.6 -> 0.85, 0.85 -> 0.7 and
+  0.7 -> 0.6, at 1 entry per us and 1 per 10 us.
+  - The video error within 0.2 ms of the change stays at the error of the
+    worse steady table, 0.70-1.04x on average.
+  - The worst case is 1.16x, a full 0.6 -> 0.85 jump at 20 dB with the fast
+    writer.
+  - Goggle sync is never worse than steady.
+  - The firmware takes one 0.05 step at a time, which is smaller than these
+    jumps.
+
+Firmware, off by default:
+- `K` switches the ladder to AUTO (NVS `kp_auto`). The ladder maps the
+  C/N estimate to a level: 12 dB and up gives kp 0.85, 4 dB and down gives
+  the deepest level allowed by the deviation measured this session.
+  - Allowed depth by deviation: up to 0.80 -> kp 0.50, up to 1.05 -> 0.60,
+    up to 1.15 -> 0.70; wider or unknown stays at 0.85.
+  - It takes one level per step, after 1 s of agreement, with at least
+    0.5 s between steps. `test/test_kp_ladder.c` checks this, including no
+    hopping under +-3 dB of estimate noise.
+- `transport_kp_tick` writes up to 64 entries per 50 ms control window and
+  reads each one back. `k` steps one level by hand for the bench test.
+- Active only with the U85Q program (DEFAULT/WIDE profiles). On a WIDE
+  VTX it stays at kp 0.85.
+
+Expected effect at deviation 1.0 with the 12 MHz filter
+(`data/matched.txt`): the range limit goes from 2.38 to 1.68 dB at kp 0.6,
+with no loss close in (kp 0.85 there). Simulation only.
+
+Bench gate before AUTO: run `k` steps under live video and watch `T`.
+`kp_verify_fail` and `tx_empty` / `bs_overload` must stay 0 and the
+picture must not flicker. Whether a CPU LUT write can collide with a
+BitScrambler read is unknown until then.
+
 ## Not firmware levers
 
 - The second IQ40 sample of every span (+0.5..1.1 dB in the C5VRX-4 ledger)

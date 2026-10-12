@@ -62,6 +62,10 @@ void transport_start_chain(dma_descriptor_t *first);
 enum { TRACKER_KP085, TRACKER_KP060, TRACKER_KP050 };
 bool transport_set_tracker(int tracker);
 int transport_tracker(void);
+bool transport_kp_set(int level);          /* seamless kp ladder level (kp_tables.h) */
+int transport_kp_level(void);
+int transport_kp_target(void);
+unsigned transport_kp_tick(unsigned max_writes);
 void transport_stop_chain(void);
 void transport_poll_faults(void);
 uint32_t transport_fault_count(void);
@@ -155,6 +159,7 @@ bool menu_status_active(void);
 const char *profile_name(int profile);
 int profile_active(void);
 int profile_deviation_x100(size_t channel);
+int profile_live_deviation_x100(void);     /* measured this channel session, -1 = not yet */
 int profile_for_deviation(int dev_x100);
 bool profile_set(int profile);
 void profile_load(void);
