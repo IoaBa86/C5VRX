@@ -93,12 +93,25 @@ int main(void)
     }
     snprintf(name, sizeof(name), "C/N 10 dB +-3 dB noise for 60 s: level %u..%u around %u", lo, hi, mid);
     check(name, hi - lo <= 2);
-    /* Noise-like windows hold the level. */
+    /* Collapse: deep (kp 0.50 at 6 dB, deviation 0.69), then the estimate
+     * goes noise-like. The ladder must climb back to the floor point (0.70),
+     * not freeze at 0.50. */
+    kp_ladder_reset(&l);
+    (void)run(&l, 60, 0, 69, 20, &t, NULL);
+    int64_t t0 = t, back = -1;
+    for (int k = 0; k < 100; ++k, t += TICK_US) {     /* 5 s */
+        uint8_t v = kp_ladder_update(&l, CN_UNKNOWN_X10, true, 69, t);
+        if (back < 0 && kp_level_x100[v] == 70) back = t - t0;
+    }
+    snprintf(name, sizeof(name), "collapse to noise-like: back to kp 0.%02u after %.2f s", kp_level_x100[l.level],
+             back / 1e6);
+    check(name, kp_level_x100[l.level] == 70 && back >= 0 && back <= 1500000);
+    /* Unusable windows (retune, gain write, menu) hold the level. */
     kp_ladder_reset(&l);
     (void)run(&l, 60, 0, 100, 20, &t, NULL);
     uint8_t held = l.level;
-    for (int k = 0; k < 200; ++k, t += TICK_US) (void)kp_ladder_update(&l, 999, false, 100, t);
-    check("carrier gone (noise-like windows): level held", l.level == held);
+    for (int k = 0; k < 200; ++k, t += TICK_US) (void)kp_ladder_update(&l, CN_UNKNOWN_X10, false, 100, t);
+    check("unusable windows: level held", l.level == held);
     /* Step spacing: never two steps closer than the gap. */
     kp_ladder_reset(&l);
     int64_t last = -KP_STEP_GAP_US, min_gap = 1LL << 62;
@@ -107,7 +120,7 @@ int main(void)
         uint8_t v = kp_ladder_update(&l, k < 300 ? 60 : 200, true, 69, t);
         if (v != prev) { if (t - last < min_gap) min_gap = t - last; last = t; prev = v; }
     }
-    check("steps at least KP_STEP_GAP_US apart", min_gap >= KP_STEP_GAP_US);
+    check("steps at least KP_STEP_GAP_UP_US apart", min_gap >= KP_STEP_GAP_UP_US);
     printf("%s: %u checks, %u failures\n", s_fail ? "FAIL" : "PASS", s_run, s_fail);
     return s_fail ? 1 : 0;
 }

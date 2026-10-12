@@ -368,8 +368,8 @@ static void control_task(void *arg)
             if (sign != s_afc_sign) { s_afc_sign = sign; (void)blob_store("afc_sign", &sign, 1); }
         }
         if (s_kp_auto && !s_menu_active) {
-            const bool cn_valid = window_ok && cn_x10 > CN_UNKNOWN_X10;
-            (void)transport_kp_set(kp_ladder_update(&s_kp, cn_x10, cn_valid, profile_live_deviation_x100(), now));
+            /* A noise-like window (CN_UNKNOWN) is the floor; only an unusable one holds. */
+            (void)transport_kp_set(kp_ladder_update(&s_kp, cn_x10, window_ok, profile_live_deviation_x100(), now));
         }
         (void)transport_kp_tick(64);   /* ~0.3-0.6 s per change; each entry valid either way */
         diag_window(window_ok, valid, own_write);   /* own_write: an AFC step this window */

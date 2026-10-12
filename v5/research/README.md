@@ -386,9 +386,15 @@ Evidence:
 Firmware, off by default:
 - `K` switches the ladder to AUTO (NVS `kp_auto`). The ladder follows a kp
   curve per deviation class (section 14).
-  - It takes one level per step, after 1 s of agreement, with at least
-    0.5 s between steps. `test/test_kp_ladder.c` checks this, including no
-    hopping under +-3 dB of estimate noise.
+  - It takes one level per step: after 1 s of agreement and 0.5 s apart
+    toward a calmer kp, after 0.3 s and 0.2 s apart toward a sharper one.
+  - A noise-like window (C/N estimate unknown, coherence at plain noise) is
+    the floor and targets the curve's 0 dB point. A collapsing carrier
+    therefore climbs back to the lock-safe kp (deviation 0.69: 0.50 -> 0.70
+    in 0.9 s) instead of freezing deep. Only unusable windows (retune, gain
+    write, menu) hold the level.
+  - `test/test_kp_ladder.c` checks this, including no hopping under +-3 dB
+    of estimate noise.
 - `transport_kp_tick` writes up to 64 entries per 50 ms control window and
   reads each one back. `k` steps one level by hand for the bench test.
 - Active only with the U85Q program (DEFAULT/WIDE profiles). On a WIDE

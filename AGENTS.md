@@ -488,6 +488,9 @@ manual):
   - It goes calm (0.50-0.55) at 4-12 dB and back up near the floor, where a
     calm tracker loses lock.
   - Unknown or wide deviation stays at 0.80-0.85.
+  - A noise-like window counts as the floor, so a collapsing carrier steps
+    back up to the lock-safe kp (faster steps toward a sharper kp). Only
+    unusable windows hold the level.
   - Simulated limit: +2.1 dB at deviation 0.69, +0.66 dB at 1.0, 0 dB at
     1.4. A U85Q / U85Q-LP program switch would add about 1 dB but is not
     seamless.

@@ -12,19 +12,25 @@
  *   deviation uses the wide row (kp 0.85 near the floor, 0.80 above).
  * - One level per step, after the target has held for KP_HOLD_US, and at
  *   most one step per KP_STEP_GAP_US, so estimate noise does not hop between
- *   levels.
- * - Noise-like windows (no C/N estimate) hold the level: the carrier is gone
- *   or the window is unusable, and the next carrier is most likely as far.
+ *   levels. Toward a sharper kp (lower level) the hold and gap are shorter:
+ *   near the floor a calm tracker loses lock first, so a collapsing carrier
+ *   must get back up quickly.
+ * - A noise-like window (CN_UNKNOWN_X10: coherence at or below plain noise)
+ *   is the floor, not missing evidence: it targets the curve's 0 dB point.
+ *   Only an unusable window (retune, gain write, menu) holds the level.
  * The C/N estimate comes from the IQ window coherence, not from the tracker,
  * so a kp change cannot feed back into it. Pure logic: host test
  * test/test_kp_ladder.c. */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include "cn_estimate.h"
 
 #define KP_LADDER_LEVELS   8           /* kp 0.85 .. 0.50 in 0.05 steps */
-#define KP_HOLD_US         1000000LL   /* the target must hold this long */
-#define KP_STEP_GAP_US     500000LL    /* at least this between steps */
+#define KP_HOLD_US         1000000LL   /* toward a calmer kp: the target must hold this long */
+#define KP_STEP_GAP_US     500000LL    /* ... and at least this between steps */
+#define KP_HOLD_UP_US      300000LL    /* toward a sharper kp (better lock near the floor) */
+#define KP_STEP_GAP_UP_US  200000LL
 
 typedef struct {
     uint8_t level;          /* current target level, 0 = kp 0.85 */
@@ -90,9 +96,10 @@ static inline uint8_t kp_ladder_target(int cn_x10, int dev_x100)
     return kp_ladder_level_for(kp_ladder_curve_x100(kp_ladder_class(dev_x100), cn_x10));
 }
 
-/* One control window. cn_valid false = noise-like or unusable window.
+/* One control window. window_ok false = unusable window (hold); a usable
+ * noise-like window passes cn_x10 = CN_UNKNOWN_X10 and means the floor.
  * Returns the level the LUT should move to. */
-static inline uint8_t kp_ladder_update(kp_ladder_t *l, int cn_x10, bool cn_valid, int dev_x100, int64_t now_us)
+static inline uint8_t kp_ladder_update(kp_ladder_t *l, int cn_x10, bool window_ok, int dev_x100, int64_t now_us)
 {
     /* Deeper than the wide row ever goes (deviation lost on a channel
      * change, or measured wide): back to that row's deepest level at once. */
@@ -104,15 +111,16 @@ static inline uint8_t kp_ladder_update(kp_ladder_t *l, int cn_x10, bool cn_valid
         ++l->steps;
         return l->level;
     }
-    if (!cn_valid) { l->pending_dir = 0; return l->level; }
-    const uint8_t target = kp_ladder_target(cn_x10, dev_x100);
+    if (!window_ok) { l->pending_dir = 0; return l->level; }
+    const uint8_t target = kp_ladder_target(cn_x10 <= CN_UNKNOWN_X10 ? 0 : cn_x10, dev_x100);
     const int8_t dir = target > l->level ? 1 : target < l->level ? -1 : 0;
     if (dir != l->pending_dir) {
         l->pending_dir = dir;
         l->pending_since = now_us;
         return l->level;
     }
-    if (dir && now_us - l->pending_since >= KP_HOLD_US && now_us - l->last_step_us >= KP_STEP_GAP_US) {
+    const int64_t hold = dir < 0 ? KP_HOLD_UP_US : KP_HOLD_US, gap = dir < 0 ? KP_STEP_GAP_UP_US : KP_STEP_GAP_US;
+    if (dir && now_us - l->pending_since >= hold && now_us - l->last_step_us >= gap) {
         l->level = (uint8_t)(l->level + dir);
         l->last_step_us = now_us;
         ++l->steps;
