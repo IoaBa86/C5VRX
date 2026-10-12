@@ -246,7 +246,6 @@ bool calibration_sphase_settled(void)
 #define FILTER_WIDE_KHZ    16000u
 /* Quiet test: dsp_quiet_reason() (dsp.h). */
 #define QUIET_NO_SYNC_US   2000000LL
-#define QUIET_CARRIER_X100 DSP_QUIET_CARRIER_X100
 /* s_last_video_us starts at 0: "no sync seen yet" is not recent sync. */
 static bool video_recent(void)
 {

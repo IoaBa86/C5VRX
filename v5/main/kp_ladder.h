@@ -123,14 +123,10 @@ static inline uint8_t kp_ladder_level_for(int kp_x100)
     return (uint8_t)(lv < 0 ? 0 : lv >= KP_LADDER_LEVELS ? KP_LADDER_LEVELS - 1 : lv);
 }
 
-static inline int kp_ladder_curve_x100(int cls, int cn_x10) { return kp_ladder_curve_lp_x100(cls, cn_x10, false); }
-
 static inline uint8_t kp_ladder_target_lp(int cn_x10, int dev_x100, bool lp)
 {
     return kp_ladder_level_for(kp_ladder_curve_lp_x100(kp_ladder_class(dev_x100), cn_x10, lp));
 }
-
-static inline uint8_t kp_ladder_target(int cn_x10, int dev_x100) { return kp_ladder_target_lp(cn_x10, dev_x100, false); }
 
 /* Program the C/N asks for, with hysteresis around the current one. */
 static inline bool kp_ladder_want_lp(int cls, int cn_x10, bool lp)
@@ -203,9 +199,4 @@ static inline uint8_t kp_ladder_update_lp(kp_ladder_t *l, int cn_x10, bool windo
         ++l->steps;
     }
     return l->level;
-}
-
-static inline uint8_t kp_ladder_update(kp_ladder_t *l, int cn_x10, bool window_ok, int dev_x100, int64_t now_us)
-{
-    return kp_ladder_update_lp(l, cn_x10, window_ok, dev_x100, now_us, false);
 }

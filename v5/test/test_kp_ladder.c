@@ -1,4 +1,4 @@
-/* C5VRX-5 by Twotoz and the C5VRX contributors: host test of the seamless
+/* C5VRX-5 by Twotoz and the C5VRX contributors: host test of the verified
  * kp ladder policy (main/kp_ladder.h) and of the LUT tables it moves
  * between (main/kp_tables.h).
  *
@@ -8,6 +8,13 @@
 #include <stdlib.h>
 #include "kp_ladder.h"
 #include "kp_tables.h"
+
+/* U85Q-only ladder (K mode 1): the joint update with LP disallowed. */
+static uint8_t kp_ladder_update(kp_ladder_t *l, int cn_x10, bool ok, int dev, int64_t t)
+{
+    return kp_ladder_update_lp(l, cn_x10, ok, dev, t, false);
+}
+static uint8_t kp_ladder_target(int cn_x10, int dev) { return kp_ladder_target_lp(cn_x10, dev, false); }
 
 static unsigned s_fail, s_run;
 static void check(const char *name, int ok)
@@ -42,7 +49,7 @@ int main(void)
             tokens_equal &= (kp_tables[lv][k] >> 11) == (kp_tables[0][k] >> 11);
             differ += kp_tables[lv][k] != kp_tables[0][k];
         }
-    check("every level keeps the token bits (seamless entry-by-entry change)", tokens_equal);
+    check("every level keeps the token bits (one shared controller interpretation)", tokens_equal);
     check("levels differ in the tracker half", differ > 0);
     check("ladder and tables agree on the level count", KP_LEVELS == KP_LADDER_LEVELS);
 

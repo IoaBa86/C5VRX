@@ -12,7 +12,6 @@
 
 static inline int dsp_i(uint8_t b) { return (int8_t)(b & 0xf0u) >> 4; }
 static inline int dsp_q(uint8_t b) { return (int8_t)(uint8_t)(b << 4) >> 4; }
-static inline int dsp_abs(int v) { return v < 0 ? -v : v; }
 
 /* Fourth-difference probe (zerowidth/C5VRX PR #3): a read that lands on a
  * MODEM_DIAG transition mixes old and new bits and spreads error evenly,

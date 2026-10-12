@@ -325,7 +325,7 @@ static void control_task(void *arg)
     bool own_write = false;
     uint8_t afc_lost = 0;
     unsigned settle = RETUNE_SETTLE_TICKS, btn = 0, boot_grace = 20, menu_idle = 0, menu_refresh = 0;
-    bool long_fired = false, was_locked = false;
+    bool long_fired = false, was_locked = false, ladder_was_active = true;
     uint32_t seen_phy = phy_generation(), seen_control = s_control_epoch;
     uint32_t seen_restart_errors = transport_restart_errors();
     for (;;) {
@@ -419,7 +419,7 @@ static void control_task(void *arg)
         if (!s_afc_locked && window_ok && m.q_phase >= 55 && !s_menu_active &&
             phy_try_actuator(phy_generation())) {
             int32_t step = 0;
-            const bool strong = cn_x10 >= AFC_MIN_CN_X10;
+            const bool strong = afc_correction_allowed(s_obs_coherence, calibration_filter_class_mhz());
             if (afc2_ctrl_decide(&afc, gain_epoch == s_gain_epoch && strong, &step)) {
                 rf_set_offset_khz(rf_offset_khz() + (int)step);
                 s_last_gain_write_us = esp_timer_get_time();   /* restore re-forces gain */
@@ -442,7 +442,19 @@ static void control_task(void *arg)
             int8_t sign = afc.sign < 0 ? -1 : 1;
             if (sign != s_afc_sign) { s_afc_sign = sign; (void)blob_store("afc_sign", &sign, 1); }
         }
-        if (s_kp_auto && !s_menu_active) {
+        /* The ladder owns kp/LP only on the U85Q topology (DEFAULT/WIDE): a
+         * MATCHED kp0.5/0.6 profile or the bench CVT tracker keeps its own
+         * LUT, and every request there would be refused by the transport. */
+        const bool ladder_active = transport_kp_level() >= 0;
+        if (ladder_active && !ladder_was_active) {   /* back on U85Q: start from what runs */
+            kp_ladder_reset(&s_kp);
+            s_kp.level = (uint8_t)transport_kp_level();
+            s_kp.lp = transport_lp();
+        }
+        ladder_was_active = ladder_active;
+        if (s_kp_auto && !s_menu_active && !ladder_active) {
+            s_auto_candidate.candidate = false;
+        } else if (s_kp_auto && !s_menu_active) {
             uint8_t level = kp_ladder_update_lp(&s_kp, cn_x10, window_ok,
                                                 profile_live_deviation_x100(), now, s_kp_auto == 2);
             bool usable = window_ok && ctx == afc_context();
@@ -488,13 +500,14 @@ void control_print(void)
 {
     printf("CONTROL channel=%s freq=%u offset_khz=%d cfo_khz=%d afc_locked=%u afc_corrections=%u "
            "afc_weak_skips=%u afc_sign=%+d(%s) standard=%s detected=%s signal=%d menu=%u deviation_x100=%d mode=%s "
-           "tracker=%d kp_auto=%u kp_steps=%lu lp_switches=%lu\n",
+           "tracker=%d kp_auto=%u%s kp_steps=%lu lp_switches=%lu\n",
            rf_channel()->name, rf_frequency_mhz(), rf_offset_khz(), s_cfo_khz, s_afc_locked,
            s_afc_corrections, s_afc_weak_skips, s_afc_sign,
            s_afc_sign_state == AFC2_SIGN_FLIPPED ? "flipped" : s_afc_sign_state == AFC2_SIGN_CONFIRMED ? "confirmed" :
            "unverified", s_std_mode == STD_MODE_AUTO ? "AUTO" : s_std_mode == STD_MODE_PAL ? "PAL" : "NTSC",
            s_detected_std_valid ? (s_detected_std == VIDEO_STD_PAL ? "PAL" : "NTSC") : "none",
            s_signal_strength, s_menu_active, profile_deviation_x100(rf_channel_index()),
-           profile_name(profile_active()), transport_tracker(), s_kp_auto, (unsigned long)s_kp.steps,
+           profile_name(profile_active()), transport_tracker(), s_kp_auto,
+           s_kp_auto && transport_kp_level() < 0 ? "(inactive: not the U85Q tracker)" : "", (unsigned long)s_kp.steps,
            (unsigned long)s_kp.lp_switches);
 }
