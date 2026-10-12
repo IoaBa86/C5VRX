@@ -23,7 +23,8 @@ MAIN = HERE.parent/'main'
 VARIANTS = [(a, law) for a in (28,24) for law in
             ('soft_lock','bounded','origin_hold','soft_lock_low','soft_lock_med','origin_adapt')]
 VARIANTS += [(32, law) for law in ('origin_adapt','soft_lock_med','bounded','sync_bias','soft_lock_high')]
-DEFAULT = (28,'soft_lock')
+VARIANTS += [(28, law) for law in ('reject_wrap','gentle_wrap','late_wrap')]
+DEFAULT = (32,'sync_bias')
 
 
 def build_lut(angles=28, law='soft_lock'):
@@ -51,7 +52,7 @@ def build_lut(angles=28, law='soft_lock'):
             error = (observation-phi[state]+np.pi)%(2*np.pi)-np.pi
             if confidence_low:
                 gain = (0 if law=='origin_hold' else .3+.4*abs(error)/np.pi if law=='origin_adapt' else
-                        .5 if law=='soft_lock_med' else .25)
+                        .5 if law in ('soft_lock_med','reject_wrap','gentle_wrap','late_wrap') else .25)
             elif law=='soft_lock':
                 gain = .55 + .30*min(1.,(abs(error)/1.6)**2)
             elif law=='bounded':
@@ -66,6 +67,12 @@ def build_lut(angles=28, law='soft_lock'):
                 gain = .85 if error < 0 else .65 + .20*min(1.,abs(error)/2.)
             elif law=='soft_lock_high':
                 gain = .70 + .15*min(1.,(abs(error)/2.)**2)
+            elif law in ('reject_wrap','gentle_wrap','late_wrap'):
+                # Preserve baseline tracking on plausible modulation. Test
+                # suppression of near-wrap excursions separately: noise can
+                # cause those, but genuine wide FM/CFO can also require them.
+                threshold = 3.0 if law=='late_wrap' else 2.6
+                gain = .85 if abs(error)<=threshold else .65 if law=='gentle_wrap' else .5
             else:
                 gain = .75
             correction = gain*error

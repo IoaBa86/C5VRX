@@ -38,6 +38,7 @@ Synthetic numbers (sim.py); not goggle acceptance or measured range.
 import json
 import os
 import sys
+from functools import lru_cache
 from pathlib import Path
 import numpy as np
 from numba import njit
@@ -93,6 +94,7 @@ cfg lut_width_bits 16
 
 # ---- generic BitScrambler emulator (subset: set/read/write, LUT, counter
 # loads/adds, nop; no jumps), driven by the ESP-IDF assembler's own parse.
+@lru_cache(maxsize=1)
 def _bsasm():
     idf = os.environ.get('IDF_PATH')
     if not idf:

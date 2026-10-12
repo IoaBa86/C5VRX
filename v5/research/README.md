@@ -549,6 +549,13 @@ LUTs (generated with the C5VRX-4 untrained generator of PR #190).
 
 ## Diagnostic cliff follow-up (PR #196, 2026-10-11)
 
+CVT follow-up: [candidate results and remaining work](CVT_STATUS.md),
+[two-bundle hardware constraints](CVT_HARDWARE.md). `u85_cvt.py search`
+compares immutable analytical laws; `check` verifies their complete LUT16
+programs against the ESP-IDF instruction emulator. `cvt_validation.py`
+uses held-out seeds and the same Q4 for all fixed/CVT/floating candidates.
+CVT is experimental and disabled in normal firmware builds.
+
 Operator clarification: the image becomes static abruptly; the analog feed
 remains, with no goggles NO SIGNAL indication. This does not establish whether
 RF/FM threshold, tracking, filter/CFO or CVBS/goggle decoding is responsible.

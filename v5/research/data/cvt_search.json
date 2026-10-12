@@ -225,6 +225,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 1.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": -3.7084141973923703,
+      "line_lock": 0.9779411764705882,
+      "burst_sinad_db": -9.291096793144714
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 1.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": -3.738328246711009,
+      "line_lock": 0.9779411764705882,
+      "burst_sinad_db": -9.302008920829225
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 1.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": -3.7236005899612468,
+      "line_lock": 0.9779411764705882,
+      "burst_sinad_db": -9.303432435238339
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 0.69,
@@ -442,6 +481,45 @@
       "sinad_db": -3.3964244551555116,
       "line_lock": 0.9684684684684685,
       "burst_sinad_db": -8.23455129508637
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 1.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": -3.656378380927472,
+      "line_lock": 0.972972972972973,
+      "burst_sinad_db": -8.323875476129965
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 1.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": -3.689295843892112,
+      "line_lock": 0.972972972972973,
+      "burst_sinad_db": -8.367574331525807
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 1.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": -3.6772989388234305,
+      "line_lock": 0.972972972972973,
+      "burst_sinad_db": -8.428755570884048
     },
     {
       "variant": [
@@ -667,6 +745,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 1.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": -3.7185929985086648,
+      "line_lock": 0.9926470588235294,
+      "burst_sinad_db": -9.673921575702497
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 1.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": -3.751589660690078,
+      "line_lock": 0.9926470588235294,
+      "burst_sinad_db": -9.705982973511391
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 1.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": -3.7387335649175717,
+      "line_lock": 0.9926470588235294,
+      "burst_sinad_db": -9.712913352936333
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 0.69,
@@ -884,6 +1001,45 @@
       "sinad_db": -3.344227490803777,
       "line_lock": 0.9641255605381166,
       "burst_sinad_db": -8.141794895187932
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 1.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": -3.61975219579467,
+      "line_lock": 0.9596412556053812,
+      "burst_sinad_db": -8.511385856849468
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 1.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": -3.6538734244835958,
+      "line_lock": 0.9596412556053812,
+      "burst_sinad_db": -8.538110976878475
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 1.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": -3.644605341475897,
+      "line_lock": 0.9596412556053812,
+      "burst_sinad_db": -8.546866010801327
     },
     {
       "variant": [
@@ -1109,6 +1265,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 4.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 0.1998072509295458,
+      "line_lock": 1.0,
+      "burst_sinad_db": -5.637617879242108
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 4.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 0.19769350812293712,
+      "line_lock": 1.0,
+      "burst_sinad_db": -5.636076557421131
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 4.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 0.19878776197905776,
+      "line_lock": 1.0,
+      "burst_sinad_db": -5.633980840765681
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 0.69,
@@ -1326,6 +1521,45 @@
       "sinad_db": 0.8879388307712337,
       "line_lock": 1.0,
       "burst_sinad_db": -4.335366378887389
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 4.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 0.30080850049987723,
+      "line_lock": 1.0,
+      "burst_sinad_db": -4.638750152924956
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 4.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 0.29745073205469696,
+      "line_lock": 1.0,
+      "burst_sinad_db": -4.635677811988698
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 4.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 0.2942779190307009,
+      "line_lock": 1.0,
+      "burst_sinad_db": -4.633693411864185
     },
     {
       "variant": [
@@ -1551,6 +1785,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 4.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 0.23471453606754952,
+      "line_lock": 1.0,
+      "burst_sinad_db": -5.73180119124403
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 4.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 0.23028609274366246,
+      "line_lock": 1.0,
+      "burst_sinad_db": -5.729687975276089
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 4.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 0.23306100127276475,
+      "line_lock": 1.0,
+      "burst_sinad_db": -5.727917361090434
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 0.69,
@@ -1768,6 +2041,45 @@
       "sinad_db": 0.8396345389851059,
       "line_lock": 1.0,
       "burst_sinad_db": -4.453640495154149
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 4.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 0.22618445400610934,
+      "line_lock": 1.0,
+      "burst_sinad_db": -4.64530126771497
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 4.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 0.22055918364006077,
+      "line_lock": 1.0,
+      "burst_sinad_db": -4.651467954698162
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 4.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 0.22748684152164683,
+      "line_lock": 1.0,
+      "burst_sinad_db": -4.6351193851305466
     },
     {
       "variant": [
@@ -1993,6 +2305,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 30.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 10.430175394066293,
+      "line_lock": 1.0,
+      "burst_sinad_db": 1.4437785229767208
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 30.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 10.430175394066293,
+      "line_lock": 1.0,
+      "burst_sinad_db": 1.4437785229767208
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 30.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 10.430175394066293,
+      "line_lock": 1.0,
+      "burst_sinad_db": 1.4437785229767208
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 0.69,
@@ -2210,6 +2561,45 @@
       "sinad_db": 10.474855253896806,
       "line_lock": 1.0,
       "burst_sinad_db": 4.174162011060505
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 30.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 10.810161362410158,
+      "line_lock": 1.0,
+      "burst_sinad_db": 3.75025293178607
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 30.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 10.810161362410158,
+      "line_lock": 1.0,
+      "burst_sinad_db": 3.75025293178607
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 30.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 10.810161362410158,
+      "line_lock": 1.0,
+      "burst_sinad_db": 3.75025293178607
     },
     {
       "variant": [
@@ -2435,6 +2825,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 30.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 10.447230694603773,
+      "line_lock": 1.0,
+      "burst_sinad_db": 1.395968672414495
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 30.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 10.447230694603773,
+      "line_lock": 1.0,
+      "burst_sinad_db": 1.395968672414495
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 30.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 10.447230694603773,
+      "line_lock": 1.0,
+      "burst_sinad_db": 1.395968672414495
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 0.69,
@@ -2652,6 +3081,45 @@
       "sinad_db": 10.485937117529716,
       "line_lock": 1.0,
       "burst_sinad_db": 4.273278818439943
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 30.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 10.815833008569157,
+      "line_lock": 1.0,
+      "burst_sinad_db": 3.720806087888535
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 30.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 10.815833008569157,
+      "line_lock": 1.0,
+      "burst_sinad_db": 3.720806087888535
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 0.69,
+      "cnr_db": 30.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 10.815833008569157,
+      "line_lock": 1.0,
+      "burst_sinad_db": 3.720806087888535
     },
     {
       "variant": [
@@ -2877,6 +3345,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 1.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": -1.4032386309487874,
+      "line_lock": 0.978021978021978,
+      "burst_sinad_db": -6.623220591513369
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 1.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": -1.4263856749197932,
+      "line_lock": 0.978021978021978,
+      "burst_sinad_db": -6.642138950895186
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 1.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": -1.3925172294759207,
+      "line_lock": 0.978021978021978,
+      "burst_sinad_db": -6.64493208384081
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 1.0,
@@ -3094,6 +3601,45 @@
       "sinad_db": -1.3079929120684102,
       "line_lock": 0.9594594594594594,
       "burst_sinad_db": -4.680910464818259
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 1.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": -1.379411292239182,
+      "line_lock": 0.9644444444444444,
+      "burst_sinad_db": -5.064480940735221
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 1.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": -1.4016886999200007,
+      "line_lock": 0.9644444444444444,
+      "burst_sinad_db": -5.103367227217416
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 1.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": -1.368992673573643,
+      "line_lock": 0.9641255605381166,
+      "burst_sinad_db": -5.100788339624063
     },
     {
       "variant": [
@@ -3319,6 +3865,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 1.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": -1.3228784807977099,
+      "line_lock": 0.9742647058823529,
+      "burst_sinad_db": -6.309522825196363
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 1.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": -1.3440862765212742,
+      "line_lock": 0.9742647058823529,
+      "burst_sinad_db": -6.336293718304762
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 1.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": -1.3161251749885454,
+      "line_lock": 0.9742647058823529,
+      "burst_sinad_db": -6.338249643750103
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 1.0,
@@ -3536,6 +4121,45 @@
       "sinad_db": -1.2523214558504807,
       "line_lock": 0.972972972972973,
       "burst_sinad_db": -5.0683019696554155
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 1.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": -1.380555989437996,
+      "line_lock": 0.9730941704035875,
+      "burst_sinad_db": -5.276027205397703
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 1.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": -1.3973081978740345,
+      "line_lock": 0.9730941704035875,
+      "burst_sinad_db": -5.2852688015974945
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 1.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": -1.36390068416832,
+      "line_lock": 0.9730941704035875,
+      "burst_sinad_db": -5.284403476377189
     },
     {
       "variant": [
@@ -3761,6 +4385,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 4.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 3.0560987714979406,
+      "line_lock": 1.0,
+      "burst_sinad_db": -2.9309223457902784
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 4.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 3.0548150926050903,
+      "line_lock": 1.0,
+      "burst_sinad_db": -2.9380652171368165
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 4.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 3.0604369762335604,
+      "line_lock": 1.0,
+      "burst_sinad_db": -2.9452625992749932
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 1.0,
@@ -3978,6 +4641,45 @@
       "sinad_db": 3.406046912596699,
       "line_lock": 1.0,
       "burst_sinad_db": -1.255960005031124
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 4.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 3.1286426835541503,
+      "line_lock": 1.0,
+      "burst_sinad_db": -1.46821697512588
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 4.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 3.1284221982322573,
+      "line_lock": 1.0,
+      "burst_sinad_db": -1.484778749337032
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 4.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 3.1376973687223044,
+      "line_lock": 1.0,
+      "burst_sinad_db": -1.4813972383989724
     },
     {
       "variant": [
@@ -4203,6 +4905,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 4.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 3.058526394611717,
+      "line_lock": 1.0,
+      "burst_sinad_db": -2.88549030160899
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 4.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 3.0561299075150608,
+      "line_lock": 1.0,
+      "burst_sinad_db": -2.884212361554365
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 4.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 3.0613265374416443,
+      "line_lock": 1.0,
+      "burst_sinad_db": -2.883912925095916
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 1.0,
@@ -4420,6 +5161,45 @@
       "sinad_db": 3.4148123264514685,
       "line_lock": 1.0,
       "burst_sinad_db": -1.2623510210205247
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 4.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 3.1121621274981512,
+      "line_lock": 1.0,
+      "burst_sinad_db": -1.5290289797398806
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 4.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 3.1130346873136254,
+      "line_lock": 1.0,
+      "burst_sinad_db": -1.5273675834183202
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 4.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 3.119246836772316,
+      "line_lock": 1.0,
+      "burst_sinad_db": -1.5224688629373135
     },
     {
       "variant": [
@@ -4645,6 +5425,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 30.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 12.867811587593456,
+      "line_lock": 1.0,
+      "burst_sinad_db": 3.345797155887451
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 30.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 12.867811587593456,
+      "line_lock": 1.0,
+      "burst_sinad_db": 3.345797155887451
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 30.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 12.867811587593456,
+      "line_lock": 1.0,
+      "burst_sinad_db": 3.345797155887451
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 1.0,
@@ -4862,6 +5681,45 @@
       "sinad_db": 12.54329554774542,
       "line_lock": 1.0,
       "burst_sinad_db": 5.237647182532044
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 30.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 13.277938557527808,
+      "line_lock": 1.0,
+      "burst_sinad_db": 6.311019953894819
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 30.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 13.277938557527808,
+      "line_lock": 1.0,
+      "burst_sinad_db": 6.311019953894819
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 30.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 13.277938557527808,
+      "line_lock": 1.0,
+      "burst_sinad_db": 6.311019953894819
     },
     {
       "variant": [
@@ -5087,6 +5945,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 30.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 12.877665060672708,
+      "line_lock": 1.0,
+      "burst_sinad_db": 3.3929283675014648
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 30.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 12.877665060672708,
+      "line_lock": 1.0,
+      "burst_sinad_db": 3.3929283675014648
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 30.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 12.877665060672708,
+      "line_lock": 1.0,
+      "burst_sinad_db": 3.3929283675014648
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 1.0,
@@ -5304,6 +6201,45 @@
       "sinad_db": 12.544432538190373,
       "line_lock": 1.0,
       "burst_sinad_db": 5.215255643206653
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 30.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 13.284690730002232,
+      "line_lock": 1.0,
+      "burst_sinad_db": 6.283762529067821
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 30.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 13.284690730002232,
+      "line_lock": 1.0,
+      "burst_sinad_db": 6.283762529067821
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.0,
+      "cnr_db": 30.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 13.284690730002232,
+      "line_lock": 1.0,
+      "burst_sinad_db": 6.283762529067821
     },
     {
       "variant": [
@@ -5529,6 +6465,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 1.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": -1.8325712795918394,
+      "line_lock": 0.7634408602150538,
+      "burst_sinad_db": -4.5733518630328165
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 1.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": -1.7918200307611554,
+      "line_lock": 0.7491039426523297,
+      "burst_sinad_db": -4.6382235608361375
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 1.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": -1.7157662946892844,
+      "line_lock": 0.7482014388489209,
+      "burst_sinad_db": -4.680901177568701
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 1.4,
@@ -5746,6 +6721,45 @@
       "sinad_db": -2.067771196485527,
       "line_lock": 0.8078602620087336,
       "burst_sinad_db": -3.2167967492470106
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 1.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": -1.9151285994808869,
+      "line_lock": 0.4188034188034188,
+      "burst_sinad_db": -3.522833291102186
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 1.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": -1.8802939421980935,
+      "line_lock": 0.41452991452991456,
+      "burst_sinad_db": -3.590255478924697
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 1.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": -1.7986099576112833,
+      "line_lock": 0.4092827004219409,
+      "burst_sinad_db": -3.618607009297992
     },
     {
       "variant": [
@@ -5971,6 +6985,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 1.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": -1.840553348435055,
+      "line_lock": 0.7785714285714286,
+      "burst_sinad_db": -4.660551715684061
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 1.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": -1.7971907652060533,
+      "line_lock": 0.7758007117437722,
+      "burst_sinad_db": -4.681417760797469
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 1.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": -1.7193529344394376,
+      "line_lock": 0.7703180212014135,
+      "burst_sinad_db": -4.704540041015593
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 1.4,
@@ -6188,6 +7241,45 @@
       "sinad_db": -2.0629437226783436,
       "line_lock": 0.96875,
       "burst_sinad_db": -3.414457328711608
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 1.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": -1.907886159886453,
+      "line_lock": 0.48214285714285715,
+      "burst_sinad_db": -3.7568189037730306
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 1.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": -1.8659681584141594,
+      "line_lock": 0.5089285714285714,
+      "burst_sinad_db": -3.8962280731718826
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 1.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": -1.7838631662606201,
+      "line_lock": 0.5133928571428571,
+      "burst_sinad_db": -3.9003364927855384
     },
     {
       "variant": [
@@ -6413,6 +7505,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 4.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 2.9358549539935215,
+      "line_lock": 0.9926739926739927,
+      "burst_sinad_db": -0.9023315813053655
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 4.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 3.0527833993941353,
+      "line_lock": 0.9926739926739927,
+      "burst_sinad_db": -0.9007553963648485
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 4.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 3.1189997156308187,
+      "line_lock": 0.9926739926739927,
+      "burst_sinad_db": -0.8957496557759181
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 1.4,
@@ -6630,6 +7761,45 @@
       "sinad_db": 2.631560356869822,
       "line_lock": 1.0,
       "burst_sinad_db": 0.9022254426874365
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 4.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 2.839429126319181,
+      "line_lock": 1.0,
+      "burst_sinad_db": 0.47538036447849263
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 4.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 2.964870909198619,
+      "line_lock": 1.0,
+      "burst_sinad_db": 0.454103387375117
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 4.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 3.0230608538112316,
+      "line_lock": 1.0,
+      "burst_sinad_db": 0.44093525743475126
     },
     {
       "variant": [
@@ -6855,6 +8025,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 4.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 3.001046754085758,
+      "line_lock": 0.9963235294117647,
+      "burst_sinad_db": -0.9730079622834973
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 4.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 3.1082438589324353,
+      "line_lock": 0.9963235294117647,
+      "burst_sinad_db": -1.035839855206084
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 4.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 3.172794939140222,
+      "line_lock": 0.9963235294117647,
+      "burst_sinad_db": -1.002969813384333
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 1.4,
@@ -7072,6 +8281,45 @@
       "sinad_db": 2.7273976930135664,
       "line_lock": 0.990990990990991,
       "burst_sinad_db": 0.9972453975104124
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 4.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 2.9234746822248874,
+      "line_lock": 1.0,
+      "burst_sinad_db": 0.6687369926438838
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 4.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 3.0501957286143644,
+      "line_lock": 1.0,
+      "burst_sinad_db": 0.6618461847215157
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 4.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 3.1126052202133527,
+      "line_lock": 1.0,
+      "burst_sinad_db": 0.6712781156825166
     },
     {
       "variant": [
@@ -7297,6 +8545,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 30.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 14.194065986812669,
+      "line_lock": 1.0,
+      "burst_sinad_db": 6.757111370360698
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 30.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 14.194065986812669,
+      "line_lock": 1.0,
+      "burst_sinad_db": 6.757111370360698
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 30.0,
+      "seed": 201,
+      "standard": "PAL",
+      "sinad_db": 14.194065986812669,
+      "line_lock": 1.0,
+      "burst_sinad_db": 6.757111370360698
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 1.4,
@@ -7514,6 +8801,45 @@
       "sinad_db": 14.13852967504722,
       "line_lock": 1.0,
       "burst_sinad_db": 8.479766170741215
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 30.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 14.621593239270286,
+      "line_lock": 1.0,
+      "burst_sinad_db": 8.785177780810828
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 30.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 14.621593239270286,
+      "line_lock": 1.0,
+      "burst_sinad_db": 8.785177780810828
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 30.0,
+      "seed": 202,
+      "standard": "NTSC",
+      "sinad_db": 14.621593239270286,
+      "line_lock": 1.0,
+      "burst_sinad_db": 8.785177780810828
     },
     {
       "variant": [
@@ -7739,6 +9065,45 @@
     {
       "variant": [
         28,
+        "reject_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 30.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 14.173485384646597,
+      "line_lock": 1.0,
+      "burst_sinad_db": 6.818182032816454
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 30.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 14.173485384646597,
+      "line_lock": 1.0,
+      "burst_sinad_db": 6.818182032816454
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 30.0,
+      "seed": 203,
+      "standard": "PAL",
+      "sinad_db": 14.173485384646597,
+      "line_lock": 1.0,
+      "burst_sinad_db": 6.818182032816454
+    },
+    {
+      "variant": [
+        28,
         "soft_lock"
       ],
       "dev": 1.4,
@@ -7956,6 +9321,45 @@
       "sinad_db": 14.116073994372876,
       "line_lock": 1.0,
       "burst_sinad_db": 8.356906402607034
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 30.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 14.608360763993325,
+      "line_lock": 1.0,
+      "burst_sinad_db": 8.944589428134707
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 30.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 14.608360763993325,
+      "line_lock": 1.0,
+      "burst_sinad_db": 8.944589428134707
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "dev": 1.4,
+      "cnr_db": 30.0,
+      "seed": 204,
+      "standard": "NTSC",
+      "sinad_db": 14.608360763993325,
+      "line_lock": 1.0,
+      "burst_sinad_db": 8.944589428134707
     }
   ],
   "summary": [
@@ -8748,6 +10152,96 @@
       ],
       "mean_delta_db": -0.8679051958834539,
       "worst_delta_db": -2.384547517470393
+    },
+    {
+      "variant": [
+        28,
+        "reject_wrap"
+      ],
+      "violations": [
+        [
+          0.69,
+          1.0,
+          202
+        ],
+        [
+          0.69,
+          30.0,
+          201
+        ],
+        [
+          0.69,
+          30.0,
+          203
+        ],
+        [
+          1.4,
+          1.0,
+          204
+        ]
+      ],
+      "mean_delta_db": -0.797733424386693,
+      "worst_delta_db": -2.808702885007453
+    },
+    {
+      "variant": [
+        28,
+        "gentle_wrap"
+      ],
+      "violations": [
+        [
+          0.69,
+          1.0,
+          202
+        ],
+        [
+          0.69,
+          30.0,
+          201
+        ],
+        [
+          0.69,
+          30.0,
+          203
+        ],
+        [
+          1.4,
+          1.0,
+          201
+        ]
+      ],
+      "mean_delta_db": -0.786475988416463,
+      "worst_delta_db": -2.814328155373502
+    },
+    {
+      "variant": [
+        28,
+        "late_wrap"
+      ],
+      "violations": [
+        [
+          0.69,
+          1.0,
+          202
+        ],
+        [
+          0.69,
+          30.0,
+          201
+        ],
+        [
+          0.69,
+          30.0,
+          203
+        ],
+        [
+          1.4,
+          1.0,
+          201
+        ]
+      ],
+      "mean_delta_db": -0.7648160149551065,
+      "worst_delta_db": -2.8074004974919156
     }
   ],
   "selected": {
