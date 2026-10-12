@@ -260,7 +260,6 @@ void rf_force_gain(uint8_t gain)
     phy_end();
 }
 
-uint8_t rf_gain(void) { return s_gain; }
 void rf_set_post_gain_hook(void (*hook)(uint8_t gain)) { s_post_gain_hook = hook; }
 const arc_gain_table_t *rf_gain_table(void) { return &s_table; }
 uint32_t rf_table_generation(void) { return s_table_generation; }

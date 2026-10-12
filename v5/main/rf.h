@@ -18,7 +18,6 @@ void rf_reboot_to_download(void);
  * expected PHY generation. */
 bool rf_set_gain(uint8_t gain, uint32_t expected_generation);
 void rf_force_gain(uint8_t gain);           /* caller owns the receiver */
-uint8_t rf_gain(void);
 /* Called after every gain write and PHY restore (DC hold re-assert). */
 void rf_set_post_gain_hook(void (*hook)(uint8_t gain));
 const arc_gain_table_t *rf_gain_table(void);

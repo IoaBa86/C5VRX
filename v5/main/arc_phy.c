@@ -128,18 +128,3 @@ uint8_t arc_gain_highest_rf_stage_start(const arc_gain_table_t *table)
         start += table->spans[i];
     return start <= table->max_index ? (uint8_t)start : table->max_index;
 }
-
-static int8_t sign_extend(uint32_t value, unsigned bits)
-{
-    uint32_t sign = 1u << (bits - 1u);
-    return (int8_t)((int32_t)((value ^ sign) - sign));
-}
-
-arc_iq_correction_t arc_iq_correction_decode(uint32_t reg)
-{
-    return (arc_iq_correction_t) {
-        .enable = (uint8_t)((reg >> 29) & 0x7u),
-        .coef0 = sign_extend((reg >> 22) & 0x7fu, 7u),
-        .coef1 = sign_extend((reg >> 16) & 0x3fu, 6u),
-    };
-}

@@ -31,12 +31,6 @@ typedef struct {
     uint32_t packed_state;
 } arc_gain_tuple_t;
 
-typedef struct {
-    uint8_t enable;
-    int8_t coef0;
-    int8_t coef1;
-} arc_iq_correction_t;
-
 /* Capture the gain-table description produced by the pinned vendor PHY.
  * This function is read-only and must run after normal PHY initialization. */
 void arc_phy_capture_gain_table(arc_gain_table_t *table);
@@ -51,4 +45,3 @@ void arc_gain_table_from_bytes(arc_gain_table_t *table,
 bool arc_gain_tuple_decode(const arc_gain_table_t *table, uint8_t gain_index,
                            arc_gain_tuple_t *tuple);
 uint8_t arc_gain_highest_rf_stage_start(const arc_gain_table_t *table);
-arc_iq_correction_t arc_iq_correction_decode(uint32_t reg);
