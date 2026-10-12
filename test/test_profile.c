@@ -13,6 +13,7 @@
 #include <math.h>
 #include <stdio.h>
 #include "profile_logic.h"
+#include "kp_tables.h"
 
 static uint64_t s_rng = 0x2545f4914f6cdd1dull;
 static double uniform(void)
@@ -218,6 +219,17 @@ int main(void)
         check("live switch run: wide VTX leaves the narrow profile within one cycle",
               left_at >= 0 && left_at - 300000000LL <= 30000000LL + 15000000LL && active == PROFILE_WIDE, detail);
         check("live switch run: no flapping", switches == 2u, detail);
+    }
+    {   /* A profile is a filter plus a start level of the one U85Q program: the
+         * old KP060/KP050 programs' LUTs are these ladder levels bit-exactly. */
+        bool ok = true;
+        for (int p = 0; p < PROFILES; ++p) {
+            int lv = profile_base_level_for(p);
+            ok &= lv >= 0 && lv < KP_LEVELS && kp_level_x100[lv] == profile_base_kp_x100(p);
+        }
+        check("profile start levels: DEFAULT/WIDE 0.85, KP060 0.60, KP050 0.50",
+              ok && profile_base_level_for(PROFILE_KP050) == 7 && profile_base_level_for(PROFILE_KP060) == 5 &&
+              profile_base_level_for(PROFILE_DEFAULT) == 0 && profile_base_level_for(PROFILE_WIDE) == 0, "");
     }
     printf("%s (%d failures)\n", s_fail ? "FAILED" : "PASSED", s_fail);
     return s_fail != 0;

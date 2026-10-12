@@ -223,7 +223,8 @@ bool calibration_sphase_settled(void)
  * 14 MHz (enough for every tested VTX deviation, docs/FINDINGS.md) and whose
  * noise stays incoherent (so Direct Gain still recognises "no carrier")
  * is kept. Built on ESPARGOS esp-sdr's C5 BANDWIDTH control (GPL-3.0). */
-#define FILTER_VERSION     3u   /* 3: wide class (one new sweep after the update) */
+/* 3: wide class; 4: codes 52/62/63 (one new sweep after the update) */
+#define FILTER_VERSION     4u
 /* Two classes from one sweep (research: 12 MHz helps every tested VTX
  * deviation and keeps strong-signal sharpness; 10 MHz adds up to ~1.7 dB
  * for deviation <= ~1.1 but hurts wide VTXs, so it is used only when the
@@ -271,6 +272,12 @@ static bool noise_measure(unsigned *width, unsigned *nbw, unsigned *env_x100, in
 
 /* On-screen progress: the measured time per setting gives the time left. */
 static unsigned s_cal_done, s_cal_total;
+/* Higher code = narrower. Board sweep (FINDINGS, 2026-10-12): the narrow
+ * class landed on code 60, the old grid's last code, at 11.9 MHz noise
+ * bandwidth instead of the modelled 10 MHz; the field takes 0..63, so 62
+ * and 63 are tried too, and 52 fills the gap around the 12 MHz class. */
+#define FILTER_CODES  13u
+#define FILTER_SKIRTS 5u
 static int64_t s_cal_t0;
 static bool s_cal_own_channel;
 static void cal_status(void)
@@ -358,7 +365,7 @@ bool filter_calibrate(bool automatic)
     if (ok && !(ok = find_quiet_channel(original))) fail = "no_quiet_channel";
     s_cal_own_channel = rf_channel_index() == original;
     s_cal_done = 0;
-    s_cal_total = ok ? 2u + 2u * 10u * 5u : 0u;   /* checks + BW40/BW20 x codes x skirts */
+    s_cal_total = ok ? 2u + 2u * FILTER_CODES * FILTER_SKIRTS : 0u;   /* checks + BW40/BW20 x codes x skirts */
     s_cal_t0 = esp_timer_get_time();
     printf("FILTER_CAL begin mode=%s freq=%u (own %u) target_width_khz=%u\n", automatic ? "auto" : "manual",
            rf_frequency_mhz(), s_original_mhz, FILTER_MIN_KHZ);
@@ -371,8 +378,8 @@ bool filter_calibrate(bool automatic)
     unsigned narrow_nbw = ok && width >= FILTER_NARROW_KHZ ? cal_nbw : 0, narrow_width = width;
     rf_filter_t wide = calibrated;
     unsigned wide_nbw = ok && width >= FILTER_WIDE_KHZ ? cal_nbw : 0, wide_width = width;
-    static const int8_t codes[] = {PHY_FILTER_CALIBRATED, 0, 8, 16, 24, 32, 40, 48, 56, 60};
-    static const uint8_t skirts[] = {0, 8, 16, 24, 32};
+    static const int8_t codes[FILTER_CODES] = {PHY_FILTER_CALIBRATED, 0, 8, 16, 24, 32, 40, 48, 52, 56, 60, 62, 63};
+    static const uint8_t skirts[FILTER_SKIRTS] = {0, 8, 16, 24, 32};
     for (unsigned d = 0; ok && d < 2u; ++d)
         for (unsigned c = 0; ok && c < sizeof(codes); ++c)
             for (unsigned k = 0; ok && k < sizeof(skirts); ++k) {

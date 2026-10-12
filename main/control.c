@@ -258,10 +258,10 @@ static void command(int c, unsigned *menu_idle)
         save_auto_mode();
         kp_ladder_reset(&s_kp);
         s_auto_candidate.candidate = false;
-        (void)transport_kp_set(0);
-        s_mode_reset_pending = !transport_apply_auto(0, false);
+        (void)transport_kp_set(profile_base_level(profile_active()));
+        s_mode_reset_pending = !transport_apply_auto(profile_base_level(profile_active()), false);
         printf("KP ladder %s\n", s_kp_auto == 2 ? "AUTO kp + LP (program changes briefly restart video; bench test)" :
-               s_kp_auto == 1 ? "AUTO kp (brief restarts, U85Q only; bench test)" : "OFF");
+               s_kp_auto == 1 ? "AUTO kp (brief restarts; bench test)" : "OFF");
         break;
     case 'P': {
         manual_auto_off();
@@ -273,7 +273,7 @@ static void command(int c, unsigned *menu_idle)
             printf("PROGRAM manual refused=cooldown wait_ms=%lu (press P again after waiting)\n",
                    (unsigned long)transport_switch_wait_ms());
         else printf("PROGRAM manual %s: %s\n", transport_program_name(), !ok ?
-                    "refused (needs U85Q; see prog_verify_fail/prog_restart_fail in T)" :
+                    "refused (see prog_verify_fail/prog_restart_fail in T)" :
                     menu ? "loaded at menu exit through the normal start sequence" : "switched via pipeline restart");
         break;
     }
@@ -288,7 +288,7 @@ static void command(int c, unsigned *menu_idle)
         manual_auto_off();
         int next = (transport_kp_target() + (c == 'k' ? 1 : KP_LADDER_LEVELS - 1)) % KP_LADDER_LEVELS;
         printf("KP manual level=%d %s\n", next, transport_kp_set(next) ? "queued (brief pipeline restart)" :
-               "refused (needs the U85Q program: DEFAULT/WIDE profile, live video)");
+               "refused (needs a verified level and live video)");
         break;
     }
     case 'g': {
@@ -322,6 +322,7 @@ static void control_task(void *arg)
     uint8_t afc_lost = 0;
     unsigned settle = RETUNE_SETTLE_TICKS, btn = 0, boot_grace = 20, menu_idle = 0, menu_refresh = 0;
     bool long_fired = false, was_locked = false, ladder_was_active = true;
+    int seen_profile = profile_active();
     uint32_t seen_phy = phy_generation(), seen_control = s_control_epoch;
     uint32_t seen_restart_errors = transport_restart_errors();
     for (;;) {
@@ -436,19 +437,27 @@ static void control_task(void *arg)
             int8_t sign = afc.sign < 0 ? -1 : 1;
             if (sign != s_afc_sign) { s_afc_sign = sign; (void)blob_store("afc_sign", &sign, 1); }
         }
-        /* The ladder owns kp/LP only on the U85Q topology (DEFAULT/WIDE): a
-         * MATCHED kp0.5/0.6 profile keeps its own LUT, and every request
-         * there would be refused by the transport. */
+        /* The ladder owns kp/LP on every profile (one U85Q topology; a
+         * profile only sets the filter and the start level). It is inactive
+         * only while the verified level is unknown (fault, pending restart).
+         * A profile change restarts it from the level that now runs. */
         const bool ladder_active = transport_kp_level() >= 0;
-        if (ladder_active && !ladder_was_active) {   /* back on U85Q: start from what runs */
+        const int profile = profile_active();
+        if (ladder_active && (!ladder_was_active || profile != seen_profile)) {   /* start from what runs */
             kp_ladder_reset(&s_kp);
             s_kp.level = (uint8_t)transport_kp_level();
             s_kp.lp = transport_lp();
+            s_auto_candidate.candidate = false;
         }
         ladder_was_active = ladder_active;
+        if (ladder_active) seen_profile = profile;
         if (s_kp_auto && !s_menu_active && !ladder_active) {
             s_auto_candidate.candidate = false;
         } else if (s_kp_auto && !s_menu_active) {
+            /* MATCHED profiles (start level below kp 0.85) run the narrow class:
+             * decided by the profile, not by filter equality, since the narrow
+             * and normal sweep entries may be the same setting. */
+            s_kp.narrow = profile_base_level(profile) > 0;
             uint8_t level = kp_ladder_update_lp(&s_kp, cn_x10, window_ok,
                                                 profile_live_deviation_x100(), now, s_kp_auto == 2);
             bool usable = window_ok && ctx == afc_context();
@@ -457,7 +466,8 @@ static void control_task(void *arg)
         } else {
             s_auto_candidate.candidate = false;
             if (!s_kp_auto) {
-                if (s_mode_reset_pending) s_mode_reset_pending = !transport_apply_auto(0, false);
+                if (s_mode_reset_pending)
+                    s_mode_reset_pending = !transport_apply_auto(profile_base_level(profile_active()), false);
                 else (void)transport_kp_tick();
             }  /* manual target, same backend cooldown */
         }
@@ -492,15 +502,15 @@ void control_print(void)
 {
     printf("CONTROL channel=%s freq=%u offset_khz=%d cfo_khz=%d afc_locked=%u afc_corrections=%u "
            "afc_weak_skips=%u afc_sign=%+d(%s) standard=%s detected=%s signal=%d menu=%u deviation_x100=%d mode=%s "
-           "tracker=%d kp_auto=%u%s kp_steps=%lu lp_switches=%lu\n",
+           "kp_auto=%u%s kp_steps=%lu lp_switches=%lu\n",
            rf_channel()->name, rf_frequency_mhz(), rf_offset_khz(), s_cfo_khz, s_afc_locked,
            s_afc_corrections, s_afc_weak_skips, s_afc_sign,
            s_afc_sign_state == AFC2_SIGN_FLIPPED ? "flipped" : s_afc_sign_state == AFC2_SIGN_CONFIRMED ? "confirmed" :
            "unverified", s_std_mode == STD_MODE_AUTO ? "AUTO" : s_std_mode == STD_MODE_PAL ? "PAL" : "NTSC",
            s_detected_std_valid ? (s_detected_std == VIDEO_STD_PAL ? "PAL" : "NTSC") : "none",
            s_signal_strength, s_menu_active, profile_deviation_x100(rf_channel_index()),
-           profile_name(profile_active()), transport_tracker(), s_kp_auto,
-           s_kp_auto && transport_kp_level() < 0 ? "(inactive: not the U85Q tracker)" : "", (unsigned long)s_kp.steps,
+           profile_name(profile_active()), s_kp_auto,
+           s_kp_auto && transport_kp_level() < 0 ? "(inactive: kp level unverified)" : "", (unsigned long)s_kp.steps,
            (unsigned long)s_kp.lp_switches);
 }
 

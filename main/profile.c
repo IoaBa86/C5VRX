@@ -26,7 +26,9 @@
  * reported. With the live switch on (NVS prof_live, default, console A) a
  * reliable result changes the active profile in flight: widening after one
  * decision, narrowing after two agreeing decisions (profile_logic.h), via
- * a filter relock plus the guarded, verified tracker restart (a few ms).
+ * a filter relock plus the guarded, verified kp restart (a few ms). A
+ * profile sets the filter and the kp level it starts from; with AUTO the
+ * kp/LP ladder takes over from there on every profile (control.c).
  * In report-only mode a VTX that reads wide while a matched profile is
  * active is reported loudly and DEFAULT returns at the next boot, channel
  * change or CALIBRATE.
@@ -78,7 +80,13 @@ int profile_for_deviation(int dev_x100)
     return profile_class(dev_x100, filter_setting(FILTER_NARROW, &f), filter_setting(FILTER_WIDE, &f));
 }
 
-/* Filter class and tracker of a profile. Only while TX is not live: before
+/* kp ladder level (kp_tables.h) a profile starts from. */
+int profile_base_level(int p)
+{
+    return profile_base_level_for(p);
+}
+
+/* Filter class and start kp level of a profile. Only while TX is not live: before
  * transport_start or with the menu / a status screen owning TX. A filter
  * that does not read back leaves DEFAULT, never a half-applied profile. */
 bool profile_set(int p)
@@ -90,15 +98,14 @@ bool profile_set(int p)
         if (p != PROFILE_DEFAULT) return false;
         f = rf_filter();            /* uncalibrated: keep what is set */
     }
-    int tracker = p == PROFILE_KP050 ? TRACKER_KP050 : p == PROFILE_KP060 ? TRACKER_KP060 : TRACKER_KP085;
-    if (!transport_set_tracker(tracker)) return false;   /* refuses while TX is live */
+    if (!transport_set_base_level(profile_base_level(p))) return false;   /* refuses while TX is live */
     if ((!rf_filter_equal(rf_filter(), f) || !rf_filter_applied()) && !rf_set_filter(f)) {
         printf("PROFILE error: filter code=%d skirt=%u not applied (read back code=%d skirt=%d)\n", f.code, f.skirt,
                phy_filter_code(), phy_filter_skirt());
         if (p != PROFILE_DEFAULT) {
             rf_filter_t d;
             if (filter_setting(FILTER_NORMAL, &d)) (void)rf_set_filter(d);
-            (void)transport_set_tracker(TRACKER_KP085);
+            (void)transport_set_base_level(profile_base_level(PROFILE_DEFAULT));
             s_profile = PROFILE_DEFAULT;
             return false;
         }
@@ -190,7 +197,6 @@ static void live_apply(void)
     const int cls = p == PROFILE_DEFAULT ? FILTER_NORMAL : p == PROFILE_WIDE ? FILTER_WIDE : FILTER_NARROW;
     if (!filter_setting(cls, &f)) { s_switch_pending = -1; ++s_live_switch_fail; return; }
     const rf_filter_t before = rf_filter();
-    const int tracker = p == PROFILE_KP050 ? TRACKER_KP050 : p == PROFILE_KP060 ? TRACKER_KP060 : TRACKER_KP085;
     s_switch_pending = -1;
     if (!rf_filter_equal(before, f) && !rf_set_filter(f)) {
         (void)rf_set_filter(before);
@@ -199,10 +205,11 @@ static void live_apply(void)
                f.code, f.skirt);
         return;
     }
-    if (!transport_switch_tracker(tracker)) {
+    /* Start level, LP off, in one guarded restart (none if both already hold). */
+    if (!transport_apply_auto(profile_base_level(p), false)) {
         (void)rf_set_filter(before);
         ++s_live_switch_fail;
-        printf("PROFILE live switch to %s failed: tracker restart (see T recovery); filter restored\n", s_names[p]);
+        printf("PROFILE live switch to %s failed: kp restart (see T recovery); filter restored\n", s_names[p]);
         return;
     }
     const int old = s_profile;

@@ -169,6 +169,26 @@ int main(void)
         }
         check("program switches at least KP_LP_GAP_US apart", min_gap >= KP_LP_GAP_US);
     }
+    {   /* Narrow 10 MHz filter (MATCHED profiles): own curves, LP still allowed. */
+        kp_ladder_t n;
+        int64_t tn = 0;
+        kp_ladder_reset(&n);
+        n.narrow = true;
+        for (int k = 0; k < 400; ++k, tn += TICK_US) (void)kp_ladder_update_lp(&n, 200, true, 100, tn, true);
+        check("narrow, deviation 1.0, 20 dB: U85Q kp 0.85", !n.lp && kp_level_x100[n.level] == 85);
+        for (int k = 0; k < 400; ++k, tn += TICK_US) (void)kp_ladder_update_lp(&n, 40, true, 100, tn, true);
+        check("narrow, deviation 1.0, 4 dB: LP kp 0.70", n.lp && kp_level_x100[n.level] == 70);
+        kp_ladder_reset(&n);
+        n.narrow = true;
+        for (int k = 0; k < 400; ++k, tn += TICK_US) (void)kp_ladder_update_lp(&n, 120, true, 69, tn, true);
+        check("narrow, deviation 0.69, 12 dB: U85Q kp 0.50", !n.lp && kp_level_x100[n.level] == 50);
+        for (int k = 0; k < 400; ++k, tn += TICK_US) (void)kp_ladder_update_lp(&n, 30, true, 69, tn, true);
+        check("narrow, deviation 0.69, 3 dB: LP kp 0.50", n.lp && kp_level_x100[n.level] == 50);
+        check("narrow flag leaves mid/wide rows on the 12 MHz curves",
+              kp_ladder_target_f(40, 140, false, true) == kp_ladder_target_lp(40, 140, false) &&
+              kp_ladder_target_f(40, 110, true, true) == kp_ladder_target_lp(40, 110, true));
+        check("reset clears the narrow flag", (kp_ladder_reset(&n), !n.narrow));
+    }
     printf("%s: %u checks, %u failures\n", s_fail ? "FAIL" : "PASS", s_run, s_fail);
     return s_fail ? 1 : 0;
 }

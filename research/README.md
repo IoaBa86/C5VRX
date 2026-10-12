@@ -405,9 +405,9 @@ Firmware (fresh settings default to AUTO kp+LP; a saved OFF is respected):
 - `transport_kp_tick` applies a complete, verified LUT16 target through a
   brief halted pipeline restart (shared 5 s cooldown, 2 s AUTO
   confirmation). `k`/`j` step one level by hand for the bench test.
-- Active only with the U85Q program (DEFAULT/WIDE profiles); `T` marks AUTO
-  inactive on MATCHED or CVT. Wide or unknown deviation: kp 0.85 near the
-  floor, 0.80 from ~4 dB.
+- Active on every profile: MATCHED is the narrow filter plus a start level
+  of the same program (section 17). Wide or unknown deviation: kp 0.85 near
+  the floor, 0.80 from ~4 dB.
 
 Expected effect: see section 14. Simulation only.
 
@@ -533,6 +533,35 @@ Bench gate before K mode 2:
 - `prog_restart_fail`, `prog_verify_fail`, `tx_empty` and `bs_overload`
   must stay 0 and the picture must not visibly break.
 
+## 17. The ladder on the MATCHED filter (`best_combo.py`, FILTER_MHZ=10)
+
+C5VRX by Twotoz and the C5VRX contributors. Until now a MATCHED profile
+(10 MHz class, kp 0.5 or 0.6) fixed its tracker and switched AUTO off, so
+the U85Q-LP rescue never ran for exactly the narrow VTXs where it helps
+most. `u85q_kp060/kp050.bsasm` have the U85Q instructions and their LUTs
+are ladder levels 5 and 7 bit-exactly, so the firmware now keeps one
+topology: a profile sets the filter and the start level, the ladder owns
+kp and LP. `data/best_combo_10mhz.json`, 8 seeds, 10 MHz filter:
+
+| deviation | old MATCHED (fixed) | best fixed kp | kp ladder | kp + LP ladder |
+| --- | ---: | ---: | ---: | ---: |
+| 0.69 | 1.62 dB (kp 0.50) | 1.62 dB (0.50) | 1.71 dB | **0.59 dB (+1.03)** |
+| 1.0 | 1.10 dB (kp 0.60) | 1.05 dB (0.55) | 1.09 dB | **0.59 dB (+0.51)** |
+
+- Close in the ladder goes back to kp 0.80 (deviation 0.69: 10.36 vs
+  9.79 dB SINAD at 20 dB C/N) and 0.85 (deviation 1.0: 12.45 vs 11.98).
+- The narrow curves (`kp_ladder.h`, low and normal classes only) are the
+  per-C/N picks of this run; the LP switch points stay at 6.5 dB (the
+  crossovers are ~6.9 and ~6.5 dB).
+- With AUTO OFF the profile's start kp stays, as before.
+
+The board's own sweep put the narrow class on the last code of the old grid
+(code 60, 11.9 MHz noise bandwidth), not on the modelled 10 MHz. The sweep
+now also tries codes 52, 62 and 63 (filter blob v4, one new sweep after the
+update). Whether the chip gets narrower is a board measurement.
+
+Simulation only. Bench gate as section 16; then a MATCHED VTX at the edge.
+
 ## Not firmware levers
 
 - The second IQ40 sample of every span (+0.5..1.1 dB in the C5VRX-4 ledger)
@@ -549,6 +578,7 @@ python range_study.py matched data/matched.json
 CNRS=0,2,4,8,12,16,20,25 python range_study.py strong data/strong.json
 python u85q_lp.py study data/lowpass.json      # U85Q vs U85Q-LP (section 12)
 python best_combo.py data/best_combo.json      # best kp / program per C/N (section 14)
+FILTER_MHZ=10 DEVS=0.69,1.0 python best_combo.py data/best_combo_10mhz.json   # section 17
 IDF_PATH=<esp-idf> python u85q_lp.py check     # emulator: U85Q and U85Q-LP bit-exact
 ```
 

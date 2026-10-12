@@ -47,12 +47,14 @@ typedef struct {
     int64_t pending_since;
     int64_t last_step_us;
     uint32_t steps;
+    bool narrow;            /* narrow (MATCHED, 10 MHz class) filter: own curves; set by the caller */
 } kp_ladder_t;
 
 static inline void kp_ladder_reset(kp_ladder_t *l)
 {
     l->level = 0;
     l->lp = false;
+    l->narrow = false;
     l->lp_pending = -1;
     l->lp_since = 0;
     l->lp_switch_us = -(1LL << 40);
@@ -89,6 +91,21 @@ static const uint8_t kp_lp_curve_x100[KP_CLASSES][6] = {
     {85, 75, 70, 80, 80, 80},
     {85, 85, 85, 85, 85, 85},
 };
+/* The same choice on the narrow 10 MHz class of the MATCHED profiles
+ * (research/best_combo.py, FILTER_MHZ=10, data/best_combo_10mhz.json). Only
+ * the low and normal classes reach that filter; the others keep the 12 MHz
+ * rows. Range limit against the old fixed MATCHED tracker: deviation 0.69
+ * 0.59 vs 1.62 dB (kp 0.50), deviation 1.0 0.59 vs 1.10 dB (kp 0.60); close
+ * in kp 0.80 / 0.85 are 0.5 dB SINAD sharper. The LP switch points stay
+ * (crossover ~6.9 / ~6.5 dB). Simulation, not measured range. */
+static const uint8_t kp_curve_narrow_x100[2][6] = {
+    {50, 50, 50, 50, 50, 80},   /* deviation <= 0.80 */
+    {80, 55, 50, 50, 60, 85},   /* <= 1.05 */
+};
+static const uint8_t kp_lp_curve_narrow_x100[2][6] = {
+    {60, 50, 50, 50, 50, 50},
+    {80, 70, 70, 70, 70, 70},
+};
 static const int16_t kp_lp_on_x10[KP_CLASSES] = {65, 65, 70, 85};
 static const int16_t kp_lp_floor_x10[KP_CLASSES] = {-999, -999, -999, 15};
 #define KP_LP_HYST_X10   15            /* leave LP 1.5 dB above where it is entered */
@@ -105,9 +122,10 @@ static inline int kp_ladder_class(int dev_x100)
 }
 
 /* kp (x100) the curve asks for at a C/N, linear between the points. */
-static inline int kp_ladder_curve_lp_x100(int cls, int cn_x10, bool lp)
+static inline int kp_ladder_curve_x100(int cls, int cn_x10, bool lp, bool narrow)
 {
-    const uint8_t *k = lp ? kp_lp_curve_x100[cls] : kp_curve_x100[cls];
+    const uint8_t *k = narrow && cls <= KP_CLASS_NORMAL ? (lp ? kp_lp_curve_narrow_x100[cls] : kp_curve_narrow_x100[cls])
+                                                        : (lp ? kp_lp_curve_x100[cls] : kp_curve_x100[cls]);
     if (cn_x10 <= kp_cn_points_x10[0]) return k[0];
     for (int i = 1; i < 6; ++i)
         if (cn_x10 <= kp_cn_points_x10[i])
@@ -123,9 +141,14 @@ static inline uint8_t kp_ladder_level_for(int kp_x100)
     return (uint8_t)(lv < 0 ? 0 : lv >= KP_LADDER_LEVELS ? KP_LADDER_LEVELS - 1 : lv);
 }
 
+static inline uint8_t kp_ladder_target_f(int cn_x10, int dev_x100, bool lp, bool narrow)
+{
+    return kp_ladder_level_for(kp_ladder_curve_x100(kp_ladder_class(dev_x100), cn_x10, lp, narrow));
+}
+
 static inline uint8_t kp_ladder_target_lp(int cn_x10, int dev_x100, bool lp)
 {
-    return kp_ladder_level_for(kp_ladder_curve_lp_x100(kp_ladder_class(dev_x100), cn_x10, lp));
+    return kp_ladder_target_f(cn_x10, dev_x100, lp, false);
 }
 
 /* Program the C/N asks for, with hysteresis around the current one. */
@@ -178,14 +201,14 @@ static inline uint8_t kp_ladder_update_lp(kp_ladder_t *l, int cn_x10, bool windo
             l->lp_pending = -1;
             l->lp_switch_us = now_us;
             ++l->lp_switches;
-            l->level = kp_ladder_target_lp(cn, dev_x100, l->lp);
+            l->level = kp_ladder_target_f(cn, dev_x100, l->lp, l->narrow);
             l->pending_dir = 0;
             l->last_step_us = now_us;
             ++l->steps;
             return l->level;
         }
     }
-    const uint8_t target = kp_ladder_target_lp(cn, dev_x100, l->lp);
+    const uint8_t target = kp_ladder_target_f(cn, dev_x100, l->lp, l->narrow);
     const int8_t dir = target > l->level ? 1 : target < l->level ? -1 : 0;
     if (dir != l->pending_dir) {
         l->pending_dir = dir;

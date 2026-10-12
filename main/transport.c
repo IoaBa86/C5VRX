@@ -30,24 +30,18 @@
  * tracker on the PAIR4411 shared word, origin cells as coarse quadrant
  * tokens, linear -6..+9 MHz output window. docs/FINDINGS.md. */
 BITSCRAMBLER_PROGRAM(s_u85q, "u85q");
-/* Calmer loop gains of the same formula (kp 0.6 / 0.5), for low-deviation
- * VTXs: narrower tracking bandwidth extends the FM threshold
- * (research, docs/FINDINGS.md). */
-BITSCRAMBLER_PROGRAM(s_u85q_kp060, "u85q_kp060");
-BITSCRAMBLER_PROGRAM(s_u85q_kp050, "u85q_kp050");
+/* Calmer loop gains (the MATCHED profiles' kp 0.6 / 0.5) are LUTs of this
+ * same program: u85q_kp060/kp050.bsasm have identical instructions and
+ * their LUTs are kp_tables.h levels 5 and 7 bit-exactly, so they are not
+ * separate programs here and the kp/LP ladder runs on every profile. */
 /* U85Q-LP: U85Q plus a post-detection IIR low-pass (pole 1/2) in counter A,
  * same LUT and two bundles (research/u85q_lp.py, README sections 12/16).
  * transport_set_lp() uses the normal pipeline start sequence; a live
  * instruction rewrite left the board video black while USB kept running. */
 BITSCRAMBLER_PROGRAM(s_u85q_lp, "u85q_lp");
-static volatile int s_tracker = TRACKER_KP085;
 static bool s_started;   /* live TX running (cleared while menu/status/recovery owns TX) */
-static bool s_prog_lp;   /* U85Q-LP instructions loaded (U85Q tracker only) */
-static const void *tracker_program(int t)
-{
-    if (t == TRACKER_KP085 && s_prog_lp) return s_u85q_lp;
-    return t == TRACKER_KP050 ? s_u85q_kp050 : t == TRACKER_KP060 ? s_u85q_kp060 : s_u85q;
-}
+static bool s_prog_lp;   /* U85Q-LP instructions loaded */
+static const void *tracker_program(bool lp) { return lp ? s_u85q_lp : s_u85q; }
 
 /* 6-bit resistor DAC, LSB first (XIAO D4..D9; 8.2k/3.9k/2k/1k/470R/240R
  * plus 200R). Do not change the tested pin order. */
@@ -62,7 +56,7 @@ static bool s_tx_enabled;
 static bool s_rx_enabled, s_bs_enabled;
 static bool s_transport_fault;
 static unsigned s_output, s_verified_output, s_output_clipped;
-static int s_verified_tracker, s_verified_level;
+static int s_verified_level;
 static bool s_verified_lp, s_have_verified;
 static uint32_t s_restart_errors, s_rollbacks, s_rollback_fail;
 #define LIVE_TX_NODES ((RAW_RING_BYTES + 4091u) / 4092u)
@@ -294,7 +288,7 @@ static bool program_words(const uint8_t *bin, const uint8_t **inst)
  * manual k and mode changes cannot bypass it or alternate two timers. */
 static bool switch_live(int level, bool lp)
 {
-    if (s_tracker != TRACKER_KP085 || !s_lut_known || !s_started || s_menu_active) return false;
+    if (!s_lut_known || !s_started || s_menu_active) return false;
     if (level >= KP_LEVELS || level < -1) return false;
     const uint16_t *lut = level < 0 ? s_lut_live : kp_tables[level];
     bool kp_changed = level >= 0 && level != s_verified_level;
@@ -334,7 +328,6 @@ uint32_t transport_switch_wait_ms(void)
 bool transport_set_lp(bool lp)
 {
     if (lp == s_prog_lp) return true;
-    if (s_tracker != TRACKER_KP085) return false;
     /* Menu selection does not touch live RAM; applied at menu exit. */
     if (s_menu_active) { s_prog_lp = lp; return true; }
     return switch_live(-1, lp);
@@ -342,14 +335,7 @@ bool transport_set_lp(bool lp)
 
 bool transport_lp(void) { return s_prog_lp; }
 
-const char *transport_program_name(void)
-{
-    switch (s_tracker) {
-    case TRACKER_KP060: return "U85Q-KP060";
-    case TRACKER_KP050: return "U85Q-KP050";
-    default: return s_prog_lp ? "U85Q-LP" : "U85Q";
-    }
-}
+const char *transport_program_name(void) { return s_prog_lp ? "U85Q-LP" : "U85Q"; }
 bool transport_faulted(void) { return s_transport_fault; }
 uint32_t transport_restart_errors(void) { return s_restart_errors; }
 unsigned transport_output(void) { return s_output; }
@@ -376,7 +362,7 @@ bool transport_set_output(unsigned level)
  * of the complete program and LUT on boot/menu/rollback as well as P/k. */
 typedef struct {
     const uint8_t *program;
-    int tracker, level;
+    int level;
     bool lp;
     unsigned output, clipped;
 } restart_t;
@@ -402,14 +388,12 @@ static bool restart_stage(void *ctx, tr_stage_t stage, bool rollback)
 {
     restart_t *r = ctx;
     if (stage == TR_BS_ENABLE && rollback) {
-        s_tracker = s_verified_tracker;
         s_prog_lp = s_verified_lp;
         s_output = s_verified_output;
-        r->tracker = s_verified_tracker;
         r->lp = s_verified_lp;
         r->level = s_verified_level;
         r->output = s_verified_output;
-        r->program = tracker_program(r->tracker);
+        r->program = tracker_program(r->lp);
         memcpy(s_lut_work, s_lut_live, sizeof(s_lut_work));
     }
     esp_err_t err = ESP_OK;
@@ -539,48 +523,20 @@ esp_err_t transport_start(void)
     return resume_live(NULL) ? ESP_OK : ESP_FAIL;
 }
 
-/* Select the tracker program. Never under live video: only before the
- * pipeline starts or while the menu / a status screen owns TX; the program
- * is then loaded by the same start sequence as at boot (menu exit path), so
- * DMA and BitScrambler ordering are the proven ones. */
-bool transport_set_tracker(int tracker)
+/* Start level of a profile (kp_tables.h), LP off. Never under live video:
+ * only before the pipeline starts or while the menu / a status screen owns
+ * TX; the LUT is then loaded and verified by the normal start sequence. A
+ * live profile switch uses transport_apply_auto() (guarded restart). */
+bool transport_set_base_level(int level)
 {
-    if (tracker != TRACKER_KP085 && tracker != TRACKER_KP060 && tracker != TRACKER_KP050) return false;
-    if (tracker == s_tracker) return true;
+    if (level < 0 || level >= KP_LEVELS) return false;
     if (s_started && !s_menu_active) {
-        printf("TRACKER change refused: live video\n");
+        printf("BASE level change refused: live video\n");
         return false;
     }
-    s_tracker = tracker;
-    if (tracker != TRACKER_KP085) s_prog_lp = false;   /* LP exists for the U85Q tracker only */
-    return true;
-}
-
-int transport_tracker(void) { return s_tracker; }
-
-/* Live tracker change for an in-flight profile switch (profile.c, optional
- * live mode): the same guarded, verified stop/load/reset/start restart as
- * P/k, sharing the five-second cooldown, with one checked rollback. The
- * U85Q tracker restarts at kp 0.85 without LP; AUTO steps on from there. */
-bool transport_switch_tracker(int tracker)
-{
-    if (tracker != TRACKER_KP085 && tracker != TRACKER_KP060 && tracker != TRACKER_KP050) return false;
-    if (s_transport_fault) return false;
-    if (tracker == s_tracker) return true;
-    if (s_menu_active || !s_started) return transport_set_tracker(tracker);
-    int64_t began = esp_timer_get_time();
-    if (!kp_switch_ready(&s_switch_guard, began)) return false;
-    s_tracker = tracker;
+    s_kp_target = (uint8_t)level;
     s_prog_lp = false;
-    if (tracker == TRACKER_KP085) s_kp_target = 0;
-    bool ok = resume_live(tracker == TRACKER_KP085 ? kp_tables[0] : NULL);
-    if (!ok && s_have_verified) { s_tracker = s_verified_tracker; s_prog_lp = s_verified_lp; }
-    if (ok) ++s_prog_switches; else ++s_prog_restart_fail;
-    int64_t finished = esp_timer_get_time();
-    kp_switch_mark(&s_switch_guard, finished);
-    s_prog_restart_us = (uint32_t)(finished - began);
-    ++s_control_epoch;
-    return ok;
+    return true;
 }
 
 /* Live -> menu: the raster takes TX, but RX keeps collecting IQ for filter,
@@ -634,9 +590,8 @@ void transport_stop_chain(void)
 static bool resume_live(const uint16_t *restore_lut)
 {
     if (s_transport_fault) return false;
-    restart_t r = {.program=tracker_program(s_tracker), .tracker=s_tracker,
-                   .level=0, .lp=s_prog_lp, .output=s_output};
-    if (!restore_lut && s_tracker == TRACKER_KP085) restore_lut = kp_tables[s_kp_target];
+    restart_t r = {.program=tracker_program(s_prog_lp), .level=0, .lp=s_prog_lp, .output=s_output};
+    if (!restore_lut) restore_lut = kp_tables[s_kp_target];
     if (restore_lut == s_lut_live) {
         memcpy(s_lut_work, s_lut_live, sizeof(s_lut_work));
         r.level = s_verified_level;
@@ -645,15 +600,11 @@ static bool resume_live(const uint16_t *restore_lut)
         const uint8_t *inst;
         if (!program_words(r.program, &inst) || r.program[6] != 1u) return false;
         for (unsigned i = 0; i < 1024u; ++i) {
-            uint16_t value;
-            if (restore_lut) value = restore_lut[i];
-            else memcpy(&value, inst + 8u * BITSCRAMBLER_LL_INST_LEN_WORDS * 4u + 2u * i, 2);
             bool clipped;
-            s_lut_work[i] = output_entry(value, s_output, &clipped);
+            s_lut_work[i] = output_entry(restore_lut[i], s_output, &clipped);
             r.clipped += clipped;
         }
-        if (s_tracker == TRACKER_KP085)
-            for (int k = 0; k < KP_LEVELS; ++k) if (restore_lut == kp_tables[k]) r.level = k;
+        for (int k = 0; k < KP_LEVELS; ++k) if (restore_lut == kp_tables[k]) r.level = k;
     }
     tr_result_t result = tr_restart(&r, quiesce, restart_stage, s_have_verified);
     if (result != TR_APPLIED) ++s_restart_errors;
@@ -673,13 +624,12 @@ static bool resume_live(const uint16_t *restore_lut)
         return false;
     }
     memcpy(s_lut_live, s_lut_work, sizeof(s_lut_live));
-    s_verified_tracker = r.tracker;
     s_verified_lp = r.lp;
     s_verified_level = r.level;
     s_verified_output = r.output;
     s_output_clipped = r.clipped;
     s_have_verified = true;
-    s_lut_known = r.tracker == TRACKER_KP085;
+    s_lut_known = true;
     s_kp_target = (uint8_t)r.level;
     return true;
 }
