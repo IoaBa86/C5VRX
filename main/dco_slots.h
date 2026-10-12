@@ -8,20 +8,45 @@
  * index of their frequencies and use order. A frequency without its own
  * table starts from the nearest stored one: the baseband offset per gain
  * row changes little across the band (calibration.c), and the live drift
- * nudges trim the rest. Measuring the own channel replaces the seed. */
+ * nudges trim the rest. The first measured table is thus the template for
+ * every channel. Per row, the index remembers which rows of a channel still
+ * come from a template; a measurement on the own channel (VTX off at boot,
+ * CALIBRATE, or on the carrier) replaces exactly those rows. */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
 
 #define DCO_SLOTS          6u
-#define DCO_INDEX_VERSION  1u
+#define DCO_INDEX_VERSION  2u
+#define DCO_MASK_ROWS      96u   /* >= ARC_VENDOR_GAIN_MAX + 1 gain rows */
+#define DCO_MASK_BYTES     (DCO_MASK_ROWS / 8u)
+
+typedef uint8_t dco_mask_t[DCO_MASK_BYTES];
 
 typedef struct {
     uint16_t version;
     uint16_t freq[DCO_SLOTS];   /* MHz, 0 = empty slot */
     uint16_t seq[DCO_SLOTS];    /* use order, higher = more recent */
     uint16_t next_seq;
+    dco_mask_t templ[DCO_SLOTS]; /* rows still taken from another channel */
 } dco_index_t;
+
+static inline bool dco_mask_get(const uint8_t *m, unsigned row)
+{
+    return row < DCO_MASK_ROWS && (m[row / 8u] >> (row % 8u)) & 1u;
+}
+static inline void dco_mask_put(uint8_t *m, unsigned row, bool on)
+{
+    if (row >= DCO_MASK_ROWS) return;
+    if (on) m[row / 8u] |= (uint8_t)(1u << (row % 8u));
+    else m[row / 8u] &= (uint8_t)~(1u << (row % 8u));
+}
+static inline unsigned dco_mask_count(const uint8_t *m, unsigned lo, unsigned hi)
+{
+    unsigned n = 0;
+    for (unsigned r = lo; r <= hi && r < DCO_MASK_ROWS; ++r) n += dco_mask_get(m, r);
+    return n;
+}
 
 static inline void dco_index_init(dco_index_t *x)
 {
@@ -50,13 +75,19 @@ static inline unsigned dco_slot_for_store(const dco_index_t *x, uint16_t freq)
 }
 
 /* Nearest stored frequency other than `freq` (ties: the more recent one),
- * -1 when nothing is stored. */
+ * preferring tables measured on their own channel over tables that still
+ * hold template rows; -1 when nothing is stored. */
 static inline int dco_nearest_slot(const dco_index_t *x, uint16_t freq)
 {
     int best = -1;
     unsigned best_d = 0;
+    bool measured_exists = false;
+    for (unsigned k = 0; k < DCO_SLOTS; ++k)
+        if (x->freq[k] && x->freq[k] != freq && !dco_mask_count(x->templ[k], 0, DCO_MASK_ROWS - 1u))
+            measured_exists = true;
     for (unsigned k = 0; k < DCO_SLOTS; ++k) {
         if (!x->freq[k] || x->freq[k] == freq) continue;
+        if (measured_exists && dco_mask_count(x->templ[k], 0, DCO_MASK_ROWS - 1u)) continue;
         unsigned d = x->freq[k] > freq ? (unsigned)(x->freq[k] - freq) : (unsigned)(freq - x->freq[k]);
         if (best < 0 || d < best_d || (d == best_d && x->seq[k] > x->seq[best])) { best = (int)k; best_d = d; }
     }

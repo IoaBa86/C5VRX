@@ -464,9 +464,12 @@ another channel are assumed close (baseband offsets per gain row); live
 drift nudges trim the rest; board confirmation pending. DC tables are stored
 per channel (`main/dco_slots.h`, host test `test/test_dco_slots.c`): six
 LRU slot blobs `dco0`..`dco5` plus index `dco_idx`, the legacy single `dco`
-table adopted once; a channel without its own table is seeded from the
-nearest measured one, so a channel change no longer forces a DC search at
-the next boot. A measurement on the own channel replaces the seed. Direct Gain learns
+table adopted once; a channel without its own table uses the nearest
+measured one as a template (tables measured on their own channel preferred),
+so a channel change no longer forces a DC search or a quiet-channel trip.
+The index keeps a per-row template mask: a boot that finds the own channel
+quiet (VTX off) re-measures exactly the template rows; CALIBRATE and carrier
+searches also replace them. With the VTX on, template rows are used as is. Direct Gain learns
 its gain map only with a confirmed VTX (burst-confirmed sync within 500 ms,
 `learn_enabled`): the coherence test alone passes plain 4-bit noise through
 the 12/10 MHz filters, so VTX-off noise ratios were learned and persisted;
