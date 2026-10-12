@@ -62,12 +62,14 @@ void transport_start_chain(dma_descriptor_t *first);
 enum { TRACKER_KP085, TRACKER_KP060, TRACKER_KP050 };
 bool transport_set_tracker(int tracker);
 int transport_tracker(void);
-bool transport_kp_set(int level);          /* seamless kp ladder level (kp_tables.h) */
+bool transport_kp_set(int level);          /* verified kp ladder level (kp_tables.h) */
 int transport_kp_level(void);
 int transport_kp_target(void);
-unsigned transport_kp_tick(unsigned max_writes);
+unsigned transport_kp_tick(void);
 bool transport_set_lp(bool lp);            /* U85Q <-> LP via a brief pipeline restart */
 bool transport_lp(void);
+bool transport_apply_auto(int level, bool lp);
+uint32_t transport_switch_wait_ms(void);
 void transport_stop_chain(void);
 void transport_poll_faults(void);
 uint32_t transport_fault_count(void);

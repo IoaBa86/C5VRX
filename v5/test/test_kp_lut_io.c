@@ -1,5 +1,5 @@
-/* C5VRX-5 by Twotoz and the C5VRX contributors: CPU LUT port regression.
- * Model the documented 512 x 32-bit host port independently of LUT16. */
+/* C5VRX-5 by Twotoz and the C5VRX contributors: LUT16 port regression.
+ * Model width-dependent addressing and a read latch refreshed by CFG0. */
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -7,71 +7,85 @@
 #include "kp_tables.h"
 
 typedef struct {
-    uint32_t ram[512];
-    unsigned writes;
-    int fail_word;
+    uint16_t ram[1024];
+    unsigned selected, writes;
+    uint32_t read_latch;
+    int fail_entry;
 } port_t;
 
-static bool write_word(void *ctx, unsigned word, uint32_t value)
+static void select_entry(void *ctx, unsigned entry)
 {
-    port_t *port = ctx;
-    assert(word < 512);
-    ++port->writes;
-    if ((int)word == port->fail_word) return false;
-    port->ram[word] = value;
-    return true;
+    port_t *p = ctx;
+    assert(entry < 1024);
+    p->selected = entry;
+    /* Even-address reads can include their neighbour in the upper half. */
+    p->read_latch = p->ram[entry] | ((entry & 1u) ? 0u : (uint32_t)p->ram[entry + 1u] << 16);
+}
+
+static void store(void *ctx, uint16_t value)
+{
+    port_t *p = ctx;
+    ++p->writes;
+    if ((int)p->selected != p->fail_entry) p->ram[p->selected] = value;
+    /* Writing CFG1 does not refresh read_latch. */
+}
+
+static uint32_t read_port(void *ctx) { return ((port_t *)ctx)->read_latch; }
+
+static bool write_entry(void *ctx, unsigned entry, uint16_t value)
+{
+    return kp_lut_write16(ctx, entry, value, select_entry, store, read_port);
 }
 
 int main(void)
 {
     uint16_t shadow[1024], want[1024];
-    port_t port = {.fail_word = -1};
-    uint16_t cursor = 0;
+    port_t port = {.fail_entry = -1};
     uint32_t fail = 0;
     memcpy(shadow, kp_tables[0], sizeof(shadow));
-    for (unsigned word = 0; word < 512; ++word)
-        port.ram[word] = (uint32_t)shadow[2 * word] | ((uint32_t)shadow[2 * word + 1] << 16);
+    memcpy(port.ram, shadow, sizeof(shadow));
 
-    /* Odd-only edits preserve their even neighbour, including final entry. */
+    /* Reproduce stale verification without reselect; check the actual I/O
+     * helper refreshes it and ignores unrelated upper read bits. */
+    uint16_t changed = port.ram[0] ^ 0x55;
+    select_entry(&port, 0);
+    store(&port, changed);
+    assert((read_port(&port) & 0xffffu) != changed);
+    assert(write_entry(&port, 0, changed));
+    assert(port.ram[1] == shadow[1]);
+    assert(write_entry(&port, 0, shadow[0]));
+
+    /* Whole-table verification, preserving distinct even/odd neighbours. */
     memcpy(want, shadow, sizeof(want));
     want[1] ^= 0x55;
     want[1023] ^= 0xaa;
-    uint32_t first = port.ram[0], last = port.ram[511];
-    assert(kp_lut_update(shadow, want, &cursor, 1, write_word, &port, &fail) == 1);
-    assert((port.ram[0] & 0xffff) == (first & 0xffff));
-    assert((port.ram[0] >> 16) == want[1]);
-    assert(port.ram[511] == last);
-    assert(kp_lut_update(shadow, want, &cursor, 1, write_word, &port, &fail) == 1);
-    assert((port.ram[511] & 0xffff) == (last & 0xffff));
-    assert((port.ram[511] >> 16) == want[1023]);
+    uint32_t writes = 0;
+    assert(kp_lut_load(shadow, want, write_entry, &port, &writes, &fail));
+    assert(writes == 1024 && !memcmp(shadow, want, sizeof(shadow)));
+    assert(!memcmp(port.ram, want, sizeof(shadow)));
 
-    /* A failed write cannot advance the software level. It consumes budget
-     * and succeeds on retry when the port accepts it. */
+    /* A rejected entry must not publish a partially verified target. */
+    uint16_t previous[1024];
+    memcpy(previous, shadow, sizeof(shadow));
     want[0] ^= 0x11;
-    port.fail_word = 0;
-    uint16_t old = shadow[0];
-    assert(kp_lut_update(shadow, want, &cursor, 1, write_word, &port, &fail) == 1);
-    assert(fail == 1 && shadow[0] == old && memcmp(shadow, want, sizeof(shadow)));
-    port.fail_word = -1;
-    assert(kp_lut_update(shadow, want, &cursor, 1, write_word, &port, &fail) == 1);
-    assert(!memcmp(shadow, want, sizeof(shadow)));
+    want[7] ^= 0x22;
+    port.fail_entry = 7;
+    assert(!kp_lut_load(shadow, want, write_entry, &port, &writes, &fail));
+    assert(fail == 1 && !memcmp(shadow, previous, sizeof(shadow)));
+    port.fail_entry = -1;
+    assert(kp_lut_load(shadow, previous, write_entry, &port, &writes, &fail));
+    assert(!memcmp(port.ram, previous, sizeof(shadow)));  /* rollback */
+    assert(kp_lut_load(shadow, want, write_entry, &port, &writes, &fail));
 
-    /* Exercise all actual ladder tables both ways with bounded batches. */
+    /* Exercise all actual ladder tables both ways. */
     for (unsigned pass = 0; pass < 2; ++pass)
         for (unsigned k = 0; k < KP_LEVELS; ++k) {
             unsigned level = pass ? KP_LEVELS - 1 - k : k;
-            for (unsigned batch = 0; batch < 512 && memcmp(shadow, kp_tables[level], sizeof(shadow)); ++batch)
-                assert(kp_lut_update(shadow, kp_tables[level], &cursor, 7, write_word, &port, &fail) <= 7);
+            assert(kp_lut_load(shadow, kp_tables[level], write_entry, &port, &writes, &fail));
             assert(!memcmp(shadow, kp_tables[level], sizeof(shadow)));
-            for (unsigned word = 0; word < 512; ++word) {
-                uint32_t expected = (uint32_t)kp_tables[level][2 * word] |
-                                    ((uint32_t)kp_tables[level][2 * word + 1] << 16);
-                assert(port.ram[word] == expected);
-            }
+            assert(!memcmp(port.ram, kp_tables[level], sizeof(shadow)));
         }
-    unsigned writes = port.writes;
-    assert(kp_lut_update(shadow, kp_tables[0], &cursor, 0, write_word, &port, &fail) == 0);
-    assert(port.writes == writes && fail == 1);
-    puts("PASS: host-word addressing, both halves, bounded writes, failure retry, all kp tables");
+    assert(fail == 1);
+    puts("PASS: LUT16 addressing, refreshed readback, full verification, rollback, all kp tables");
     return 0;
 }

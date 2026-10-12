@@ -86,11 +86,19 @@ The menu closes by itself after 30 s without a press.
 comparison (video stops ~3 s), `` ` `` download mode, `h` help.
 
 `K` cycles OFF / AUTO kp / AUTO kp+LP. `k` manually steps kp;
-`P` manually toggles U85Q/U85Q-LP and disables AUTO. Kp-only changes
-update packed CPU LUT words while video runs. Program changes use a brief
-pipeline restart, preserving the verified kp table; they are not seamless.
+`P` manually toggles U85Q/U85Q-LP and disables AUTO. Kp and program changes
+use a brief pipeline restart with a fully verified LUT; they are not seamless.
+All live changes share a **five-second minimum interval**, including manual
+P/k and changes of K mode. AUTO also requires the same kp/program target
+for **two seconds of usable measurements**. Rapid P presses are refused
+with `wait_ms`; they are not queued for delayed programme changes.
+
 Test on the ground and check `T`: `kp_verify_fail`, `prog_verify_fail`,
-`prog_restart_fail`, transport faults and the measured `prog_restart_us`.
+`kp_restart_fail`, `prog_restart_fail`, transport faults and measured
+`kp_restart_us` / `prog_restart_us`. `switch_wait_ms` shows the remaining
+cooldown. Live TX uses an owned fixed DMA ring and has a bounded
+20-ms readiness wait with task delays, so a failed start cannot keep the
+control task spinning indefinitely.
 
 ## Credits and license
 

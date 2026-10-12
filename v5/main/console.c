@@ -64,7 +64,7 @@ static void help(void)
 {
     printf("C5VRX-5 keys: T status, D range/health report, M gain map (for a preset), R per-second FIELD_DIAG lines on/off,\n"
            "  J analytic IQLaneFusion shadow on/off (model proposals only, no RF writes),\n"
-           "  K kp ladder OFF -> AUTO kp -> AUTO kp+LP (brief program restarts), k kp one level calmer, P U85Q/U85Q-LP\n"
+           "  K kp ladder OFF -> AUTO kp -> AUTO kp+LP (kp/program changes briefly restart video), k kp one level calmer, P U85Q/U85Q-LP\n"
            "    (k and P are bench tests; T shows kp_verify_fail, prog_verify_fail, prog_restart_fail/us),\n"
            "  I IQ snapshot, o menu open/close, n/x menu next/select, c next channel, b next band, s scan,\n"
            "  F calibrate (startup steps again; video stops), L bench IQ lane comparison (video stops ~3 s),\n"

@@ -479,47 +479,49 @@ bits, and the counter operand shares output[25:16] with the LUT address.
   the previous program with its baseline LUT on verification failure.
   This briefly interrupts video; emulator convergence does not prove a
   seamless hardware handover. `prog_restart_us` records the duration;
-  goggle behaviour after this fix remains board-pending.
-- Policy: LP below ~6.5 dB C/N (smoothed, 1.5 dB hysteresis, at least 3 s
-  apart); a wide VTX returns to U85Q at the floor.
+  guarded owned-ring bench evidence is in `v5/docs/FINDINGS.md`.
+- Policy: LP below ~6.5 dB C/N (smoothed, 1.5 dB hysteresis); the shared
+  five-second actuator cooldown and two-second target confirmation apply.
+  A wide VTX returns to U85Q at the floor.
 - Simulated limit vs today: +3.35 dB (deviation 0.69), +1.6 dB (1.0),
   +0.36 dB (1.4).
 - Bench gate on `P` toggles: `prog_restart_fail`, `prog_verify_fail`,
   `kp_verify_fail`, `tx_empty`, `bs_overload`. Board timing and the goggle colour killer are
   untested.
 
-Seamless kp ladder (`v5/main/kp_ladder.h`, `kp_tables.h`, `transport_kp_tick`,
+Verified kp ladder (`v5/main/kp_ladder.h`, `kp_tables.h`, `transport_kp_tick`,
 `v5/research/kp_morph.py`, README section 13; off by default, `K` AUTO, `k`
 manual):
-- All U85Q kp LUTs share the token bits and phase states, so the live LUT
-  moves between kp 0.85 .. 0.50 while video runs. The CPU LUT port
-  addresses 512 packed 32-bit words regardless of the LUT16 execution
-  width (ESP-IDF 6.0.2 `bitscrambler_ll.h`); the old 1024 half-word
-  writes corrupted neighbours and reported near-total readback failures.
-  Preserve LUT16, write both halves, acknowledge only verified words and
-  retry failed words with a bounded budget (`test_kp_lut_io.c`). No
-  `bitscrambler_load_lut` or TX restart for kp-only steps.
-- Level from a kp curve per deviation class and C/N (`best_combo.py`,
-  README section 14, 8 seeds).
-  - kp 0.75-0.80 beats 0.85 close in for every deviation.
-  - It goes calm (0.50-0.55) at 4-12 dB and back up near the floor, where a
-    calm tracker loses lock.
-  - Unknown or wide deviation stays at 0.80-0.85.
-  - A noise-like window counts as the floor, so a collapsing carrier steps
-    back up to the lock-safe kp (faster steps toward a sharper kp). Only
-    unusable windows hold the level.
-  - Simulated limit: +2.1 dB at deviation 0.69, +0.66 dB at 1.0, 0 dB at
-    1.4. A U85Q / U85Q-LP program switch would add about 1 dB but is not
-    seamless.
-- Evidence: the generator reproduces all U85Q LUTs bit-exactly; mid-field
-  live changes in the host model stay at steady-state error and sync; the
-  ladder host test passes.
-- Negative result (`adaptive_kp.py`, README section 15): choosing kp by
-  measuring sync-tip noise and burst amplitude with a software U85Q replica
-  on the control windows does worse than the curve (4.30-4.37 vs 4.84 dB
-  mean luma SINAD). The curve is within 0.13 dB of a per-case oracle.
-- Write/read collisions on the board are unknown: bench gate on
-  `kp_verify_fail`, `tx_empty` and `bs_overload` before AUTO.
+- Original entry-by-entry RUN writes and a PAUSE-only experiment both failed
+  LUT verification on the physical C5 (2026-10-12). Do not restore them from
+  host models. CPU addressing follows LUT width too (ESP32-C5 TRM): keep
+  LUT16, reselect the address and check the low 16 read bits. The first
+  candidate 65946f1 incorrectly inferred a fixed 32-bit CPU width from an
+  IDF comment and failed on the board; that inference is superseded.
+- Actual kp/program targets are loaded and fully verified while halted,
+  then restarted with the current raw-ring geometry. Only a complete
+  verification updates the shadow. Failed switches return to baseline
+  video. Changes briefly interrupt output; no seamlessness/range claim.
+- Every live kp/program change (including manual P/k, K mode changes and
+  failures) shares a five-second cooldown. AUTO additionally requires the
+  same combined kp/LP target for two seconds of usable observations in the
+  same context. K cannot reset the physical cooldown. Manual P during it
+  is refused, not queued. Test `test_kp_switch_guard.c` and `test_kp_lut_io.c`.
+- Apply an automatic kp/LP pair in one restart, not two successive restarts.
+  The curve and smoothed C/N still choose the target. Unknown/wide deviation
+  remains conservative; lower kp does not automatically mean more lock.
+- Operator `lutfix2` evidence: 32,768 verified LUT writes, one kp step and
+  31 program changes with zero readback/transport failures; the visible
+  program change was barely noticeable. Subsequent P spamming hung in
+  ESP-IDF `parlio_tx_do_transaction`'s unbounded FIFO-ready wait and starved
+  IDLE. Use an owned, fixed nine-descriptor raw-ring TX chain, do not
+  re-submit driver loop transactions; wait at most 20 ms with vTaskDelay,
+  then return failure and attempt baseline recovery. Cooldown alone is not
+  a substitute for bounding hardware waits.
+- Evidence limits: host simulations still describe the DSP curve, not
+  continuous hardware output; goggle behaviour and final spam-test evidence
+  are recorded in `v5/docs/FINDINGS.md`. See README sections 13-16 for the
+  positive kp curve and negative software-replica selection results.
 
 ### Instructions for future pipeline work
 

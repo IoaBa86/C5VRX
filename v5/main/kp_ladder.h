@@ -1,11 +1,13 @@
-/* C5VRX-5 by Twotoz and the C5VRX contributors: seamless kp ladder policy.
+/* C5VRX-5 by Twotoz and the C5VRX contributors: kp ladder target policy.
  *
  * The U85Q tracker loop gain kp sets the video bandwidth: a calmer tracker
  * (lower kp) extends the FM threshold at the range edge; on a strong carrier
  * kp 0.75-0.80 is slightly better than 0.85 too (v5/research README section
  * 14). The ladder picks a level (kp_tables.h) from the C/N estimate and the
- * deviation class measured this session; transport.c moves the live LUT to
- * that level entry by entry, so nothing stops or resyncs.
+ * deviation class measured this session. Physical RUN/PAUSE LUT writes
+ * failed verification; transport.c now applies a verified full target via
+ * a brief pipeline restart. kp_switch_guard.h adds target confirmation and
+ * a shared cooldown before actual kp/program changes.
  *
  * - The deep levels only for a VTX whose deviation was measured this
  *   session: a calm tracker on a wide VTX loses the picture. Unknown or wide

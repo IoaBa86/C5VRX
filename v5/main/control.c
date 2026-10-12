@@ -7,6 +7,7 @@
 #include <string.h>
 #include "afc_ctrl.h"
 #include "kp_ladder.h"
+#include "kp_switch_guard.h"
 #include "cn_estimate.h"
 #include "analog_video_detect.h"
 #include "driver/gpio.h"
@@ -40,12 +41,14 @@ static uint8_t s_window[CONTROL_BYTES];
 static uint8_t s_pal_votes, s_ntsc_votes;
 static uint8_t s_last_std = 0xFF;      /* last stable standard (NVS) */
 static unsigned s_afc_corrections, s_afc_weak_skips;
-/* Seamless kp ladder (kp_ladder.h), NVS "kp_auto": 0 off, 1 kp only,
+/* Verified kp ladder (kp_ladder.h), NVS "kp_auto": 0 off, 1 kp only,
  * 2 kp plus the live U85Q <-> U85Q-LP switch. K cycles 0 -> 1 -> 2 -> 0;
  * k steps one kp level and P toggles the program by hand for the bench test
  * (both set auto off). */
 static kp_ladder_t s_kp;
+static kp_switch_guard_t s_auto_candidate;
 static uint8_t s_kp_auto;
+static bool s_mode_reset_pending;
 /* Learned offset sign (afc_ctrl.h sign check), persisted once observed. */
 static volatile int8_t s_afc_sign = 1;
 static volatile uint8_t s_afc_sign_state;
@@ -232,24 +235,32 @@ static void command(int c, unsigned *menu_idle)
         s_kp_auto = (uint8_t)((s_kp_auto + 1u) % 3u);
         (void)blob_store("kp_auto", &s_kp_auto, 1);
         kp_ladder_reset(&s_kp);
+        s_auto_candidate.candidate = false;
         (void)transport_kp_set(0);
-        (void)transport_set_lp(false);
+        s_mode_reset_pending = !transport_apply_auto(0, false);
         printf("KP ladder %s\n", s_kp_auto == 2 ? "AUTO kp + LP (program changes briefly restart video; bench test)" :
-               s_kp_auto == 1 ? "AUTO kp (U85Q only)" : "OFF");
+               s_kp_auto == 1 ? "AUTO kp (brief restarts, U85Q only; bench test)" : "OFF");
         break;
     case 'P': {
         s_kp_auto = 0;
+        s_mode_reset_pending = false;
         const bool lp = !transport_lp();
         const bool menu = s_menu_active;
-        printf("PROGRAM manual %s: %s\n", lp ? "U85Q-LP" : "U85Q", !transport_set_lp(lp) ?
-               "refused (needs U85Q; see prog_verify_fail/prog_restart_fail in T)" :
-               menu ? "loaded at menu exit through the normal start sequence" : "switched via pipeline restart");
+        uint32_t wait_before = transport_switch_wait_ms();
+        bool ok = transport_set_lp(lp);
+        if (!ok && wait_before)
+            printf("PROGRAM manual refused=cooldown wait_ms=%lu (press P again after waiting)\n",
+                   (unsigned long)transport_switch_wait_ms());
+        else printf("PROGRAM manual %s: %s\n", lp ? "U85Q-LP" : "U85Q", !ok ?
+                    "refused (needs U85Q; see prog_verify_fail/prog_restart_fail in T)" :
+                    menu ? "loaded at menu exit through the normal start sequence" : "switched via pipeline restart");
         break;
     }
     case 'k': {
         s_kp_auto = 0;
+        s_mode_reset_pending = false;
         int next = (transport_kp_target() + 1) % KP_LADDER_LEVELS;
-        printf("KP manual level=%d %s\n", next, transport_kp_set(next) ? "moving" :
+        printf("KP manual level=%d %s\n", next, transport_kp_set(next) ? "queued (brief pipeline restart)" :
                "refused (needs the U85Q program: DEFAULT/WIDE profile, live video)");
         break;
     }
@@ -381,12 +392,18 @@ static void control_task(void *arg)
             if (sign != s_afc_sign) { s_afc_sign = sign; (void)blob_store("afc_sign", &sign, 1); }
         }
         if (s_kp_auto && !s_menu_active) {
-            /* A noise-like window (CN_UNKNOWN) is the floor; only an unusable one holds. */
-            (void)transport_kp_set(kp_ladder_update_lp(&s_kp, cn_x10, window_ok, profile_live_deviation_x100(), now,
-                                                       s_kp_auto == 2));
-            if (s_kp.lp != transport_lp() && !transport_set_lp(s_kp.lp)) s_kp.lp = transport_lp();
+            uint8_t level = kp_ladder_update_lp(&s_kp, cn_x10, window_ok,
+                                                profile_live_deviation_x100(), now, s_kp_auto == 2);
+            bool usable = window_ok && ctx == afc_context();
+            if (kp_switch_confirm(&s_auto_candidate, level, s_kp.lp, ctx, usable, now))
+                s_mode_reset_pending = !transport_apply_auto(level, s_kp.lp);  /* kp + LP in one guarded restart */
+        } else {
+            s_auto_candidate.candidate = false;
+            if (!s_kp_auto) {
+                if (s_mode_reset_pending) s_mode_reset_pending = !transport_apply_auto(0, false);
+                else (void)transport_kp_tick();
+            }  /* manual target, same backend cooldown */
         }
-        (void)transport_kp_tick(32);   /* 32 host words = 64 LUT16 entries per tick */
         diag_window(window_ok, valid, own_write);   /* own_write: an AFC step this window */
         lane_shadow_window(s_window, sizeof(s_window), ctx, gain_epoch,
                            window_ok && !own_write && gain_epoch == s_gain_epoch && ctx == afc_context());

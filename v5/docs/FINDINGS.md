@@ -139,29 +139,65 @@ RX5808 is the open measurement.
 
 ## PR #196 ladder and LP handover (2026-10-12)
 
-Operator bench evidence: video appeared stable during five requested kp
-steps, but telemetry reached 1759 verification failures in 1760 attempted
-writes. `P` then produced black video while the USB console continued.
-The earlier software shadow acknowledged failed writes, so reported
-`kp_level` values were not proof of the actual hardware LUT contents.
+C5VRX by Twotoz and the C5VRX contributors. Initial operator evidence:
+video appeared stable during five requested kp steps, but telemetry reached
+1759 verification failures in 1760 writes. The old software shadow still
+acknowledged them, so reported levels did not prove hardware contents.
+Paused instruction rewriting with P produced black video while USB lived.
 
-ESP-IDF 6.0.2's `esp_hal_dma/esp32c5/include/hal/bitscrambler_ll.h`
-explicitly defines LUT width as seen by BitScrambler, not the host, and
-`bitscrambler_ll_lutmem_write` accepts 32-bit word indices. The CPU port
-therefore needs 512 packed words, not 1024 half-word writes. The fix keeps
-LUT16 active, preserves both halves, checks full-word readback and only
-acknowledges successful writes. Failed words remain pending for bounded
-retry. `test_kp_lut_io.c` models this host port and exercises all actual
-ladder tables in both directions, neighbour preservation and injected
-write failure. `kp_writes` now counts attempted host-word writes.
+The first candidate (65946f1) inferred a fixed 32-bit CPU LUT port from
+ESP-IDF's LL comment. Physical tests disproved it. The ESP32-C5 TRM states
+that host addressing/data size must follow the configured LUT width too.
+Stopped-core probes showed correct LUT16 low-half reads and neighbour bits
+in some upper read halves; mode 32 accepted packed writes. Keep LUT16 and
+compare only the low 16 bits. RUN writes returned unrelated RAM values and
+failed almost entirely; PAUSE-only updates likewise failed and caused TX
+empty events. HALT with the normal load/reset/start topology verified every
+entry. The exact internal arbitration/read-latch cause is not established.
+Source: [Espressif ESP32-C5 TRM, BitScrambler memory access](https://documentation.espressif.com/esp32-c5_technical_reference_manual_en.pdf).
 
-The paused live instruction rewrite is removed. U85Q/LP switches use the
-existing stop/load/reset/start topology with the current kp LUT restored
-and verified before starting. A failed verification restores the previous
-program with its baseline LUT; it does not leave TX halted. `prog_restart_us`
-measures the interruption, `prog_restart_fail` counts failed switches, and
-legacy `prog_pause_fail` remains zero (no pause rewrite). Observers get a
-new control epoch after each restart. The menu selection path from eea611b
-is retained. A program switch briefly interrupts video; host models cannot
-establish goggle continuity. Hardware retest of writes, P toggles and
-AUTO kp+LP remains required; no new range or seamlessness claim is made.
+The corrected path loads the complete target while halted, reselects each
+CPU address before readback, and only publishes the shadow after all 1024
+LUT16 entries verify. Failure restores baseline video. Both kp and LP
+changes briefly restart output; no sample-seamless handover is claimed.
+`test_kp_lut_io.c` models LUT16, address refresh, unrelated upper read bits,
+a failed target and rollback, and every real kp table in both directions.
+`kp_writes` counts attempted LUT16 writes.
+
+Operator `lutfix2` telemetry reached 32,768 writes with zero verification
+errors, one kp change and 31 program switches, zero transport/restart faults.
+P switches measured about 5.5 ms; kp about 6.3 ms. The operator could barely
+see the change. These timings belong to that build/setup, not a universal
+latency or flight/range result. Continued P spam eventually hung in IDF
+`parlio_tx_do_transaction` at its unbounded FIFO-ready spin (MEPC 408074e0,
+control task, repeated IDLE watchdog warnings, USB heartbeat still alive).
+
+Live TX now uses an owned nine-descriptor cycle covering the same 32-KiB
+raw ring, instead of re-submitting driver loop transactions. Descriptor
+ownership/zero EOF are restored with TX stopped; the FIFO-ready wait has a 20-ms timeout and
+vTaskDelay so IDLE can run. A timeout returns failure and attempts baseline
+recovery. The original boot/menu/RX topology and DAC pins are retained.
+
+Every actual live change shares a five-second cooldown; failed restarts
+also consume it. AUTO requires an unchanged combined kp/program target for
+two seconds of usable observations in the same context. A combined target
+uses one restart, not separate kp and program interruptions. P during
+cooldown is refused and requires a new press later. Policy/mode reset
+cannot erase the physical cooldown. `test_kp_switch_guard.c` checks boundary
+times, target oscillation, coverage gaps and context changes. Diagnostics
+expose switch_wait_ms, kp/prog restart times and failure counters.
+
+Guarded owned-ring build hardware test (COM10, XIAO ESP32-C5 rev 1.0,
+IDF 6.0.2, 2026-10-12): six bursts of 32 P requests, spaced 5.5 s apart,
+produced six accepted program changes and 90 explicit cooldown refusals;
+excess commands can be dropped by the bounded queues. Three manual kp
+steps then reached verified levels 1, 2 and 3. Final totals: 9216 LUT16
+writes, zero kp/prog verification failures, zero restart failures, zero
+TX-empty/RX-overflow/DMA/BitScrambler faults, and no watchdog/abort. Program
+restarts measured 5.94-6.19 ms, kp 5.78 ms. The observer remained alive.
+This proves that tested manual sequence, not all flight conditions or the
+AUTO target curve; continuous-video quality and the two-second AUTO dwell
+still need field observation. Firmware was app-only flashed with a matching
+partition layout and NVS/PHY left intact.
+
+Sampling drift was observed separately and is not claimed fixed here.
