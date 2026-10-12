@@ -35,6 +35,10 @@ without that equipment/evidence.
   report negative results rather than silently activate an inferior tracker.
 - [ ] Final build/checks, checked app-only flash, capture evidence, commit/push
   to PR #196 and reopen CMD monitor with the operator's AUTO setting.
+- [ ] Unified CVT follow-up (comment 6124244391): observation-dependent phase
+  adaptation first; separate cycle/instruction feasibility for true variable
+  post-LP. Keep fixed-LP alternatives experimental and reject periodic bypass.
+  Current negative candidate results and remaining work: `../research/CVT_STATUS.md`.
 - [ ] #200 physical moving-video acceptance: narrow/wide VTX, U85Q/LP,
   PAL/NTSC, LCD and HDZero with actual 75-ohm loaded sync/white/burst/swing.
 - [ ] #201 / Multi-Rescue / CVT physical pre/on/post-cliff IQ, conducted
