@@ -1,0 +1,4 @@
+# Bench-only experiment build (CI compile check, never published or flown).
+# Production builds use sdkconfig.defaults alone: every experiment OFF.
+CONFIG_C5VRX5_EXPERIMENT_U85_CVT=y
+CONFIG_C5VRX5_EXPERIMENT_SPHASE_NORMALIZED=y

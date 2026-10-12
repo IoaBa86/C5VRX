@@ -132,7 +132,12 @@ def check():
                 assert np.array_equal(got[offset:],ref[:len(got)-offset]),(variant,lp)
             finally:
                 if temp.exists():temp.unlink()
-    print('PASS:',len(VARIANTS),'immutable CVT LUTs, U85Q/fixed-LP assembly and bit-exact emulator equality',flush=True)
+    # The firmware's bench programs are the selected candidate, regenerated.
+    selected=tuple(json.loads((HERE/'data/cvt_selected.json').read_text())['variant'])
+    assert (MAIN/'u85q_cvt.bsasm').read_text()==source(selected),'regenerate: python u85_cvt.py generate'
+    assert (MAIN/'u85q_cvt_lp.bsasm').read_text()==source(selected,lp=True),'regenerate: python u85_cvt.py generate'
+    print('PASS:',len(VARIANTS),'immutable CVT LUTs, U85Q/fixed-LP assembly and bit-exact emulator equality;',
+          'main/u85q_cvt*.bsasm current for',selected,flush=True)
 
 
 def job(spec):

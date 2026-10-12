@@ -59,7 +59,7 @@ esp_err_t transport_start(void);
 void transport_stop_tx(void);
 void transport_resume_live(void);
 void transport_start_chain(dma_descriptor_t *first);
-enum { TRACKER_KP085, TRACKER_KP060, TRACKER_KP050 };
+enum { TRACKER_KP085, TRACKER_KP060, TRACKER_KP050, TRACKER_CVT };
 bool transport_set_tracker(int tracker);
 int transport_tracker(void);
 bool transport_kp_set(int level);          /* verified kp ladder level (kp_tables.h) */
@@ -68,6 +68,9 @@ int transport_kp_target(void);
 unsigned transport_kp_tick(void);
 bool transport_set_lp(bool lp);            /* U85Q <-> LP via a brief pipeline restart */
 bool transport_lp(void);
+bool transport_set_cvt(bool on);           /* bench U85-CVT (Kconfig), brief restart */
+bool transport_cvt(void);
+const char *transport_program_name(void);
 bool transport_faulted(void);
 uint32_t transport_restart_errors(void);
 unsigned transport_output(void);

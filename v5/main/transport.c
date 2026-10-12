@@ -4,6 +4,7 @@
  * with interrupts off and cleared suc_eof (espressif/esp-idf#19091), so no
  * DMA boundary is a stream boundary; the CPU never paces samples. */
 #include "receiver.h"
+#include "sdkconfig.h"
 #include <string.h>
 #include "driver/bitscrambler.h"
 #include "driver/parlio_rx.h"
@@ -40,11 +41,21 @@ BITSCRAMBLER_PROGRAM(s_u85q_kp050, "u85q_kp050");
  * transport_set_lp() uses the normal pipeline start sequence; a live
  * instruction rewrite left the board video black while USB kept running. */
 BITSCRAMBLER_PROGRAM(s_u85q_lp, "u85q_lp");
+#if CONFIG_C5VRX5_EXPERIMENT_U85_CVT
+/* Bench-only U85-CVT: an immutable observation-dependent LUT on the same
+ * U85Q / U85Q-LP schedules (v5/research/u85_cvt.py, CVT_STATUS.md). Its
+ * held-out validation is negative against MATCHED; never a default. */
+BITSCRAMBLER_PROGRAM(s_u85q_cvt, "u85q_cvt");
+BITSCRAMBLER_PROGRAM(s_u85q_cvt_lp, "u85q_cvt_lp");
+#endif
 static volatile int s_tracker = TRACKER_KP085;
 static bool s_started;   /* live TX running (set once at boot) */
-static bool s_prog_lp;   /* U85Q-LP instructions loaded (U85Q tracker only) */
+static bool s_prog_lp;   /* LP instructions loaded (U85Q or CVT tracker only) */
 static const void *tracker_program(int t)
 {
+#if CONFIG_C5VRX5_EXPERIMENT_U85_CVT
+    if (t == TRACKER_CVT) return s_prog_lp ? s_u85q_cvt_lp : s_u85q_cvt;
+#endif
     if (t == TRACKER_KP085 && s_prog_lp) return s_u85q_lp;
     return t == TRACKER_KP050 ? s_u85q_kp050 : t == TRACKER_KP060 ? s_u85q_kp060 : s_u85q;
 }
@@ -219,6 +230,7 @@ static uint32_t s_kp_writes, s_kp_verify_fail;
 static uint32_t s_kp_switches, s_kp_restart_fail, s_kp_restart_us;
 static bool resume_live(const uint16_t *restore_lut);
 static bool switch_live(int level, bool lp);
+static bool transport_set_cvt_lp(bool on, bool lp);
 static kp_switch_guard_t s_switch_guard;
 
 bool transport_kp_set(int level)
@@ -334,6 +346,7 @@ uint32_t transport_switch_wait_ms(void)
 bool transport_set_lp(bool lp)
 {
     if (lp == s_prog_lp) return true;
+    if (s_tracker == TRACKER_CVT) return transport_set_cvt_lp(true, lp);
     if (s_tracker != TRACKER_KP085) return false;
     /* Menu selection does not touch live RAM; applied at menu exit. */
     if (s_menu_active) { s_prog_lp = lp; return true; }
@@ -341,6 +354,63 @@ bool transport_set_lp(bool lp)
 }
 
 bool transport_lp(void) { return s_prog_lp; }
+
+/* Bench U85-CVT on/off (console V). Like P/k it shares the backend restart
+ * guard and the verified load/rollback; it returns to the tracker, kp level
+ * and program it left. It is never persisted: every boot starts U85Q. */
+#if CONFIG_C5VRX5_EXPERIMENT_U85_CVT
+static int s_cvt_return_tracker = TRACKER_KP085;
+static uint8_t s_cvt_return_level;
+#endif
+static bool transport_set_cvt_lp(bool on, bool lp)
+{
+#if CONFIG_C5VRX5_EXPERIMENT_U85_CVT
+    if (s_transport_fault) return false;
+    const bool cvt = s_tracker == TRACKER_CVT;
+    const int tracker = on ? TRACKER_CVT : cvt ? s_cvt_return_tracker : s_tracker;
+    if (tracker == s_tracker && lp == s_prog_lp) return true;
+    if (tracker != TRACKER_KP085 && tracker != TRACKER_CVT) lp = false;   /* LP: U85Q/CVT schedules only */
+    if (on && !cvt) {
+        s_cvt_return_tracker = s_tracker;
+        s_cvt_return_level = s_lut_known ? (uint8_t)s_verified_level : 0u;
+    }
+    if (s_menu_active || !s_started) {     /* loaded by the next normal start */
+        s_tracker = tracker;
+        s_prog_lp = lp;
+        if (tracker == TRACKER_KP085) s_kp_target = s_cvt_return_level;
+        return true;
+    }
+    int64_t began = esp_timer_get_time();
+    if (!kp_switch_ready(&s_switch_guard, began)) return false;
+    s_tracker = tracker;
+    s_prog_lp = lp;
+    if (tracker == TRACKER_KP085) s_kp_target = s_cvt_return_level;
+    bool ok = resume_live(tracker == TRACKER_KP085 ? kp_tables[s_kp_target] : NULL);
+    if (!ok && s_have_verified) { s_tracker = s_verified_tracker; s_prog_lp = s_verified_lp; }
+    if (ok) ++s_prog_switches; else ++s_prog_restart_fail;
+    int64_t finished = esp_timer_get_time();
+    kp_switch_mark(&s_switch_guard, finished);
+    s_prog_restart_us = (uint32_t)(finished - began);
+    ++s_control_epoch;
+    return ok;
+#else
+    (void)on; (void)lp;
+    return false;
+#endif
+}
+
+bool transport_set_cvt(bool on) { return transport_set_cvt_lp(on, s_prog_lp); }
+bool transport_cvt(void) { return s_tracker == TRACKER_CVT; }
+
+const char *transport_program_name(void)
+{
+    switch (s_tracker) {
+    case TRACKER_CVT: return s_prog_lp ? "U85-CVT-LP" : "U85-CVT";
+    case TRACKER_KP060: return "U85Q-KP060";
+    case TRACKER_KP050: return "U85Q-KP050";
+    default: return s_prog_lp ? "U85Q-LP" : "U85Q";
+    }
+}
 bool transport_faulted(void) { return s_transport_fault; }
 uint32_t transport_restart_errors(void) { return s_restart_errors; }
 unsigned transport_output(void) { return s_output; }
@@ -635,7 +705,7 @@ static bool resume_live(const uint16_t *restore_lut)
         ++s_rollbacks;
         s_kp_target = (uint8_t)s_verified_level;
         printf("TRANSPORT rollback=verified program=%s kp_level=%d output=%s\n",
-               s_prog_lp ? "U85Q-LP" : "U85Q", s_verified_level, transport_output_name());
+               transport_program_name(), s_verified_level, transport_output_name());
         return false;
     }
     memcpy(s_lut_live, s_lut_work, sizeof(s_lut_live));
@@ -691,7 +761,7 @@ void transport_print(void)
            s_rx_node_count, (unsigned long)s_tx_empty, (unsigned long)s_rx_overflow,
            (unsigned long)s_dma_faults, (unsigned long)s_bs_overload, transport_kp_level(),
            transport_kp_target(), (unsigned long)s_kp_writes, (unsigned long)s_kp_verify_fail,
-           s_prog_lp ? "U85Q-LP" : "U85Q", (unsigned long)s_prog_switches,
+           transport_program_name(), (unsigned long)s_prog_switches,
            (unsigned long)transport_switch_wait_ms(), (unsigned long)s_kp_switches, (unsigned long)s_kp_restart_fail, (unsigned long)s_kp_restart_us,
            (unsigned long)s_prog_verify_fail,
            (unsigned long)s_prog_restart_fail, (unsigned long)s_prog_restart_us);

@@ -13,8 +13,14 @@ No candidate passes every search gate. The 32-token `sync_bias` candidate
 has one lock gate violation and mean -1.04 dB / worst -2.87 dB SINAD versus
 the appropriate existing MATCHED baseline. Selecting the fewest violations
 does not qualify a candidate for production. Generated CVT and CVT with
-fixed LP remain behind `C5VRX5_EXPERIMENT_U85_CVT`, OFF by default. Bench V
-requires that build, saves AUTO OFF, and returns to the preceding tracker.
+fixed LP are built only with `CONFIG_C5VRX5_EXPERIMENT_U85_CVT`
+(`main/Kconfig.projbuild`, OFF; `idf.py -DC5VRX5_EXPERIMENTS=1` adds
+`sdkconfig.experiments`). Console V then switches to `TRACKER_CVT` through the
+verified restart, shares the five-second guard, saves AUTO OFF, and returns
+to the tracker and kp level it left; P toggles its fixed LP. Production and
+published builds print that V is unavailable. CI assembles both programs,
+re-runs the bit-exact checks, verifies that `main/u85q_cvt*.bsasm` equal the
+selected candidate, and compiles the experiment build without publishing it.
 
 The fixed post-detection LP still consumes both spare opcode slots:
 LDCTIA loads the previous half output and ADDCTIAH adds the new half output
@@ -40,7 +46,7 @@ No current fixed-LP implementation is claimed for that six-bit state layout:
 the existing controller packs five phase bits and five x/2 bits into the
 ten bits left beside y. See `cvt_precision.py` and `data/cvt_precision.json`.
 
-In progress / still required:
+Status:
 
 - [done] Bit-exact ESP-IDF assembler/emulator check of 20 expanded candidates,
   plus original U85Q/LP whole-stream and both-direction switch checks.
@@ -48,23 +54,35 @@ In progress / still required:
   PAL/NTSC, four deviations, CFO +/-1 MHz, DC, and 1/5/20 ms fades; all eight
   fixed kp values with/without LP and floating same-Q4 reference.
 - [done] Bit-exact check of the five alternative 64-state layouts.
-- Further analytical CVT changes only if validation supports them; report
-  failures and compare against the fixed-kp/LP oracle separately.
+- [done] Bench integration matches this document (Kconfig, CMake, V, CI).
+- [concluded, negative] Further analytical laws: the held-out data do not
+  support another law. The radius-aware 24+8 layout already is the
+  uncertainty-aware transition; its weak-signal gain comes from the fixed
+  LP, which U85Q-LP already provides. New laws need new evidence (real
+  pre/on/post-cliff Q4), not a wider search on the same model.
+- [concluded, documented] Variable post-LP: no exact two-bundle schedule
+  (`CVT_HARDWARE.md`); CVT + fixed LP stays an experimental comparator.
 - MATCHED-profile ladder/LP hardware tests; retain the profile RF filter.
-- Sampling phase: DC rows now load before scanning and are explicitly
-  applied while the gain worker is paused. The phasefix3 board boot settled,
-  but one of two subsequent explicit scans did not. The repair is therefore
-  **not complete**; startup success alone is insufficient evidence.
-  The status-screen exit restarts RX after the old scan and changes the TX
-  noise context. The next repair moves final qualification after that exit
-  and makes explicit bench scans use the actual live pipeline; retest pending.
-  Phasefix4 also failed repeat-scan acceptance. Diagnostic normalized HF
-  energy and DC-centre logging were added. Phasefix6 tested a normalized
-  gate: boot settled but subsequent scans still failed. That policy is now
-  gated by `C5VRX5_EXPERIMENT_SPHASE_NORMALIZED`, OFF by default. Production
-  retains the absolute gate; DC loading and final-live scan ordering remain.
-- Repeat boots/scans and live phase monitoring, final production build
-  with experiments OFF, app-only flash and reopened console.
+- Sampling phase (`main/sphase_logic.h`, `test/test_sphase.c`): the
+  absolute gate alone cannot tell intrinsic broadband noise from a
+  mid-transition read. In the host model, 0.6-cell white noise already lifts
+  the cleanest position to an excess of ~725 (limit 300), which is the
+  board's repeated `unsettled` pattern. Above the limit only a scan whose
+  nine positions differ (worst-best > twice the margin) is evidence; then the
+  read must be within the margin of the best position. Positions that read
+  alike are `noise_limited`: no slip, not a phase fault for FIELD_DIAG. The
+  stored DC row is held while the gain worker is paused for a scan, and a
+  final qualification (with repair) runs after the status screen has handed
+  TX back to live video. `T` and the SPHASE lines log the absolute excess,
+  HF4/HF2 whiteness (per mille of white), DC centre and the scan contrast.
+  The normalized gate (`CONFIG_C5VRX5_EXPERIMENT_SPHASE_NORMALIZED`, 600 per
+  mille: model clean ~364, mid-transition ~938) stays OFF: phasefix6 used an
+  earlier normalized gate and failed repeat-scan acceptance on the board.
+  Board acceptance is pending: repeated VTX-off boots and F scans must show
+  `settled` or `noise_limited` with the logged contrast, never a slip
+  without contrast.
+- Final production build with experiments OFF (CI and local ESP-IDF 6.0.2
+  build pass), app-only flash and reopened console on the board.
 - Physical moving-video, colour, 75-ohm voltage, HDZero and conducted
   attenuation acceptance remain unavailable while the operator's VTX is OFF.
 

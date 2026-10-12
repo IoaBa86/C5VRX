@@ -103,6 +103,14 @@ cooldown. Live TX uses an owned fixed DMA ring and has a bounded
 20-ms readiness wait with task delays, so a failed start cannot keep the
 control task spinning indefinitely.
 
+`V` switches the bench-only U85-CVT tracker on/off (P toggles its fixed
+LP). It exists only in an experiment build
+(`idf.py -DC5VRX5_EXPERIMENTS=1`, or `CONFIG_C5VRX5_EXPERIMENT_U85_CVT`);
+production and published builds report it unavailable. Like `P`/`k` it
+saves AUTO OFF, uses the verified restart and cooldown and returns to the
+tracker and kp level it left. Its held-out validation is negative against
+MATCHED (`research/CVT_STATUS.md`): a comparison tool, not a range mode.
+
 `g` and menu **OUTPUT** cycle 1.0 / 1.5 / 2.0 / 2.5x. Every boot starts at
 1.0x. Increasing the level can help the weak sync reported in #200, but can
 clip a wide VTX; check both sync and white with the actual 75-ohm load.

@@ -30,6 +30,17 @@ static inline void dsp_hf4_sums(const uint8_t *s, size_t n, uint64_t *d4)
     }
 }
 
+/* Second-difference energy over the same samples as dsp_hf4_sums: the
+ * reference for the level-independent HF4/HF2 whiteness (sphase_logic.h). */
+static inline void dsp_hf2_sums(const uint8_t *s, size_t n, uint64_t *d2)
+{
+    for (size_t k = 2; k + 2 < n; ++k) {
+        int di = (2 * dsp_i(s[k - 1]) + 1) - 2 * (2 * dsp_i(s[k]) + 1) + (2 * dsp_i(s[k + 1]) + 1);
+        int dq = (2 * dsp_q(s[k - 1]) + 1) - 2 * (2 * dsp_q(s[k]) + 1) + (2 * dsp_q(s[k + 1]) + 1);
+        *d2 += (uint64_t)(di * di + dq * dq);
+    }
+}
+
 /* Excess fourth-difference energy, milli-cell^2 per sample, rounding share
  * removed. Board scans 2026-10-08, fixed ultrafine: clean positions
  * -70..+42, mid-change positions 391..3742. */

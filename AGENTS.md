@@ -531,6 +531,23 @@ manual):
   are recorded in `v5/docs/FINDINGS.md`. See README sections 13-16 for the
   positive kp curve and negative software-replica selection results.
 
+U85-CVT (`v5/research/u85_cvt.py`, `cvt_precision.py`, `CVT_STATUS.md`,
+`CVT_HARDWARE.md`; PR #196 comments 6124064221/6124244391): an immutable
+observation-dependent phase law fits the U85Q 32x32 LUT16 two-bundle schedule
+(20 + 5 candidates bit-exact in the emulator). Held-out validation (3360
+same-Q4 results) is negative versus MATCHED (-0.89 / -1.09 dB mean); its
+weak-signal gain with a fixed LP is the LP's, not the law's. No exact
+variable-alpha post-LP fits two bundles; periodic LP/bypass stays rejected.
+Bench only: `CONFIG_C5VRX5_EXPERIMENT_U85_CVT` (OFF; CI compiles it via
+`-DC5VRX5_EXPERIMENTS=1`, never published), console V. Sampling phase
+(`v5/main/sphase_logic.h`, host test `v5/test/test_sphase.c`): above the
+absolute limit only a nine-position scan with contrast is evidence of a
+mid-transition read; positions that read alike are `noise_limited` (no slip,
+not a phase fault). Host model: 0.6-cell intrinsic white noise lifts the clean
+position to ~725 (limit 300), the board's repeated `unsettled` pattern. DC row
+held during scans; final qualification in the live TX context. Board repeats
+pending; the normalized gate stays an OFF experiment.
+
 ### Instructions for future pipeline work
 
 IQLaneFusion research extends U85 and the older adaptive-lane/history work:

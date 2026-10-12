@@ -2,6 +2,7 @@
  * BOOT button and menu, AFC acquisition, PAL/NTSC detection, signal
  * strength and the channel scanner. Observes completed RX descriptors only. */
 #include "receiver.h"
+#include "sdkconfig.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -265,9 +266,26 @@ static void command(int c, unsigned *menu_idle)
         if (!ok && wait_before)
             printf("PROGRAM manual refused=cooldown wait_ms=%lu (press P again after waiting)\n",
                    (unsigned long)transport_switch_wait_ms());
-        else printf("PROGRAM manual %s: %s\n", lp ? "U85Q-LP" : "U85Q", !ok ?
-                    "refused (needs U85Q; see prog_verify_fail/prog_restart_fail in T)" :
+        else printf("PROGRAM manual %s: %s\n", transport_program_name(), !ok ?
+                    "refused (needs U85Q or CVT; see prog_verify_fail/prog_restart_fail in T)" :
                     menu ? "loaded at menu exit through the normal start sequence" : "switched via pipeline restart");
+        break;
+    }
+    case 'V': {
+#if CONFIG_C5VRX5_EXPERIMENT_U85_CVT
+        manual_auto_off();
+        const bool on = !transport_cvt(), menu = s_menu_active;
+        uint32_t wait_before = transport_switch_wait_ms();
+        bool ok = transport_set_cvt(on);
+        if (!ok && wait_before)
+            printf("CVT bench refused=cooldown wait_ms=%lu (press V again after waiting)\n",
+                   (unsigned long)transport_switch_wait_ms());
+        else printf("CVT bench %s program=%s%s\n", !ok ? "refused (see prog_restart_fail in T)" : on ? "ON" : "OFF",
+                    transport_program_name(), !ok ? "" : menu ? " (loaded at menu exit)" :
+                    on ? " (experimental: negative held-out validation, not a range result)" : "");
+#else
+        printf("CVT bench unavailable: build with CONFIG_C5VRX5_EXPERIMENT_U85_CVT (v5/research/CVT_STATUS.md)\n");
+#endif
         break;
     }
     case 'k': case 'j': {

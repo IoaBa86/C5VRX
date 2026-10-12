@@ -25,7 +25,10 @@ without that equipment/evidence.
 - [ ] Sampling phase: diagnose `unsettled`, distinguish intrinsic noise
   spectrum from mixed-transition reads, repair only on valid evidence,
   host tests and repeated VTX-off boots/scans; VTX-on qualification later.
-- [ ] U85-CVT (comment 6124064221): investigate a static nonlinear
+  Host part done: scan-contrast verdict with `noise_limited`, DC held during
+  scans, final live-context qualification, whiteness/DC/contrast logging
+  (`main/sphase_logic.h`, `test/test_sphase.c`). Board repeats pending.
+- [x] U85-CVT (comment 6124064221), negative result, bench-only build: investigate a static nonlinear
   confidence-aware 1024-entry LUT in one feasible two-bundle program.
   Compare 28+4 and 24+8 token layouts and a small analytical transition-law
   search on identical Q4 against U85Q/MATCHED/LP and the fixed-kp oracle.
@@ -35,7 +38,7 @@ without that equipment/evidence.
   report negative results rather than silently activate an inferior tracker.
 - [ ] Final build/checks, checked app-only flash, capture evidence, commit/push
   to PR #196 and reopen CMD monitor with the operator's AUTO setting.
-- [ ] Unified CVT follow-up (comment 6124244391): observation-dependent phase
+- [x] Unified CVT follow-up (comment 6124244391), concluded: observation-dependent phase
   adaptation first; separate cycle/instruction feasibility for true variable
   post-LP. Keep fixed-LP alternatives experimental and reject periodic bypass.
   Current negative candidate results and remaining work: `../research/CVT_STATUS.md`.

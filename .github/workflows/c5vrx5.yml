@@ -52,7 +52,7 @@ jobs:
         working-directory: v5/test
         run: |
           set -euo pipefail
-          for t in test_quiet test_profile test_diag test_afc test_lane_shadow test_kp_ladder test_kp_lut_io test_kp_switch_guard test_transport_recovery test_calibration_noise; do
+          for t in test_quiet test_profile test_diag test_afc test_lane_shadow test_kp_ladder test_kp_lut_io test_kp_switch_guard test_transport_recovery test_calibration_noise test_sphase; do
             cc -O2 -std=c11 -Wall -Wextra -Werror -I../main "$t.c" -lm -o "/tmp/$t" && "/tmp/$t" | tail -1
           done
           cc -O2 -std=c11 -Wall -Wextra -Werror -DEXPECT_FADE_HOLD -I../main test_gain_fade.c \
@@ -78,6 +78,15 @@ jobs:
           /tmp/iqf-test-env/bin/python v5/research/u85q_lp.py check
       - name: Kp ladder tables (generator reproduces the U85Q LUTs; kp_tables.h current)
         run: /tmp/iqf-test-env/bin/python v5/research/kp_morph.py check
+      - name: U85-CVT bench programs (assemble; 20 + 5 candidates bit-exact in the emulator; generated files current)
+        shell: bash
+        run: |
+          for p in u85q_cvt u85q_cvt_lp; do
+            python3 "$IDF_PATH/tools/bsasm.py" "v5/main/$p.bsasm" "/tmp/$p.bsbin" \
+              -c "$IDF_PATH/components/esp_driver_bitscrambler/bsasm_targets/esp32c5.json"
+          done
+          (cd v5/research && OPENBLAS_NUM_THREADS=1 /tmp/iqf-test-env/bin/python u85_cvt.py check)
+          (cd v5/research && OPENBLAS_NUM_THREADS=1 /tmp/iqf-test-env/bin/python cvt_precision.py check)
       - name: OUTPUT research invariants (DAC-only changes and bounded policy)
         run: /tmp/iqf-test-env/bin/python v5/research/output_level.py --check
       - name: Build C5VRX-5
@@ -86,6 +95,13 @@ jobs:
         run: |
           . "$IDF_PATH/export.sh"
           idf.py -DC5VRX5_VERSION="${{ steps.version.outputs.version }}" build
+      - name: Build bench experiments (U85-CVT, normalized sampling-phase gate; never published)
+        shell: bash
+        working-directory: v5
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py -B build_experiments -DSDKCONFIG=build_experiments/sdkconfig \
+            -DC5VRX5_EXPERIMENTS=1 build
       - name: Package firmware for web flashing
         shell: bash
         run: |

@@ -30,6 +30,8 @@
 #include "esp_timer.h"
 #include "phy.h"
 #include "profile_logic.h"
+#include "sdkconfig.h"
+#include "sphase_logic.h"
 #include "rf.h"
 #include "soc/pcr_struct.h"
 
@@ -37,7 +39,7 @@ extern unsigned char phy_param[];
 
 typedef struct {
     uint32_t windows;
-    uint64_t hf4_d4, hf4_count;
+    uint64_t hf4_d4, hf4_count, hf2_d2;
     int dc_i, dc_q;          /* milli-cells: circle centre or plain mean */
     bool dc_circle;
     unsigned envelope_x100;
@@ -67,8 +69,10 @@ static bool collect(unsigned windows, window_stats_t *out)
     for (unsigned tries = 0; tries < windows * 3u && out->windows < windows; ++tries) {
         vTaskDelay(2);   /* two ticks: one tick starved IDLE with the observer */
         if (!copy_probe_window(sample, NULL)) continue;
-        for (unsigned r = 0; r < PROBE_REGIONS; ++r)
+        for (unsigned r = 0; r < PROBE_REGIONS; ++r) {
             dsp_hf4_sums(sample + r * PROBE_REGION_BYTES, PROBE_REGION_BYTES, &out->hf4_d4);
+            dsp_hf2_sums(sample + r * PROBE_REGION_BYTES, PROBE_REGION_BYTES, &out->hf2_d2);
+        }
         out->hf4_count += PROBE_REGIONS * (PROBE_REGION_BYTES - 4u);
         dsp_circle_sums(sample, sizeof(sample), &circle);
         out->m = measure_window(sample, sizeof(sample));
@@ -85,14 +89,29 @@ static bool collect(unsigned windows, window_stats_t *out)
  * PR #3). The fourth-difference excess separates them on noise and on a
  * carrier; a bad phase is slipped one RX tick at a time, only in the
  * startup phase of every boot. Live, it is measured every 30 s and only
- * reported: a slip would interrupt the picture. */
-#define SPHASE_LIMIT      300
+ * reported: a slip would interrupt the picture.
+ *
+ * Verdict (sphase_logic.h, test/test_sphase.c): the absolute limit is the
+ * fast path; above it only a scan whose positions differ is evidence of a
+ * mid-transition read. Positions that all read alike are intrinsic noise
+ * (NOISE_LIMITED): no repair, not a phase fault. The stored DC row is held
+ * while the gain worker is paused for a scan, and the final qualification
+ * runs after the status screen has handed TX back to live video, because
+ * the TX context changes the noise the probe sees (board 2026-10-12). */
 #define SPHASE_POSITIONS  9u
 #define SPHASE_TRIES      12u
-#define SPHASE_MAX_SCANS  5u
-static int s_sphase_excess = -1;
+#if CONFIG_C5VRX5_EXPERIMENT_SPHASE_NORMALIZED
+#define SPHASE_GATE       SPHASE_NORM_LIMIT
+#define SPHASE_GATE_NAME  "normalized"
+#else
+#define SPHASE_GATE       SPHASE_LIMIT
+#define SPHASE_GATE_NAME  "absolute"
+#endif
+static int s_sphase_excess = -1, s_sphase_white = -1, s_sphase_dc[2];
 static unsigned s_sphase_scans;
+static sphase_scan_t s_sphase_last = {.best = 0x7fffffff, .worst = -1};
 static const char *s_sphase_state = "unverified";
+static void dco_hold_for_scan(void);
 
 static int sphase_excess(const window_stats_t *w)
 {
@@ -100,41 +119,82 @@ static int sphase_excess(const window_stats_t *w)
     return e > 0 ? e : 0;
 }
 
-static bool sphase_scan(void)
+/* The gate metric: absolute excess, or HF4/HF2 whiteness (experimental). */
+static int sphase_metric(const window_stats_t *w)
 {
-    if (!receiver_pause("SPHASE")) return false;
-    window_stats_t w;
-    int best = 0x7fffffff;
-    for (unsigned pos = 0; pos < SPHASE_POSITIONS; ++pos) {
-        if (pos) { rx_clock_slip(1); vTaskDelay(pdMS_TO_TICKS(20)); }
-        if (collect(48, &w) && sphase_excess(&w) < best) best = sphase_excess(&w);
-    }
-    /* Positions repeat every three ticks: stop on one near the cleanest. */
-    bool settled = false;
-    for (unsigned n = 0; best != 0x7fffffff && n < SPHASE_TRIES; ++n) {
-        if (!collect(48, &w)) break;
-        int e = sphase_excess(&w), margin = best / 4 > 100 ? best / 4 : 100;
-        if (e <= best + margin && e < SPHASE_LIMIT) { settled = true; s_sphase_excess = e; break; }
-        rx_clock_slip(1);
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-    receiver_resume();
-    printf("SPHASE scan best=%d settled=%u\n", best, settled);
-    return settled;
+#if CONFIG_C5VRX5_EXPERIMENT_SPHASE_NORMALIZED
+    return sphase_white_permille(w->hf4_d4, w->hf2_d2);
+#else
+    return sphase_excess(w);
+#endif
 }
 
-/* Startup: check, and repair a bad phase (a few hundred ms of slips). */
-static void sphase_startup(void)
+static int sphase_record(const window_stats_t *w)
+{
+    s_sphase_excess = sphase_excess(w);
+    s_sphase_white = sphase_white_permille(w->hf4_d4, w->hf2_d2);
+    s_sphase_dc[0] = w->dc_i;
+    s_sphase_dc[1] = w->dc_q;
+    return sphase_metric(w);
+}
+
+static sphase_verdict_t sphase_scan(void)
+{
+    if (!receiver_pause("SPHASE")) return SPHASE_UNSETTLED;
+    dco_hold_for_scan();
+    window_stats_t w;
+    sphase_scan_reset(&s_sphase_last);
+    for (unsigned pos = 0; pos < SPHASE_POSITIONS; ++pos) {
+        if (pos) { rx_clock_slip(1); vTaskDelay(pdMS_TO_TICKS(20)); }
+        if (collect(48, &w)) sphase_scan_add(&s_sphase_last, sphase_metric(&w));
+    }
+    sphase_verdict_t v = SPHASE_UNSETTLED;
+    if (s_sphase_last.valid && !sphase_contrast(&s_sphase_last)) {
+        /* Every position reads alike: intrinsic noise, slipping cannot help. */
+        if (collect(48, &w)) v = sphase_classify(sphase_record(&w), SPHASE_GATE, &s_sphase_last);
+    } else {
+        /* Positions repeat every three ticks: stop on one near the cleanest. */
+        for (unsigned n = 0; s_sphase_last.valid && n < SPHASE_TRIES; ++n) {
+            if (!collect(48, &w)) break;
+            int e = sphase_metric(&w);
+            if (e <= s_sphase_last.best + sphase_margin(s_sphase_last.best)) {
+                (void)sphase_record(&w);
+                v = SPHASE_SETTLED;
+                break;
+            }
+            rx_clock_slip(1);
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    }
+    receiver_resume();
+    printf("SPHASE scan gate=%s positions=%u best=%d worst=%d contrast=%u verdict=%s\n", SPHASE_GATE_NAME,
+           s_sphase_last.positions, s_sphase_last.best, s_sphase_last.worst, sphase_contrast(&s_sphase_last),
+           sphase_verdict_name(v));
+    return v;
+}
+
+/* Measure, classify and (startup only) repair with at most two scans. A
+ * fresh context drops the previous scan: its positions were measured under
+ * another TX/noise context and are no evidence here. */
+static void sphase_qualify(const char *stage, bool fresh_context)
 {
     window_stats_t w;
-    if (!collect(48, &w)) { s_sphase_state = "probe_failed"; return; }
-    s_sphase_excess = sphase_excess(&w);
-    for (s_sphase_scans = 0; s_sphase_excess >= SPHASE_LIMIT && s_sphase_scans < 2u;) {
-        ++s_sphase_scans;
-        if (sphase_scan()) break;
+    if (fresh_context) sphase_scan_reset(&s_sphase_last);
+    dco_hold_for_scan();
+    if (!collect(48, &w)) {
+        s_sphase_state = "probe_failed";
+        printf("SPHASE %s state=probe_failed\n", stage);
+        return;
     }
-    s_sphase_state = s_sphase_excess < SPHASE_LIMIT ? "settled" : "unsettled";
-    printf("SPHASE startup state=%s excess_mc2=%d scans=%u\n", s_sphase_state, s_sphase_excess, s_sphase_scans);
+    sphase_verdict_t v = sphase_classify(sphase_record(&w), SPHASE_GATE, &s_sphase_last);
+    for (unsigned n = 0; v == SPHASE_UNSETTLED && n < 2u; ++n) {
+        ++s_sphase_scans;
+        v = sphase_scan();
+    }
+    s_sphase_state = sphase_verdict_name(v);
+    printf("SPHASE %s state=%s gate=%s excess_mc2=%d white_pm=%d dc_mcell=%d/%d scans=%u best=%d worst=%d\n",
+           stage, s_sphase_state, SPHASE_GATE_NAME, s_sphase_excess, s_sphase_white, s_sphase_dc[0], s_sphase_dc[1],
+           s_sphase_scans, s_sphase_last.valid ? s_sphase_last.best : -1, s_sphase_last.valid ? s_sphase_last.worst : -1);
 }
 
 /* Live: monitoring only, every 30 s (a slip would interrupt the picture). */
@@ -146,16 +206,22 @@ static void sphase_monitor(void)
     next_us = now + 30000000LL;
     window_stats_t w;
     if (!collect(16, &w)) return;
-    s_sphase_excess = sphase_excess(&w);
-    if (s_sphase_excess >= SPHASE_LIMIT && strcmp(s_sphase_state, "drifted") != 0) {
+    sphase_verdict_t v = sphase_classify(sphase_record(&w), SPHASE_GATE, &s_sphase_last);
+    if (v == SPHASE_UNSETTLED && strcmp(s_sphase_state, "drifted") != 0) {
         s_sphase_state = "drifted";
-        printf("SPHASE WARNING live excess_mc2=%d >= %d: reported only, repaired at the next boot\n", s_sphase_excess,
-               SPHASE_LIMIT);
-    } else if (s_sphase_excess < SPHASE_LIMIT && strcmp(s_sphase_state, "drifted") == 0) s_sphase_state = "settled";
+        printf("SPHASE WARNING live gate=%s excess_mc2=%d white_pm=%d: reported only, repaired at the next boot\n",
+               SPHASE_GATE_NAME, s_sphase_excess, s_sphase_white);
+    } else if (v != SPHASE_UNSETTLED && strcmp(s_sphase_state, "drifted") == 0) {
+        s_sphase_state = sphase_verdict_name(v);
+    }
 }
 
 const char *calibration_sphase_state(void) { return s_sphase_state; }
-bool calibration_sphase_settled(void) { return strcmp(s_sphase_state, "settled") == 0; }
+/* NOISE_LIMITED is not a phase fault: every position reads the same noise. */
+bool calibration_sphase_settled(void)
+{
+    return !strcmp(s_sphase_state, "settled") || !strcmp(s_sphase_state, "noise_limited");
+}
 
 /* ---- Narrow analog filter --------------------------------------------------
  * The FM threshold follows the pre-detection noise bandwidth, and PARLIO
@@ -492,6 +558,18 @@ void dco_post_gain(uint8_t g)
     if (receiver_paused() || g < s_dco.lo || g > s_dco.hi || s_dco.e[g].valid != DCO_ROW_OK ||
         s_dco_banned[g] || s_dco.freq != rf_frequency_mhz()) return;
     if (phy_dco_hold(s_dco.e[g].code[0], s_dco.e[g].code[1]) == ESP_OK) ++s_dco_hook_holds;
+}
+
+/* Sampling-phase probes run with the gain worker paused, where the post-gain
+ * hook stays silent: hold the current gain's stored row explicitly so the
+ * scan sees the same DC as live video. */
+static void dco_hold_for_scan(void)
+{
+    dco_select();
+    const uint8_t g = s_current_gain;
+    if (g < s_dco.lo || g > s_dco.hi || s_dco.e[g].valid != DCO_ROW_OK || s_dco_banned[g] ||
+        s_dco.freq != rf_frequency_mhz()) return;
+    (void)phy_dco_hold(s_dco.e[g].code[0], s_dco.e[g].code[1]);
 }
 
 static bool dco_measure(int dc[2])
@@ -896,7 +974,7 @@ static void startup_phase(bool manual)
             if (!profile_set(PROFILE_DEFAULT)) printf("STARTUP error: DEFAULT profile not applied\n");
         }
         printf("STARTUP step=sphase\n");
-        sphase_startup();
+        sphase_qualify("startup", true);
         printf("STARTUP step=filter\n");
         if (phy_filter_calibrated_code() < 0) { s_filter_result = "unsupported_phy"; }
         else if (manual || s_filter_cal.version != FILTER_VERSION || !s_filter_cal.normal.valid) {
@@ -908,6 +986,10 @@ static void startup_phase(bool manual)
         /* Video needs a moment back on the own channel before measuring. */
         status_screen_end();
         vTaskDelay(pdMS_TO_TICKS(1500));
+        /* Final qualification in the live TX/RX context, before the VTX
+         * deviation measurement that needs the picture. */
+        printf("STARTUP step=sphase_final\n");
+        sphase_qualify("final", true);
         if (esp_timer_get_time() < deadline) deviation_startup(deadline);
         else profile_set_reason("startup_budget");
     }
@@ -1027,6 +1109,9 @@ void calibration_print(void)
            (unsigned long)s_dco_searches, (unsigned long)s_dco_carrier_searches, (unsigned long)s_dco_hook_holds,
            (unsigned long)s_dco_aborts, s_drift_avg[0], s_drift_avg[1], (unsigned long)s_drift_nudges,
            (double)s_temp_c);
-    printf("SPHASE state=%s excess_mc2=%d limit=%d scans=%u rx_div=%lu\n", s_sphase_state, s_sphase_excess,
-           SPHASE_LIMIT, s_sphase_scans, (unsigned long)PCR.parl_clk_rx_conf.parl_clk_rx_div_num + 1ul);
+    printf("SPHASE state=%s gate=%s excess_mc2=%d limit=%d white_pm=%d norm_limit=%d dc_mcell=%d/%d scans=%u "
+           "best=%d worst=%d contrast=%u rx_div=%lu\n", s_sphase_state, SPHASE_GATE_NAME, s_sphase_excess,
+           SPHASE_LIMIT, s_sphase_white, SPHASE_NORM_LIMIT, s_sphase_dc[0], s_sphase_dc[1], s_sphase_scans,
+           s_sphase_last.valid ? s_sphase_last.best : -1, s_sphase_last.valid ? s_sphase_last.worst : -1,
+           sphase_contrast(&s_sphase_last), (unsigned long)PCR.parl_clk_rx_conf.parl_clk_rx_div_num + 1ul);
 }

@@ -1,0 +1,24 @@
+menu "C5VRX-5 experiments (bench only)"
+
+    config C5VRX5_EXPERIMENT_U85_CVT
+        bool "U85-CVT bench tracker (console V)"
+        default n
+        help
+            Builds the experimental immutable U85-CVT LUT on the U85Q and
+            U85Q-LP instruction schedules (v5/research/u85_cvt.py,
+            CVT_STATUS.md). Console V switches to it and back through the
+            verified pipeline restart and saves AUTO OFF. The held-out
+            validation is negative against the MATCHED baseline: keep OFF
+            for production and flight builds.
+
+    config C5VRX5_EXPERIMENT_SPHASE_NORMALIZED
+        bool "Sampling phase: normalized HF gate"
+        default n
+        help
+            Qualifies the sampling phase on the fourth-difference energy
+            normalized by the second-difference energy of the same windows
+            instead of the absolute limit. Phasefix6 settled at boot but
+            failed subsequent explicit scans on the board; production keeps
+            the absolute gate.
+
+endmenu
