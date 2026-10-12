@@ -1,10 +1,10 @@
 name: Web tools checks
 on:
   pull_request:
-    paths: ["web/**", ".github/workflows/web-checks.yml"]
+    paths: ["web/**", "main/**", ".github/workflows/web-checks.yml"]
   push:
     branches: [main]
-    paths: ["web/**", ".github/workflows/web-checks.yml"]
+    paths: ["web/**", "main/**", ".github/workflows/web-checks.yml"]
 permissions:
   contents: read
 jobs:
@@ -17,4 +17,5 @@ jobs:
           node-version: '22'
       - run: node --check web/app.js
       - run: node --check web/serial-terminal.js
+      - run: node --check web/receiver-console.js
       - run: node --test web/*.test.mjs

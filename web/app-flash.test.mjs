@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { ReceiverConsole } from './receiver-console.js';
 
 // Exercise the actual click handler with a mock loader: never touch USB hardware.
 const source = fs.readFileSync(process.env.APP_SOURCE_PATH || new URL('./app.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '');
@@ -16,14 +17,25 @@ function harness(sourceName, packageType = 'merged', confirmed = true) {
     });
     return elements.get(id);
   };
-  const downloads = [], flashes = [], alerts = [];
+  const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const shortcuts = [...html.matchAll(/<button[^>]*data-command="([^"]+)"([^>]*)>/g)].map((match, i) => {
+    const element = get(`shortcut-${i}`);
+    element.dataset = { command: match[1], confirm: match[2].match(/data-confirm="([^"]+)"/)?.[1] };
+    return element;
+  });
+  const downloads = [], flashes = [], alerts = [], commands = [], lifecycle = [];
   const context = vm.createContext({
-    console, URL, Date, TextDecoder, TextEncoder,
+    console, URL, Date, TextDecoder, TextEncoder, ReceiverConsole,
     document: { baseURI: 'https://c5vrx.com/', getElementById: get,
-      querySelectorAll: () => [], addEventListener() {}, createElement: () => get('option') },
+      querySelectorAll: selector => selector === '[data-command]' ? shortcuts : [], addEventListener() {}, createElement: () => get('option') },
     navigator: { serial: { addEventListener() {} } },
     window: { confirm: () => confirmed, matchMedia: () => ({ matches: true, addEventListener() {} }) },
-    SerialTerminal: class { constructor() { this.state = 'disconnected'; } },
+    SerialTerminal: class {
+      constructor(options) { this.state = 'disconnected'; this.options = options; }
+      async connect() { lifecycle.push('terminal connect'); this.state = 'connected'; this.options.onState(this.state); }
+      async disconnect() { lifecycle.push('terminal disconnect'); this.state = 'disconnected'; this.options.onState(this.state); }
+      async send(text) { commands.push(text); return true; }
+    },
     alert: message => alerts.push(message),
     fetch: async url => { downloads.push(url); return { ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer }; },
     mockLoader: { writeFlash: async options => flashes.push(options), after: async () => {} }
@@ -42,7 +54,7 @@ function harness(sourceName, packageType = 'merged', confirmed = true) {
     ] };
     githubReleases = [rel]; githubAlphaBuilds = [rel];
   `, context);
-  return { get, context, downloads, flashes, alerts, click: () => get('btnFlash').handlers.click() };
+  return { get, context, downloads, flashes, alerts, commands, lifecycle, shortcuts, click: () => get('btnFlash').handlers.click() };
 }
 
 for (const remote of ['github', 'alpha']) {
@@ -81,3 +93,36 @@ test('only Local File requires a local binary', async () => {
   assert.equal(h.flashes.length, 0);
   assert.ok(h.alerts.includes('Flashing error: No local binary selected'));
 });
+
+test('terminal connection releases flasher before identifying firmware', async () => {
+  const h = harness('alpha');
+  vm.runInContext("transport = { disconnect: async () => { log('released'); } }", h.context);
+  await h.get('btnTerminalConnect').handlers.click();
+  assert.equal(vm.runInContext('isConnected', h.context), false);
+  assert.deepEqual(h.commands, ['hT']);
+  assert.equal(h.get('btnConnect').disabled, false);
+});
+
+test('manual and button commands share confirmations and send no Enter', async () => {
+  const h = harness('alpha', 'merged', false);
+  vm.runInContext("isConnected = false; serialConsole.state = 'connected'; receiverConsole.push('C5VRX-5 keys: T status\\n');", h.context);
+  const calibrate = h.shortcuts.find(b => b.dataset.command === 'F');
+  await calibrate.handlers.click();
+  h.get('commandInput').value = 'F';
+  await h.get('commandForm').handlers.submit({ preventDefault() {} });
+  assert.deepEqual(h.commands, []);
+  h.get('commandInput').value = 'T';
+  await h.get('commandForm').handlers.submit({ preventDefault() {} });
+  assert.deepEqual(h.commands, ['T']);
+  h.get('commandInput').value = 'Fg';
+  await h.get('commandForm').handlers.submit({ preventDefault() {} });
+  assert.deepEqual(h.commands, ['T']);
+});
+
+test('legacy identity leaves current shortcuts disabled and help usable', () => {
+  const h = harness('alpha');
+  vm.runInContext("isConnected = false; serialConsole.state = 'connected'; appendSerial('C5VRX-3 ready\\n');", h.context);
+  assert.equal(h.shortcuts.find(b => b.dataset.command === 'K').disabled, true);
+  assert.equal(h.shortcuts.find(b => b.dataset.command === 'h').disabled, false);
+});
+

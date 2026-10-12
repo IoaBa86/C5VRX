@@ -122,6 +122,10 @@ The menu closes by itself after 30 s without a press.
 `M` GAINMAP lines (for a gain-map preset), `L` bench-only IQ lane comparison (video stops ~3 s),
 `` ` `` download mode, `h` help.
 
+`v` cycles the video standard AUTO / NTSC / PAL using the same action as
+the on-screen VIDEO item. `e` closes the on-screen menu without opening it
+when already closed. Both are direct controls for the web receiver menu.
+
 `K` cycles OFF / AUTO kp / AUTO kp+LP. `k` steps kp calmer, `j` faster;
 `P` manually toggles U85Q/U85Q-LP. `P`, `k` and `j` persist AUTO OFF,
 including across reboot; repeated presses do not rewrite unchanged NVS.
@@ -180,6 +184,24 @@ another browser with Web Serial) has three tabs:
 
 Firmware is mirrored into the GitHub Pages site and downloaded same-origin.
 
+The **Terminal** view has a visual receiver menu matching the module:
+BAND, CHANNEL, SCAN, VIDEO, CALIBRATE, OUTPUT and EXIT. Selecting a menu
+page only changes the browser view; its action button sends the command.
+It identifies C5VRX-5 from firmware help/status and displays the last reported
+channel, frequency, signal, video standard and output level. Use **Receiver
+status** to refresh; there is no background status polling. VIDEO/EXIT direct
+actions require firmware advertising `v`/`e` in its help; older C5VRX-5 builds
+can still use the on-screen menu controls. Legacy builds do not enable the
+C5VRX-5 action menu.
+
+Diagnostics and bench controls are collapsed by default. Commands send one
+case-sensitive byte without Enter. Actions that change reception or stored
+settings ask for confirmation, including when typed manually. Connecting the
+terminal releases the flasher, and connecting the flasher releases the terminal;
+they never open a port together. **Download log** saves the displayed text,
+including FIELD_DIAG and raw IQ captures. The display retains the latest
+120,000 characters; download before reconnecting or clearing.
+
 ## Releases and CI
 
 `.github/workflows/c5vrx5.yml` runs the host tests and research checks,
@@ -230,3 +252,4 @@ commercial use, including selling receivers with this firmware, provided
 the source (with your changes) is passed on under the same license.
 
 The C5VRX name and logos have separate terms; see [assets/BRANDING.md](assets/BRANDING.md).
+
