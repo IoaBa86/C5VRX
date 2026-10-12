@@ -105,3 +105,32 @@ test('a reboot discards values the firmware resets', () => {
   assert.equal(state.view().output, '');
   assert.equal(state.view().menu, null);
 });
+
+test('a busy receiver is reported, its refusals shown and its end refreshes', () => {
+  const state = new ReceiverConsole();
+  state.push('C5VRX-5 keys: T status\nCONTROL channel=R1 freq=5658 menu=0 busy=0\n');
+  assert.equal(state.receiverBusy(), false);
+  assert.deepEqual(state.push('COMMAND c refused=busy (a calibration owns the picture)\n'), ['refused']);
+  assert.equal(state.view().busy, true);
+  assert.equal(state.view().refused, 'c');
+  assert.deepEqual(state.push('HB t_s=5 stage=ready gain=40 menu=0 startup=0 busy=0\n'), ['calibration-done']);
+  assert.equal(state.view().busy, false);
+  assert.equal(state.view().refused, '');
+});
+
+test('the busy field wins over the startup flag; old firmware falls back to it', () => {
+  const current = new ReceiverConsole();
+  current.push('C5VRX-5 keys: T\nHB t_s=5 stage=ready gain=40 menu=0 startup=1 busy=0\n');
+  assert.equal(current.receiverBusy(), false);
+  const older = new ReceiverConsole();
+  older.push('C5VRX-5 keys: T\nHB t_s=5 stage=ready gain=40 menu=0 startup=1\n');
+  assert.equal(older.receiverBusy(), true);
+});
+
+test('busy-gated keys are exactly the keys the console routes to command()', async () => {
+  const { MENU_COMMAND_KEYS } = await import('./receiver-console.js');
+  const consoleSource = fs.readFileSync(new URL('../main/console.c', import.meta.url), 'utf8');
+  const routed = consoleSource.match(/case 'o':[^\n]*/)[0];
+  const keys = new Set([...routed.matchAll(/case '([^'])'/g)].map(m => m[1]));
+  assert.deepEqual([...MENU_COMMAND_KEYS].sort(), [...keys].sort());
+});

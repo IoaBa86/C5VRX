@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { ReceiverConsole } from './receiver-console.js';
+import { ReceiverConsole, MENU_COMMAND_KEYS } from './receiver-console.js';
 
 // Exercise the actual click handler with a mock loader: never touch USB hardware.
 const source = fs.readFileSync(process.env.APP_SOURCE_PATH || new URL('./app.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '');
@@ -25,7 +25,7 @@ function harness(sourceName, packageType = 'merged', confirmed = true) {
   });
   const downloads = [], flashes = [], alerts = [], commands = [], lifecycle = [];
   const context = vm.createContext({
-    console, URL, Date, TextDecoder, TextEncoder, ReceiverConsole, setTimeout, clearTimeout,
+    console, URL, Date, TextDecoder, TextEncoder, ReceiverConsole, MENU_COMMAND_KEYS, setTimeout, clearTimeout,
     document: { baseURI: 'https://c5vrx.com/', getElementById: get,
       querySelectorAll: selector => selector === '[data-command]' ? shortcuts : [], addEventListener() {}, createElement: () => get('option') },
     navigator: { serial: { addEventListener() {} } },
@@ -159,4 +159,15 @@ test('Local File refuses an offset that would overwrite the wrong sector', async
   h.get('inputFlashOffset').value = '0x10000';
   await h.click();
   assert.equal(h.flashes[0].fileArray[0].address, 0x10000);
+});
+
+test('menu buttons are disabled while the receiver is busy, diagnostics stay usable', () => {
+  const h = harness('alpha');
+  vm.runInContext("isConnected = false; serialConsole.state = 'connected'; appendSerial('C5VRX-5 keys: T\\nHB t_s=1 stage=ready gain=40 menu=0 startup=1 busy=1\\n');", h.context);
+  const key = k => h.shortcuts.find(b => b.dataset.command === k);
+  assert.equal(key('c').disabled, true);
+  assert.equal(key('D').disabled, false);
+  assert.equal(key('T').disabled, false);
+  vm.runInContext("appendSerial('HB t_s=6 stage=ready gain=40 menu=0 startup=0 busy=0\\n');", h.context);
+  assert.equal(key('c').disabled, false);
 });

@@ -1,6 +1,6 @@
 import { ESPLoader, Transport } from './esptool.js';
 import { SerialTerminal } from './serial-terminal.js';
-import { ReceiverConsole } from './receiver-console.js';
+import { ReceiverConsole, MENU_COMMAND_KEYS } from './receiver-console.js';
 
 const $ = id => document.getElementById(id);
 
@@ -545,7 +545,7 @@ function receiverValues(v) {
     detected: v.detected,
     output: v.output,
     menu: v.menu === null ? '' : v.menu ? 'OPEN' : 'CLOSED · LIVE VIDEO',
-    calibrate: !v.stage ? '' : v.calibrating ? 'RUNNING · VIDEO STOPPED' : 'READY',
+    calibrate: v.busy ? 'RUNNING · VIDEO STOPPED' : v.stage || v.statusAt ? 'READY' : '',
     scan: v.scan,
     kpMode: v.kpMode,
     liveProfile: v.liveProfile === undefined ? '' : v.liveProfile ? 'ON' : 'OFF · REPORT ONLY',
@@ -563,8 +563,11 @@ function renderReceiver() {
       : 'Firmware not identified yet. Press Refresh status or Firmware help; the menu needs C5VRX-5 firmware.');
 
   const notice = $('receiverNotice');
-  notice.hidden = !v?.calibrating;
-  if (v?.calibrating) setText(notice, 'Calibration is running: video is stopped and the receiver ignores menu commands until it finishes.');
+  notice.hidden = !v?.busy;
+  if (v?.busy) {
+    setText(notice, `${v.refused ? `Key ${v.refused} was ignored: ` : ''}the receiver is calibrating (or running a lane test), ` +
+      'so it ignores menu commands until that finishes. The menu buttons come back by themselves.');
+  }
 
   const values = receiverValues(v);
   for (const element of document.querySelectorAll('[data-value]')) {
@@ -649,7 +652,12 @@ function syncDeviceControls() {
   terminalBaud.disabled = !terminalIdle;
   commandInput.disabled = !terminalConnected || commandBusy;
   $('btnSendCommand').disabled = !terminalConnected || commandBusy;
-  for (const button of shortcutButtons) button.disabled = !terminalConnected || commandBusy || !receiverConsole.supports(button.dataset.command);
+  const receiverBusy = receiverConsole.receiverBusy();
+  for (const button of shortcutButtons) {
+    const key = button.dataset.command;
+    button.disabled = !terminalConnected || commandBusy || !receiverConsole.supports(key) || (receiverBusy && MENU_COMMAND_KEYS.has(key));
+    button.title = receiverBusy && MENU_COMMAND_KEYS.has(key) ? 'The receiver ignores this until its calibration finishes' : '';
+  }
 }
 
 btnTerminalConnect.addEventListener('click', async () => {

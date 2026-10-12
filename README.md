@@ -237,6 +237,11 @@ firmware advertising `v`/`e` in its help; older C5VRX-5 builds can still use
 the on-screen menu controls. Legacy builds do not enable the C5VRX-5 action
 menu. `#terminal` opens the Terminal view directly.
 
+While a status screen owns the picture (first-boot calibration, CALIBRATE,
+lane test) the firmware ignores menu keys; it now answers each with
+`COMMAND <key> refused=busy` and reports `busy=` in `CONTROL` and the `HB`
+heartbeat, and the web menu greys out those buttons until it ends.
+
 Diagnostics and bench controls are collapsed by default. Commands send one
 case-sensitive byte without Enter. Actions that change reception or stored
 settings ask for confirmation, including when typed manually. Connecting the

@@ -6,6 +6,9 @@ export const BAND_NAMES = {
   R: 'RACEBAND R', A: 'BOSCAM A', B: 'BOSCAM B', E: 'BOSCAM E', F: 'FATSHARK F', L: 'LOWBAND L'
 };
 export const KP_MODES = ['OFF', 'AUTO kp', 'AUTO kp+LP'];
+// Keys the firmware routes through control.c command(): ignored while a
+// calibration/lane-test status screen owns the picture.
+export const MENU_COMMAND_KEYS = new Set(['o', 'e', 'v', 'n', 'x', 'c', 'b', 's', 'K', 'k', 'j', 'P', 'g', 'A']);
 
 const FIELDS = /(?:^|\s)(\w+)=([^\s]+)/g;
 const fields = (line, target = {}) => {
@@ -27,6 +30,9 @@ export class ReceiverConsole {
     this.profile = {};
     this.scan = { active: false, candidates: 0, result: '', channel: '' };
     this.statusAt = 0;
+    this.busy = false;
+    this.busyReported = false;
+    this.refused = '';
   }
 
   // Returns the events in this chunk that make a fresh status report useful:
@@ -50,6 +56,7 @@ export class ReceiverConsole {
         this.control = {};
         this.output = {};
         this.scan = { active: false, candidates: 0, result: '', channel: '' };
+        this.refused = '';
         events.add('ready');
       }
     }
@@ -59,6 +66,7 @@ export class ReceiverConsole {
 
     if (line.startsWith('CONTROL ')) {
       fields(line, this.control);
+      if (this.control.busy !== undefined) this.setBusy(this.control.busy === '1', events);
       this.statusAt = now;
       events.add('status');
     } else if (line.startsWith('OUTPUT level=')) {
@@ -73,14 +81,31 @@ export class ReceiverConsole {
       this.heartbeat = hb;
       if (hb.menu !== undefined && this.control.channel) this.control.menu = hb.menu;
       if (wasStartup && hb.startup === '0') events.add('calibration-done');
+      if (hb.busy !== undefined) this.setBusy(hb.busy === '1', events);
     } else {
       this.acknowledgement(line, events);
     }
   }
 
+  setBusy(busy, events) {
+    if (this.busy && !busy) events.add('calibration-done');
+    this.busy = busy;
+    this.busyReported = true;
+    if (!busy) this.refused = '';
+  }
+
+  // Older firmware has no busy field: its startup flag is the best hint.
+  receiverBusy() {
+    return this.busy || (!this.busyReported && this.heartbeat.startup === '1');
+  }
+
   acknowledgement(line, events) {
     let match;
-    if ((match = line.match(/^\[CHANNEL\] (\S+) (\d+) MHz/))) {
+    if ((match = line.match(/^COMMAND (\S) refused=busy/))) {
+      this.busy = true;
+      this.refused = match[1];
+      events.add('refused');
+    } else if ((match = line.match(/^\[CHANNEL\] (\S+) (\d+) MHz/))) {
       Object.assign(this.control, { channel: match[1], freq: match[2], afc_locked: '0', signal: undefined, detected: undefined });
       events.add('changed');
     } else if ((match = line.match(/^OUTPUT manual (\S+) result=applied/))) {
@@ -129,6 +154,8 @@ export class ReceiverConsole {
       output: this.output.level || '',
       menu: c.menu === undefined ? null : c.menu === '1',
       calibrating: this.heartbeat.startup === '1',
+      busy: this.receiverBusy(),
+      refused: this.refused,
       stage: this.heartbeat.stage || '',
       gain: this.heartbeat.gain || '',
       kpMode: Number.isInteger(kp) ? KP_MODES[kp] || '' : '',
