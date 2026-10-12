@@ -38,9 +38,10 @@ static const uint8_t s_icons[MENU_ITEMS][8] = {
     {0x00, 0x40, 0x50, 0x54, 0x55, 0x55, 0x55, 0x00},   /* scan */
     {0x7e, 0x42, 0x42, 0x42, 0x7e, 0x18, 0x3c, 0x00},   /* video */
     {0x08, 0x08, 0x1c, 0x7f, 0x1c, 0x08, 0x08, 0x00},   /* calibrate */
+    {0x00, 0x08, 0x18, 0x38, 0x78, 0x38, 0x18, 0x08},   /* output */
     {0x7c, 0x44, 0x04, 0x1f, 0x04, 0x44, 0x7c, 0x00},   /* exit */
 };
-static const char *const s_items[MENU_ITEMS] = {"BAND", "CHANNEL", "SCAN", "VIDEO", "CALIBRATE", "EXIT"};
+static const char *const s_items[MENU_ITEMS] = {"BAND", "CHANNEL", "SCAN", "VIDEO", "CALIBRATE", "OUTPUT", "EXIT"};
 
 static void rect(int x, int y, int w, int h, uint8_t code)
 {
@@ -205,6 +206,12 @@ void menu_render(void)
                                             s_std_mode == STD_MODE_PAL ? "PAL" : "NTSC");
         value_box(100, 34, 276, "DETECTED", s_detected_std_valid ? std_name(s_detected_std) : "NO VIDEO");
         text("AUTO FOLLOWS THE CAMERA", 100, 47, UI_MUTED, 1);
+        break;
+    case MENU_OUTPUT:
+        title("OUTPUT LEVEL", "HOLD: CHANGE");
+        value_box(100, 22, 276, "LEVEL", transport_output_name());
+        text("BOOT: 1.0X   LOAD: 75 OHM", 100, 38, UI_MUTED, 1);
+        text(transport_output() ? "HIGH LEVEL MAY CLIP VIDEO" : "INCREASE FOR WEAK SYNC", 100, 47, UI_WHITE, 1);
         break;
     case MENU_CALIBRATE:
         title("CALIBRATE", "HOLD: CALIBRATE NOW");

@@ -48,7 +48,21 @@ static unsigned s_afc_corrections, s_afc_weak_skips;
 static kp_ladder_t s_kp;
 static kp_switch_guard_t s_auto_candidate;
 static uint8_t s_kp_auto;
+static int s_saved_kp_auto = -1;
 static bool s_mode_reset_pending;
+static void save_auto_mode(void)
+{
+    /* Holding P/k must not wear NVS by rewriting OFF on every press. */
+    if (s_saved_kp_auto != s_kp_auto && blob_store("kp_auto", &s_kp_auto, 1))
+        s_saved_kp_auto = s_kp_auto;
+}
+static void manual_auto_off(void)
+{
+    s_kp_auto = 0;
+    save_auto_mode();
+    s_mode_reset_pending = false;
+    s_auto_candidate.candidate = false;
+}
 /* Learned offset sign (afc_ctrl.h sign check), persisted once observed. */
 static volatile int8_t s_afc_sign = 1;
 static volatile uint8_t s_afc_sign_state;
@@ -210,6 +224,7 @@ static void menu_action(void)
     case MENU_CHANNEL: rf_next_channel(); after_retune(); break;
     case MENU_SCAN: scan(); break;
     case MENU_CALIBRATE: menu_close(); filter_request(); return;   /* runs once the menu is closed */
+    case MENU_OUTPUT: (void)transport_set_output((transport_output() + 1u) % 4u); break;
     case MENU_VIDEO:
         menu_set_standard_mode(s_std_mode == STD_MODE_AUTO ? STD_MODE_NTSC :
                                s_std_mode == STD_MODE_NTSC ? STD_MODE_PAL : STD_MODE_AUTO);
@@ -233,7 +248,7 @@ static void command(int c, unsigned *menu_idle)
     case 's': scan(); break;
     case 'K':
         s_kp_auto = (uint8_t)((s_kp_auto + 1u) % 3u);
-        (void)blob_store("kp_auto", &s_kp_auto, 1);
+        save_auto_mode();
         kp_ladder_reset(&s_kp);
         s_auto_candidate.candidate = false;
         (void)transport_kp_set(0);
@@ -242,8 +257,7 @@ static void command(int c, unsigned *menu_idle)
                s_kp_auto == 1 ? "AUTO kp (brief restarts, U85Q only; bench test)" : "OFF");
         break;
     case 'P': {
-        s_kp_auto = 0;
-        s_mode_reset_pending = false;
+        manual_auto_off();
         const bool lp = !transport_lp();
         const bool menu = s_menu_active;
         uint32_t wait_before = transport_switch_wait_ms();
@@ -256,12 +270,20 @@ static void command(int c, unsigned *menu_idle)
                     menu ? "loaded at menu exit through the normal start sequence" : "switched via pipeline restart");
         break;
     }
-    case 'k': {
-        s_kp_auto = 0;
-        s_mode_reset_pending = false;
-        int next = (transport_kp_target() + 1) % KP_LADDER_LEVELS;
+    case 'k': case 'j': {
+        manual_auto_off();
+        int next = (transport_kp_target() + (c == 'k' ? 1 : KP_LADDER_LEVELS - 1)) % KP_LADDER_LEVELS;
         printf("KP manual level=%d %s\n", next, transport_kp_set(next) ? "queued (brief pipeline restart)" :
                "refused (needs the U85Q program: DEFAULT/WIDE profile, live video)");
+        break;
+    }
+    case 'g': {
+        unsigned next = (transport_output() + 1u) % 4u;
+        bool ok = transport_set_output(next);
+        printf("OUTPUT manual %s result=%s wait_ms=%lu%s\n", transport_output_name(),
+               ok ? "applied" : "refused", (unsigned long)transport_switch_wait_ms(),
+               transport_output() ? " WARNING: may clip wide VTX; verify sync/white into 75 ohm" : "");
+        if (s_menu_active) menu_render();
         break;
     }
     default: break;
@@ -287,6 +309,7 @@ static void control_task(void *arg)
     unsigned settle = RETUNE_SETTLE_TICKS, btn = 0, boot_grace = 20, menu_idle = 0, menu_refresh = 0;
     bool long_fired = false, was_locked = false;
     uint32_t seen_phy = phy_generation(), seen_control = s_control_epoch;
+    uint32_t seen_restart_errors = transport_restart_errors();
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(TICK_MS));
         int c;
@@ -296,6 +319,7 @@ static void control_task(void *arg)
          * (menu: do the selected item). */
         /* A calibration status screen owns the picture: no menu, no idle exit. */
         if (menu_status_active()) {
+            s_auto_candidate.candidate = false;
             lane_shadow_window(NULL, 0, afc_context(), s_gain_epoch, false);
             btn = 0; long_fired = false; menu_idle = 0; continue;
         }
@@ -322,6 +346,14 @@ static void control_task(void *arg)
         } else menu_idle = menu_refresh = 0;
 
         transport_poll_faults();
+        if (transport_faulted() || seen_restart_errors != transport_restart_errors()) {
+            seen_restart_errors = transport_restart_errors();
+            manual_auto_off();
+            kp_ladder_reset(&s_kp);
+            int actual = transport_kp_level();
+            if (actual >= 0) s_kp.level = (uint8_t)actual;
+            s_kp.lp = transport_lp();
+        }
         if (phy_generation() != seen_phy || s_control_epoch != seen_control) {
             seen_phy = phy_generation();
             seen_control = s_control_epoch;
@@ -331,6 +363,7 @@ static void control_task(void *arg)
         }
         uint32_t gain_epoch = s_gain_epoch, ctx = afc_context();
         if (s_scan_active || !copy_control_window(s_window, sizeof(s_window))) {
+            s_auto_candidate.candidate = false;
             afc2_ctrl_invalidate(&afc);
             diag_window(false, false, false); /* failed copies count as missing evidence */
             lane_shadow_window(NULL, 0, ctx, gain_epoch, false);
@@ -426,7 +459,8 @@ void control_start(void)
     if (!blob_load("last_std", &s_last_std, 1)) s_last_std = 0xFF;
     int8_t sign;
     if (blob_load("afc_sign", &sign, 1) && (sign == 1 || sign == -1)) s_afc_sign = sign;
-    if (!blob_load("kp_auto", &s_kp_auto, 1) || s_kp_auto > 2) s_kp_auto = 0;
+    if (!blob_load("kp_auto", &s_kp_auto, 1) || s_kp_auto > 2) s_kp_auto = 2;
+    else s_saved_kp_auto = s_kp_auto; /* an explicitly saved OFF wins */
     s_commands = xQueueCreate(16, sizeof(int));
     ESP_ERROR_CHECK(s_commands ? ESP_OK : ESP_ERR_NO_MEM);
     ESP_ERROR_CHECK(xTaskCreate(control_task, "control", 6144, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);

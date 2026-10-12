@@ -201,3 +201,131 @@ still need field observation. Firmware was app-only flashed with a matching
 partition layout and NVS/PHY left intact.
 
 Sampling drift was observed separately and is not claimed fixed here.
+
+## Review follow-up: recovery, calibration and output level (2026-10-12)
+
+PR comments 6123181977 and 6123278553 identify remaining safety and
+compatibility gaps. The first comment reviewed obsolete 65946f1; its
+32-bit LUT-port endorsement was contradicted by the physical tests above.
+The corrected LUT16/HALT access is retained.
+
+`transport_recovery.h` drives the production restart: checked teardown,
+BS enable, program load, instruction readback, complete LUT16 write/readback,
+BS reset/start, RX/TX enable, RX start and bounded TX start. The last good
+LUT/configuration is published only after the whole chain succeeds. Each
+failed candidate is cleaned up before exactly one fully verified rollback;
+failed rollback or teardown latches live OFF and reports an error without
+aborting/retrying indefinitely. USB runs independently. Menu return and boot
+use this same verification path. `test_transport_recovery.c` injects every
+candidate and rollback stage failure, initial-load failure and failed cleanup,
+and verifies publication only after successful final DMA start. These are
+host coordinator tests, not physical SDK failure-injection evidence.
+
+Manual P/k save AUTO OFF once, and AUTO is stopped/reconciled after restart
+errors. Missing/invalid settings select AUTO kp+LP by the operator's explicit
+decision; existing saved OFF is respected. Invalid probe/menu/scan windows
+clear target confirmation. Five-second backend cooldown and two-second
+continuous usable-evidence confirmation remain in force.
+
+Issue #199 has no attached raw snapshot. A matching synthetic +1.23/-3.26
+cell DC and 1.7-cell complex noise test now runs the exact shared quiet and
+filter-measurement helpers, with no threshold change and no prior DC search.
+100 synthetic bandwidth settings complete without a definite-carrier abort
+and leave eligible quiet candidates. A too-narrow/noisy setting can be
+skipped, just as in the real sweep. Weak FM (-1..3 dB model C/N) is refused
+as quiet; failed/short probes, recent sync, origin and rails retain separate
+refusals. These 100 synthetic settings are not the actual PHY register sweep.
+The reporter's complete physical sweep and subsequent DCO remain pending.
+
+Issue #200 manual OUTPUT is integrated via g/menu. Boot is always 1x;
+1.5/2/2.5x change only DAC6 low bits. Transformation is applied to original
+kp/program tables, never cumulatively to an already-scaled table. Verified
+level/program/output survive menu return and rollback; T reports clipping
+as the count of transformed LUT entries, not live sample clipping. HDZero
+acceptance with the reporter's low-deviation VTX and a wide VTX is pending.
+
+`research/output_level.py` uses the existing bit-exact U85Q and LP models
+over PAL/NTSC, deviations .69/1.0/1.7 and C/N 6/30 dB, plus an unequal
+sync/picture swing approximating issue #200 (-2.82/-1.5/+3.7 MHz): 160 model rows,
+including four manual output levels and an ideal sync/white-referenced
+candidate. All eight kp LUTs additionally pass identity and metadata
+preservation checks. The DAC model assumes ideal 3.3 V GPIO, nominal
+resistors, 200-ohm series resistor and 75-ohm termination (maximum .623 V
+loaded). This differs from the issue reporter's nominal voltage model:
+neither is a measured board voltage, and actual output impedance/load must
+be established before interpreting compliance or selecting a voltage target.
+
+Example, PAL strong carrier, U85Q, deviation 1.7: manual 2x clips 23.65%
+of pre-LP samples and luma SINAD falls from 15.63 to 11.55 dB. The ideal
+sync/white-reference candidate selects 1.19x, clips .64% and scores 15.68 dB.
+At deviation .69, the nominal loaded sync depth rises from .060 V (1x) to
+.127 V with the ideal 2.5x candidate, with .66% clipped samples. The high
+gain cap prevents this example from reaching a nominal .286-V sync target;
+gain does not increase the DAC's physical voltage span. Noise and transient
+excursions can still clip even with ideal reference headroom.
+
+The existing goggle metric fits analogue amplitude away, so its normalised
+picture score cannot prove AV-input compatibility. The simulation separately
+reports unnormalised nominal depth/swing/clipping. It demonstrates potential
+benefit and the harm of blind 2x, not a tested live estimator, HDZero model,
+actual sensitivity gain or flight-safe automatic output. Automatic OUTPUT
+is consequently not enabled. A future implementation needs reliable sync,
+porch **and white/burst headroom** measurements, context resets, failed-write
+rollback, at least 2 s stable evidence and the shared 5 s application gap;
+it must hold on invalid/weak observations rather than follow a fade.
+
+Follow-up board evidence: firmware `5.0.0-pr.196-output2` passed all eight
+kp levels in both directions including wraps, two P-spam bursts, 1x/2x menu
+return, 2x preservation across kp/LP and an OFF-persistence reboot. Before
+reboot: 16 kp and 3 program changes, 25,600 total verified LUT writes,
+zero verification/restart/transport faults and no watchdog/abort. Kp changes
+were about 4.2-4.4 ms and program changes about 3.8 ms in this VTX-off run.
+After testing, AUTO kp+LP was explicitly restored and OUTPUT was 1x.
+
+Manual F first caught a follow-up regression: full recovery teardown was
+also stopping RX during the menu/status raster, so all calibrator copies
+failed. The correction keeps RX and its descriptor metadata alive while
+normal menu/status screens own TX; failed pipeline recovery still stops all
+enabled parts. The production stop-parts helper now has a host regression
+assertion for retained RX plus complete cleanup even when a stop fails.
+
+Repeating F on the board (operator confirmed VTX OFF) then measured all
+100 settings, plus calibrated baseline/recheck (102 setting log records),
+and stored normal BW40 code48/skirt8, width 13.125 MHz, NBW13.280 MHz;
+narrow code60/skirt0, width11.875 MHz, NBW11.899 MHz; wide code24/skirt0,
+width18.125 MHz, NBW18.245 MHz, calibrated NBW20.612 MHz. It subsequently
+searched 12 DC rows and measured a floor at gain72; no missing rows remained.
+The bounded startup finished in 119.205 s without no_quiet_channel,
+sample_failure or new transport/verification faults. Sampling phase still
+reported unsettled and is an explicitly added investigation, not a passed
+test. This is this board's VTX-off acceptance, not the #199 reporter's capture.
+
+Multi-Rescue proposal test (`research/rescue_study.py`, data/rescue_study.json
+and standalone plots): 64 identical-Q4 cases x 17 candidates = 1088 results,
+with eight kp values for U85Q/LP and a floating adjacent-FM same-Q4 reference.
+Clean cases have four seeds (two PAL/two NTSC), deviations .69/1.0/1.4/1.7,
+C/N1/4/30 dB and the existing matched filter/baseline. CFO +/-750 kHz, DC1
+cell and 3-ms/-30-dB fades use two seeds. Ranking uses worst-seed absolute
+model line-lock >=.90, no more than .02 lock loss vs baseline, relative burst
+SINAD >= baseline-1 dB and no additional clean DAC-rail exposure, plus <=1 dB
+strong-signal loss. This relative burst gate does not prove decoded colour;
+negative burst SINAD may still pass if the baseline is equally impaired.
+
+Examples: .69/CN1 LP kp.50 gives +1.98 dB worst luma SINAD vs MATCHED,
+worst modeled lock .960; 1.0/CN4 LP kp.70 gives +1.17 dB, lock .995;
+1.4/CN4 LP kp.85 gives +1.79 dB, lock .989. No candidate meets the gates
+at 1.4/1.7 CN1, the modeled 3-ms fades, or wide/DC1 at CN4. These are
+conditional noise/detail improvements, not attenuation-margin measurements
+or recognisable moving-video proof. Four new hardware programs are not
+justified by this result; the matched-topology restriction still needs
+reconciliation before any universal automatic rescue claim.
+
+The first non-oracle OUTPUT probe (`research/output_probe.c`) runs the
+production AFC/Direct Gain helpers passively. It rejects all modeled CN-10,
+CN1 and two windows of a real board VTX-off snapshot. Strong narrow PAL
+accepts191/196 windows; median sync bias .86 kHz, p95-p5 spread15 kHz,
+candidate gain1.61 with spread.039. The conservative five-sync-span white
+reserve refuses normal/wide candidates; the global C/N proxy also
+underestimates wide strong-carrier confidence. This prototype therefore
+does not qualify a universal automatic OUTPUT servo. White percentiles
+from a few lines cannot guarantee headroom for a subsequent bright scene.

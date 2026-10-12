@@ -34,7 +34,11 @@ void app_main(void)
     profile_load();
     profile_boot();
     s_boot_stage = "transport";
-    ESP_ERROR_CHECK(transport_start());
+    if (transport_start() != ESP_OK) {
+        s_boot_stage = "transport_fault";
+        printf("TRANSPORT boot failed: live OFF; USB status/download remain available\n");
+        return;
+    }
     s_boot_stage = "tasks";
     receiver_start();
     control_start();

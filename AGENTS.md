@@ -456,7 +456,15 @@ Stress matrix `v5/research/situations.py` (README section 11): -0.75 /
 all profiles alike (no equaliser possible). Profile gains (+1.7 / +3.2 dB) are SIMULATION only (`v5/research`);
 operator report 2026-10-11: much less static but little more range, so no
 range gain is claimed; firmware is build-tested, board test pending. No options menu, labs, native AGC, AutoFit/Fusion,
-flywheel, level servo or idle raster. NVS namespace `c5vrx5`. CI:
+flywheel or idle raster. Manual OUTPUT (PR #196 review follow-up, 2026-10-12)
+scales only DAC6 low LUT bits, with 1x boot default and shared 5-second
+restart guard; high gains may clip wide VTXs. Automatic output-level servo
+is simulation-only (`v5/research/output_level.py`): ideal sync/white references
+are not a proven live estimator or measured HDZero compatibility. Fresh
+settings default to AUTO kp+LP by explicit operator decision; saved manual
+OFF is respected. Live restart errors perform checked teardown and one
+verified rollback, then latch live OFF on failure while USB remains available
+(`transport_recovery.h`, host fault-injection tests). NVS namespace `c5vrx5`. CI:
 `.github/workflows/c5vrx5.yml` publishes `c5vrx5-v5.0.N` and `c5vrx5-pr-N`
 for the flasher's C5VRX-5 tab. Board: runs and holds video; range is not
 yet measured. Evidence: `v5/docs/FINDINGS.md`.

@@ -1,5 +1,33 @@
 # C5VRX-5 field and range test protocol
 
+PR #196 review follow-up (2026-10-12), still requiring external hardware:
+
+- At fixed strong video, step all eight kp levels through repeated wraps,
+  then repeat under controlled weak signal. Save T before/after every change;
+  verification/restart and TX/RX/DMA/BS counters must not increase. Verify
+  moving picture, colour and sync visually; no console-only range claim.
+- Repeat P spam and simultaneous K/k/P/g requests. Accepted live changes
+  must be at least 5 s apart. AUTO requires 2 s uninterrupted usable evidence;
+  invalid windows and context changes discard pending candidates.
+- P/k must show `kp_auto=0` after reboot; fresh NVS defaults to 2. Do not
+  erase the board's calibration just to test the fresh-settings default.
+- OUTPUT g/menu: verify 1x and 2x survive kp/LP changes and menu return,
+  while every reboot starts 1x. On failed changes verify explicit rollback
+  status and restored program/kp/OUTPUT; failed rollback must latch OFF while
+  USB download remains usable. Host fault injection is not hardware coverage.
+- #199: VTX OFF, cold boot/manual F, complete the actual 100-setting sweep,
+  successful filter NVS and then DCO; retain FILTER_CAL/DCO/GAIN/IQ evidence.
+  Synthetic matching-DC tests exist; reporter snapshot/board replay is pending.
+- #200: same narrow and wide VTX/channel/camera/cable/power, LCD vs HDZero,
+  U85Q vs LP, PAL/NTSC, properly terminated 75-ohm scope/capture. Measure sync
+  tip, porch, black, white, burst and loaded swing at each OUTPUT level.
+  Automatic OUTPUT has only ideal-reference simulation evidence and remains
+  disabled; neither its fitted goggle score nor nominal DAC model qualifies
+  real AV-input compatibility.
+- Measure the recognisable-picture cliff in 0.5-1 dB attenuation increments
+  against fixed U85Q and the already matched profile, followed by field A/B/A.
+  Retain negative results; quieter static does not demonstrate extra range.
+
 C5VRX-5 by Twotoz and the C5VRX contributors. This is the test protocol for PR #196
 (operator report, 2026-10-11): there is much less static than before, but
 usable range has barely increased. Video was good indoors through walls but

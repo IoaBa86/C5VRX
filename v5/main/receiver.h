@@ -68,6 +68,11 @@ int transport_kp_target(void);
 unsigned transport_kp_tick(void);
 bool transport_set_lp(bool lp);            /* U85Q <-> LP via a brief pipeline restart */
 bool transport_lp(void);
+bool transport_faulted(void);
+uint32_t transport_restart_errors(void);
+unsigned transport_output(void);
+const char *transport_output_name(void);
+bool transport_set_output(unsigned level);
 bool transport_apply_auto(int level, bool lp);
 uint32_t transport_switch_wait_ms(void);
 void transport_stop_chain(void);
@@ -148,7 +153,7 @@ bool calibration_dc_ok(uint8_t gain);
 void lane_compare_request(void);
 
 /* ---- menu.c ---- */
-enum { MENU_BAND, MENU_CHANNEL, MENU_SCAN, MENU_VIDEO, MENU_CALIBRATE, MENU_EXIT, MENU_ITEMS };
+enum { MENU_BAND, MENU_CHANNEL, MENU_SCAN, MENU_VIDEO, MENU_CALIBRATE, MENU_OUTPUT, MENU_EXIT, MENU_ITEMS };
 extern volatile int s_menu_cursor;
 bool menu_open(void);
 void menu_close(void);

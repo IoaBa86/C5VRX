@@ -64,8 +64,9 @@ static void help(void)
 {
     printf("C5VRX-5 keys: T status, D range/health report, M gain map (for a preset), R per-second FIELD_DIAG lines on/off,\n"
            "  J analytic IQLaneFusion shadow on/off (model proposals only, no RF writes),\n"
-           "  K kp ladder OFF -> AUTO kp -> AUTO kp+LP (kp/program changes briefly restart video), k kp one level calmer, P U85Q/U85Q-LP\n"
-           "    (k and P are bench tests; T shows kp_verify_fail, prog_verify_fail, prog_restart_fail/us),\n"
+           "  K kp ladder OFF -> AUTO kp -> AUTO kp+LP (brief restarts), k/j kp calmer/faster, P U85Q/U85Q-LP\n"
+           "    (k and P save AUTO OFF; fresh settings default to AUTO kp+LP),\n"
+           "  g OUTPUT 1.0/1.5/2.0/2.5x (safe 1.0x every boot; high levels may clip wide VTX),\n"
            "  I IQ snapshot, o menu open/close, n/x menu next/select, c next channel, b next band, s scan,\n"
            "  F calibrate (startup steps again; video stops), L bench IQ lane comparison (video stops ~3 s),\n"
            "  ` reboot to USB download (flashing)\n");
@@ -114,7 +115,7 @@ static void console_task(void *arg)
             case 'L': lane_compare_request(); break;
             case 'J': lane_shadow_toggle(); break;
             case 'h': case '?': help(); break;
-            case 'o': case 'n': case 'x': case 'c': case 'b': case 's': case 'K': case 'k': case 'P': {
+            case 'o': case 'n': case 'x': case 'c': case 'b': case 's': case 'K': case 'k': case 'j': case 'P': case 'g': {
                 int command = c;
                 if (s_commands) (void)xQueueSend(s_commands, &command, 0);
                 break;

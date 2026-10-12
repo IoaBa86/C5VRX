@@ -20,6 +20,7 @@
  * deviation, diag.c). A step that cannot run (no quiet channel, menu open,
  * ...) keeps the safe default and is tried again on the next boot. */
 #include "receiver.h"
+#include "calibration_noise.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -204,24 +205,14 @@ static const char *s_filter_result = "never";
 
 static bool noise_measure(unsigned *width, unsigned *nbw, unsigned *env_x100, int *clip_pm)
 {
-    float psd[DSP_FFT_N] = {0};
+    cal_noise_t a = {0};
     uint8_t sample[PROBE_BYTES];
-    unsigned got = 0, env_sum = 0;
-    int clip_sum = 0;
-    for (unsigned tries = 0; tries < CAL_WINDOWS * 3u && got < CAL_WINDOWS; ++tries) {
+    for (unsigned tries = 0; tries < CAL_WINDOWS * 3u && a.got < CAL_WINDOWS; ++tries) {
         vTaskDelay(1);
         if (!copy_probe_window(sample, NULL)) continue;
-        for (unsigned r = 0; r < PROBE_REGIONS; ++r) dsp_psd_accumulate(sample + r * PROBE_REGION_BYTES, psd);
-        clip_sum += measure_window(sample, sizeof(sample)).clip_pm;
-        env_sum += dsp_envelope_ratio_x100(sample, sizeof(sample));
-        ++got;
+        cal_noise_add(&a, sample, sizeof(sample), measure_window(sample, sizeof(sample)).clip_pm);
     }
-    if (got * 2u < CAL_WINDOWS) return false;
-    *width = dsp_psd_width_khz(psd);
-    *nbw = dsp_psd_nbw_khz(psd);
-    *env_x100 = env_sum / got;
-    *clip_pm = clip_sum / (int)got;
-    return true;
+    return cal_noise_finish(&a, width, nbw, env_x100, clip_pm);
 }
 
 /* On-screen progress: the measured time per setting gives the time left. */
@@ -256,8 +247,8 @@ static bool measure_setting(rf_filter_t f, unsigned *width, unsigned *nbw, bool 
     if (!noise_measure(width, nbw, &env, &clip)) return false;
     /* A setting with clipped noise is just not chosen; only a clearly
      * non-noise envelope means a carrier appeared. */
-    *quiet = env <= quiet_limit(clip);
-    *carrier = env > quiet_limit(clip) + QUIET_CARRIER_X100;
+    *quiet = cal_setting_quiet(env, clip);
+    *carrier = cal_setting_carrier(env, clip);
     printf("FILTER_CAL bw=%s code=%d skirt=%u width_khz=%u nbw_khz=%u env_x100=%u limit=%u clip_pm=%d\n",
            f.bw20 ? "BW20" : "BW40", f.code, f.skirt, *width, *nbw, env, quiet_limit(clip), clip);
     return true;
@@ -523,8 +514,7 @@ static const char *noise_check(unsigned *env_out, int *clip_out)
         vTaskDelay(1);
         if (copy_probe_window(s_env_buf + got * PROBE_BYTES, NULL)) ++got;
     }
-    if (got < 16u) return "probe_failed";
-    return dsp_quiet_reason(s_env_buf, got * PROBE_BYTES, env_out, clip_out);
+    return cal_channel_quiet(s_env_buf, got, false, env_out, clip_out);
 }
 
 static bool noise_like(void) { return noise_check(NULL, NULL) == NULL; }

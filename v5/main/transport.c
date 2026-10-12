@@ -16,6 +16,8 @@
 #include "hal/bitscrambler_ll.h"
 #include "kp_lut_io.h"
 #include "kp_switch_guard.h"
+#include "transport_recovery.h"
+#include "output_level.h"
 #include "hal/parlio_ll.h"
 #include "kp_tables.h"
 #include "snapshot.h"
@@ -57,6 +59,12 @@ static parlio_rx_delimiter_handle_t s_rx_delimiter;
 static parlio_tx_unit_handle_t s_tx;
 static bitscrambler_handle_t s_bs;
 static bool s_tx_enabled;
+static bool s_rx_enabled, s_bs_enabled;
+static bool s_transport_fault;
+static unsigned s_output, s_verified_output, s_output_clipped;
+static int s_verified_tracker, s_verified_level;
+static bool s_verified_lp, s_have_verified;
+static uint32_t s_restart_errors, s_rollbacks, s_rollback_fail;
 #define LIVE_TX_NODES ((RAW_RING_BYTES + 4091u) / 4092u)
 DMA_ATTR __attribute__((aligned(64))) static dma_descriptor_t s_live_tx_nodes[LIVE_TX_NODES];
 int s_rx_dma_ch = -1, s_tx_dma_ch = -1;
@@ -121,7 +129,9 @@ static esp_err_t prepare_rx(void)
     };
     err = parlio_new_rx_soft_delimiter(&delim, &s_rx_delimiter);
     if (err != ESP_OK) return err;
-    return parlio_rx_unit_enable(s_rx, false);
+    err = parlio_rx_unit_enable(s_rx, false);
+    if (err == ESP_OK) s_rx_enabled = true;
+    return err;
 }
 
 static esp_err_t prepare_tx(void)
@@ -204,22 +214,16 @@ static esp_err_t start_tx(void)
 static uint16_t s_lut_live[1024];   /* what the LUT RAM holds */
 static bool s_lut_known;            /* shadow valid: U85Q program, LUT16 */
 static uint8_t s_kp_target;
+static uint16_t s_lut_work[1024];
 static uint32_t s_kp_writes, s_kp_verify_fail;
 static uint32_t s_kp_switches, s_kp_restart_fail, s_kp_restart_us;
 static bool resume_live(const uint16_t *restore_lut);
 static bool switch_live(int level, bool lp);
 static kp_switch_guard_t s_switch_guard;
 
-static void kp_reset_shadow(void)
-{
-    s_lut_known = s_tracker == TRACKER_KP085 && BITSCRAMBLER.lut_cfg[BITSCRAMBLER_DIR_TX].cfg0.lut_mode == 1;
-    if (s_lut_known) memcpy(s_lut_live, kp_tables[0], sizeof(s_lut_live));
-    s_kp_target = 0;
-}
-
 bool transport_kp_set(int level)
 {
-    if (!s_lut_known || level < 0 || level >= KP_LEVELS) return false;
+    if (s_transport_fault || !s_lut_known || level < 0 || level >= KP_LEVELS) return false;
     s_kp_target = (uint8_t)level;
     return true;
 }
@@ -227,8 +231,8 @@ bool transport_kp_set(int level)
 /* Verified level, -1 while a different target is pending or unknown. */
 int transport_kp_level(void)
 {
-    if (!s_lut_known) return -1;
-    return memcmp(s_lut_live, kp_tables[s_kp_target], sizeof(s_lut_live)) ? -1 : s_kp_target;
+    if (!s_lut_known || s_transport_fault) return -1;
+    return s_verified_level;
 }
 
 int transport_kp_target(void) { return s_lut_known ? s_kp_target : -1; }
@@ -280,7 +284,8 @@ static bool program_words(const uint8_t *bin, const uint8_t **inst)
 {
     /* bitscrambler_program_hdr_t (esp_driver_bitscrambler): version, hw_rev,
      * hdr_len (words), inst_ct, ... */
-    if (bin[3] != 8u) return false;
+    if (bin[0] != 1u || bin[2] != 3u || bin[3] != 8u || bin[4] != 0u || bin[5] != 2u || bin[6] != 1u)
+        return false;
     *inst = bin + (size_t)bin[2] * 4u;
     return true;
 }
@@ -292,19 +297,16 @@ static bool switch_live(int level, bool lp)
     if (s_tracker != TRACKER_KP085 || !s_lut_known || !s_started || s_menu_active) return false;
     if (level >= KP_LEVELS || level < -1) return false;
     const uint16_t *lut = level < 0 ? s_lut_live : kp_tables[level];
-    bool kp_changed = memcmp(s_lut_live, lut, sizeof(s_lut_live)) != 0;
+    bool kp_changed = level >= 0 && level != s_verified_level;
     bool lp_changed = lp != s_prog_lp;
     if (!kp_changed && !lp_changed) return true;
     int64_t began = esp_timer_get_time();
     if (!kp_switch_ready(&s_switch_guard, began)) return false;
     bool previous = s_prog_lp;
-    transport_stop_tx();
     s_prog_lp = lp;
     bool ok = resume_live(lut);
     if (!ok) {
-        transport_stop_tx();   /* clean up an enabled TX on a ready timeout */
         s_prog_lp = previous;
-        (void)resume_live(NULL);
         if (kp_changed) ++s_kp_restart_fail;
         if (lp_changed) ++s_prog_restart_fail;
     } else {
@@ -339,15 +341,78 @@ bool transport_set_lp(bool lp)
 }
 
 bool transport_lp(void) { return s_prog_lp; }
-
-static bool start_demodulator(const uint16_t *restore_lut)
+bool transport_faulted(void) { return s_transport_fault; }
+uint32_t transport_restart_errors(void) { return s_restart_errors; }
+unsigned transport_output(void) { return s_output; }
+const char *transport_output_name(void)
 {
-    ESP_ERROR_CHECK(bitscrambler_enable(s_bs));
-    const uint8_t *program = tracker_program(s_tracker);
-    ESP_ERROR_CHECK(bitscrambler_load_program(s_bs, program));
-    if (restore_lut) {
+    static const char *const names[OUTPUT_LEVELS] = {"1.0x", "1.5x", "2.0x", "2.5x"};
+    return names[s_output];
+}
+bool transport_set_output(unsigned level)
+{
+    if (s_transport_fault || level >= OUTPUT_LEVELS) return false;
+    if (level == s_output) return true;
+    if (s_menu_active || !s_started) { s_output = level; return true; }
+    if (!kp_switch_ready(&s_switch_guard, esp_timer_get_time())) return false;
+    s_output = level;
+    bool ok = resume_live(s_lut_known ? kp_tables[s_verified_level] : NULL);
+    kp_switch_mark(&s_switch_guard, esp_timer_get_time());
+    ++s_control_epoch;
+    return ok;
+}
+
+/* Selected configuration stays separate from the last fully verified live
+ * configuration. Publication waits for both DMA starts, including readback
+ * of the complete program and LUT on boot/menu/rollback as well as P/k. */
+typedef struct {
+    const uint8_t *program;
+    int tracker, level;
+    bool lp;
+    unsigned output, clipped;
+} restart_t;
+
+static bool stop_part(void *ctx, tr_part_t part)
+{
+    (void)ctx;
+    esp_err_t err = part == TR_TX ? disable_tx() : part == TR_BS ? bitscrambler_disable(s_bs) :
+                    parlio_rx_unit_disable(s_rx);
+    if (err != ESP_OK) printf("TRANSPORT teardown part=%d error=%s\n", part, esp_err_to_name(err));
+    return err == ESP_OK;
+}
+static bool quiesce(void *ctx)
+{
+    bool ok = tr_stop_parts(ctx, stop_part, &s_tx_enabled, &s_bs_enabled, &s_rx_enabled, true);
+    s_started = false;
+    s_rx_node_count = 0; /* observers cannot consume stopped/stale DMA */
+    return ok;
+}
+
+static esp_err_t start_rings_tail(void);
+static bool restart_stage(void *ctx, tr_stage_t stage, bool rollback)
+{
+    restart_t *r = ctx;
+    if (stage == TR_BS_ENABLE && rollback) {
+        s_tracker = s_verified_tracker;
+        s_prog_lp = s_verified_lp;
+        s_output = s_verified_output;
+        r->tracker = s_verified_tracker;
+        r->lp = s_verified_lp;
+        r->level = s_verified_level;
+        r->output = s_verified_output;
+        r->program = tracker_program(r->tracker);
+        memcpy(s_lut_work, s_lut_live, sizeof(s_lut_work));
+    }
+    esp_err_t err = ESP_OK;
+    switch (stage) {
+    case TR_BS_ENABLE:
+        err = bitscrambler_enable(s_bs);
+        if (err == ESP_OK) s_bs_enabled = true;
+        break;
+    case TR_PROGRAM_LOAD: err = bitscrambler_load_program(s_bs, r->program); break;
+    case TR_INSTRUCTION_VERIFY: {
         const uint8_t *inst;
-        if (!program_words(program, &inst)) { ++s_prog_verify_fail; return false; }
+        if (!program_words(r->program, &inst)) { ++s_prog_verify_fail; return false; }
         bool verified = true;
         for (unsigned i = 0; i < 8u; ++i)
             for (unsigned w = 0; w < BITSCRAMBLER_LL_INST_LEN_WORDS; ++w) {
@@ -358,13 +423,32 @@ static bool start_demodulator(const uint16_t *restore_lut)
                 uint32_t actual = bitscrambler_ll_instmem_read(&BITSCRAMBLER, BITSCRAMBLER_DIR_TX, i, w);
                 if ((actual & mask) != (expected & mask)) { ++s_prog_verify_fail; verified = false; }
             }
-        if (!kp_lut_load(s_lut_live, restore_lut, write_lut_entry, NULL, &s_kp_writes, &s_kp_verify_fail))
-            verified = false;
-        if (!verified) return false;
-    } else kp_reset_shadow();   /* program loaded its own kp 0.85 LUT */
-    ESP_ERROR_CHECK(bitscrambler_reset(s_bs));
-    ESP_ERROR_CHECK(bitscrambler_start(s_bs));
-    return true;
+        if (!verified) {
+            printf("TRANSPORT restart instruction_verify failed rollback=%u\n", rollback);
+            return false;
+        }
+        break;
+    }
+    case TR_LUT_VERIFY:
+        if (!kp_lut_load(s_lut_work, s_lut_work, write_lut_entry, NULL, &s_kp_writes, &s_kp_verify_fail)) {
+            printf("TRANSPORT restart lut_verify failed rollback=%u\n", rollback);
+            return false;
+        }
+        break;
+    case TR_BS_RESET: err = bitscrambler_reset(s_bs); break;
+    case TR_BS_START: err = bitscrambler_start(s_bs); break;
+    case TR_RX_ENABLE:
+        err = parlio_rx_unit_enable(s_rx, false);
+        if (err == ESP_OK) s_rx_enabled = true;
+        break;
+    case TR_TX_ENABLE: err = enable_tx(); break;
+    case TR_RX_START: err = start_rx(); break;
+    case TR_TX_START: err = start_rings_tail(); break;
+    default: return false;
+    }
+    if (err != ESP_OK)
+        printf("TRANSPORT restart stage=%d rollback=%u error=%s\n", stage, rollback, esp_err_to_name(err));
+    return err == ESP_OK;
 }
 
 static int find_dma(bool rx)
@@ -411,21 +495,20 @@ static void quiet_interrupts(void)
 
 /* RX first, TX half a ring later; both run from PLL_F240M/6, so the
  * producer/consumer separation cannot drift. */
-static esp_err_t start_rings(void)
+static esp_err_t start_rings_tail(void)
 {
-    esp_err_t err = start_rx();
-    if (err != ESP_OK) return err;
     quiet_interrupts();
     esp_rom_delay_us((RAW_RING_BYTES / 2ULL) * 1000000ULL / IQ_RATE_HZ);
     s_tx_dma_ch = find_dma(false);
     if (s_tx_dma_ch < 0) return ESP_ERR_NOT_FOUND;
-    err = start_tx();
+    esp_err_t err = start_tx();
     if (err != ESP_OK) return err;
     s_rx_dma_ch = find_dma(true);
     s_tx_dma_ch = find_dma(false);
+    if (s_rx_dma_ch < 0 || s_tx_dma_ch < 0) return ESP_ERR_NOT_FOUND;
     quiet_interrupts();
-    clear_eof(s_rx_dma_ch, true);
-    clear_eof(s_tx_dma_ch, false);
+    if (clear_eof(s_rx_dma_ch, true) < 3 || clear_eof(s_tx_dma_ch, false) < 1)
+        return ESP_ERR_INVALID_STATE;
     PARL_IO.int_clr.val = UINT32_MAX;
     if (s_rx_dma_ch >= 0) AHB_DMA.in_intr[s_rx_dma_ch].clr.val = UINT32_MAX;
     if (s_tx_dma_ch >= 0) AHB_DMA.out_intr[s_tx_dma_ch].clr.val = UINT32_MAX;
@@ -439,12 +522,12 @@ esp_err_t transport_start(void)
     sync_dma_c2m(s_raw_ring, sizeof(s_raw_ring));
     esp_err_t err = prepare_rx();
     if (err == ESP_OK) err = prepare_tx();
-    if (err != ESP_OK) return err;
-    (void)start_demodulator(NULL);
-    err = start_rings();
-    if (err != ESP_OK) return err;
-    s_started = true;
-    return ESP_OK;
+    if (err != ESP_OK) {
+        (void)quiesce(NULL);
+        s_transport_fault = true;
+        return err;
+    }
+    return resume_live(NULL) ? ESP_OK : ESP_FAIL;
 }
 
 /* Select the tracker program. Never under live video: only before the
@@ -466,19 +549,24 @@ bool transport_set_tracker(int tracker)
 
 int transport_tracker(void) { return s_tracker; }
 
-/* Live -> menu: stop the producer once; the menu raster takes TX. */
+/* Live -> menu: the raster takes TX, but RX keeps collecting IQ for filter,
+ * DC and profile calibration. Full recovery quiesce stops RX as well. */
 void transport_stop_tx(void)
 {
-    if (s_tx_enabled) ESP_ERROR_CHECK(disable_tx());
-    ESP_ERROR_CHECK(bitscrambler_disable(s_bs));
+    bool ok = tr_stop_parts(NULL, stop_part, &s_tx_enabled, &s_bs_enabled, &s_rx_enabled, false);
+    s_started = false;
+    if (!ok) {
+        s_transport_fault = true;
+        printf("TRANSPORT ERROR: teardown failed; live recovery latched OFF, USB remains available\n");
+    }
 }
 
 /* Start a standalone descriptor chain (menu raster) on the TX GDMA. */
 void transport_start_chain(dma_descriptor_t *first)
 {
-    ESP_ERROR_CHECK(enable_tx());
+    if (s_transport_fault || enable_tx() != ESP_OK) return;
     s_tx_dma_ch = find_dma(false);
-    ESP_ERROR_CHECK(s_tx_dma_ch >= 0 ? ESP_OK : ESP_ERR_NOT_FOUND);
+    if (s_tx_dma_ch < 0) { (void)disable_tx(); s_transport_fault = true; return; }
     AHB_DMA.out_intr[s_tx_dma_ch].ena.val = 0;
     AHB_DMA.out_intr[s_tx_dma_ch].clr.val = UINT32_MAX;
     PARL_IO.int_ena.val = 0;
@@ -494,28 +582,77 @@ void transport_start_chain(dma_descriptor_t *first)
     /* Wait up to 50 ms, yielding; PARLIO outputs the idle code meanwhile. */
     int64_t deadline = esp_timer_get_time() + 50000;
     while (!parlio_ll_tx_is_ready(&PARL_IO) && esp_timer_get_time() < deadline) vTaskDelay(1);
+    if (!parlio_ll_tx_is_ready(&PARL_IO)) {
+        (void)disable_tx(); s_transport_fault = true;
+        printf("TRANSPORT ERROR: menu TX timeout, USB remains available\n");
+        return;
+    }
     parlio_ll_tx_start(&PARL_IO, true);
     parlio_ll_tx_enable_clock(&PARL_IO, true);
 }
 
 void transport_stop_chain(void)
 {
-    ESP_ERROR_CHECK(disable_tx());
+    if (s_tx_enabled && disable_tx() != ESP_OK) s_transport_fault = true;
 }
 
 /* Menu -> live: the exact boot topology again. */
 static bool resume_live(const uint16_t *restore_lut)
 {
-    if (!start_demodulator(restore_lut)) return false;
-    ESP_ERROR_CHECK(parlio_rx_unit_disable(s_rx));
-    ESP_ERROR_CHECK(parlio_rx_unit_enable(s_rx, false));
-    ESP_ERROR_CHECK(enable_tx());
-    return start_rings() == ESP_OK;
+    if (s_transport_fault) return false;
+    restart_t r = {.program=tracker_program(s_tracker), .tracker=s_tracker,
+                   .level=0, .lp=s_prog_lp, .output=s_output};
+    if (!restore_lut && s_tracker == TRACKER_KP085) restore_lut = kp_tables[s_kp_target];
+    if (restore_lut == s_lut_live) {
+        memcpy(s_lut_work, s_lut_live, sizeof(s_lut_work));
+        r.level = s_verified_level;
+        r.clipped = s_output_clipped;
+    } else {
+        const uint8_t *inst;
+        if (!program_words(r.program, &inst) || r.program[6] != 1u) return false;
+        for (unsigned i = 0; i < 1024u; ++i) {
+            uint16_t value;
+            if (restore_lut) value = restore_lut[i];
+            else memcpy(&value, inst + 8u * BITSCRAMBLER_LL_INST_LEN_WORDS * 4u + 2u * i, 2);
+            bool clipped;
+            s_lut_work[i] = output_entry(value, s_output, &clipped);
+            r.clipped += clipped;
+        }
+        if (s_tracker == TRACKER_KP085)
+            for (int k = 0; k < KP_LEVELS; ++k) if (restore_lut == kp_tables[k]) r.level = k;
+    }
+    tr_result_t result = tr_restart(&r, quiesce, restart_stage, s_have_verified);
+    if (result != TR_APPLIED) ++s_restart_errors;
+    if (result == TR_LATCHED) {
+        ++s_rollback_fail;
+        s_transport_fault = true;
+        s_lut_known = false;
+        printf("TRANSPORT ERROR: verified recovery failed; live OFF latched, USB/reflash available\n");
+        return false;
+    }
+    s_started = true;
+    if (result == TR_ROLLED_BACK) {
+        ++s_rollbacks;
+        s_kp_target = (uint8_t)s_verified_level;
+        printf("TRANSPORT rollback=verified program=%s kp_level=%d output=%s\n",
+               s_prog_lp ? "U85Q-LP" : "U85Q", s_verified_level, transport_output_name());
+        return false;
+    }
+    memcpy(s_lut_live, s_lut_work, sizeof(s_lut_live));
+    s_verified_tracker = r.tracker;
+    s_verified_lp = r.lp;
+    s_verified_level = r.level;
+    s_verified_output = r.output;
+    s_output_clipped = r.clipped;
+    s_have_verified = true;
+    s_lut_known = r.tracker == TRACKER_KP085;
+    s_kp_target = (uint8_t)r.level;
+    return true;
 }
 
 void transport_resume_live(void)
 {
-    (void)resume_live(NULL);
+    if (!resume_live(NULL)) printf("TRANSPORT menu return failed; inspect T recovery status\n");
     kp_switch_mark(&s_switch_guard, esp_timer_get_time());
 }
 
@@ -544,6 +681,10 @@ uint32_t transport_fault_count(void)
 
 void transport_print(void)
 {
+    printf("OUTPUT level=%s boot_default=1.0x clipped_lut_entries=%u recovery_errors=%lu rollbacks=%lu "
+           "rollback_fail=%lu fault_latched=%u live=%u\n", transport_output_name(), s_output_clipped,
+           (unsigned long)s_restart_errors, (unsigned long)s_rollbacks, (unsigned long)s_rollback_fail,
+           s_transport_fault, s_started);
     printf("TRANSPORT rx_descriptors=%d tx_empty=%lu rx_overflow=%lu dma_faults=%lu bs_overload=%lu "
            "kp_level=%d kp_target=%d kp_writes=%lu kp_verify_fail=%lu program=%s prog_switches=%lu "
            "switch_wait_ms=%lu kp_switches=%lu kp_restart_fail=%lu kp_restart_us=%lu prog_pause_fail=0 prog_verify_fail=%lu prog_restart_fail=%lu prog_restart_us=%lu\n",

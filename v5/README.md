@@ -85,8 +85,11 @@ The menu closes by itself after 30 s without a press.
 `s` scan, `F` calibrate again (as the menu item), `L` bench-only IQ lane
 comparison (video stops ~3 s), `` ` `` download mode, `h` help.
 
-`K` cycles OFF / AUTO kp / AUTO kp+LP. `k` manually steps kp;
-`P` manually toggles U85Q/U85Q-LP and disables AUTO. Kp and program changes
+`K` cycles OFF / AUTO kp / AUTO kp+LP. `k` steps kp calmer, `j` faster;
+`P` manually toggles U85Q/U85Q-LP. Both `P` and `k` persist AUTO OFF,
+including across reboot; repeated presses do not rewrite unchanged NVS.
+Fresh settings default to AUTO kp+LP (operator decision 2026-10-12);
+an explicitly saved OFF remains OFF. Kp and program changes
 use a brief pipeline restart with a fully verified LUT; they are not seamless.
 All live changes share a **five-second minimum interval**, including manual
 P/k and changes of K mode. AUTO also requires the same kp/program target
@@ -99,6 +102,33 @@ Test on the ground and check `T`: `kp_verify_fail`, `prog_verify_fail`,
 cooldown. Live TX uses an owned fixed DMA ring and has a bounded
 20-ms readiness wait with task delays, so a failed start cannot keep the
 control task spinning indefinitely.
+
+`g` and menu **OUTPUT** cycle 1.0 / 1.5 / 2.0 / 2.5x. Every boot starts at
+1.0x. Increasing the level can help the weak sync reported in #200, but can
+clip a wide VTX; check both sync and white with the actual 75-ohm load.
+Only DAC bits 0..5 are transformed, preserving all phase/token bits across
+kp changes, LP changes, menu return and rollback. The menu raster retains
+its own levels. `T` reports the setting, clipped **LUT entries** (not an
+observed waveform clip rate), recovery errors and a latched failure.
+
+A failed restart cleans up before one attempt at the last verified program
+and LUT, including its OUTPUT setting. Failed rollback latches live OFF;
+the USB status/download tasks remain available. AUTO stops after a restart
+failure and reconciles to the verified configuration instead of chasing the
+failed target. This recovery coordinator is fault-injection tested on the
+host; actual SDK/peripheral error behaviour and picture acceptance still
+need hardware qualification.
+
+Automatic OUTPUT is **research only**: `research/output_level.py` compares
+manual scaling with an ideal sync/white-referenced gain and pedestal.
+Its reference levels are ideal source measurements, not a proven live
+estimator. See `research/data/output_level.json` and the evidence notes in
+`docs/FINDINGS.md`. It does not establish HDZero compatibility or range gain.
+The follow-up passive `research/output_probe_study.py` uses the production
+AFC/Direct Gain helpers; its conservative white reserve and wide-VTX
+confidence remain unqualified. Multi-Rescue comparisons against MATCHED
+are in `research/rescue_study.py` and `research/data/rescue_study.json`.
+The active acceptance list is `docs/PR196_TASK_PLAN.md`.
 
 ## Credits and license
 

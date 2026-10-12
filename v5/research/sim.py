@@ -116,12 +116,16 @@ def raster(standard, seed, fields=2):
 
 
 def make_case(seed, cnr_db, standard='PAL', deviation=1.0, rms=4.2, filter_hz=None,
-              porch_hz=PORCH_HZ, offset_hz=0.0, fields=2, physical_adc=False, adc_gain=None):
+              porch_hz=PORCH_HZ, offset_hz=0.0, fields=2, physical_adc=False, adc_gain=None, white_scale=1.0):
     """Raw IQ bytes (noisy and noise-free) plus the goggle-filtered truth.
     filter_hz: -3 dB full width of an extra 4th-order analog filter (None =
     the C5's normal ~20 MHz channel only). offset_hz: residual AFC error."""
     rng = np.random.default_rng(seed)
     ire, region = raster(standard, seed + 7, fields)
+    # Optional research stress: unequal sync/picture deviation (issue #200
+    # reported levels). Default 1.0 preserves all existing studies exactly.
+    if white_scale != 1.0:
+        ire = np.where(ire > 0, ire * white_scale, ire)
     source = sg.lfilter(sg.firwin(81, 6e6, fs=F80), 1, np.repeat(ire, 2))
     # Blanking (0 IRE) sits at the porch target; sync -40, white +100 IRE.
     freq = porch_hz + offset_hz + deviation * source / 140 * DEV_PP
