@@ -32,7 +32,6 @@
 #include "esp_timer.h"
 #include "phy.h"
 #include "profile_logic.h"
-#include "sdkconfig.h"
 #include "sphase_logic.h"
 #include "rf.h"
 #include "soc/pcr_struct.h"
@@ -102,13 +101,6 @@ static bool collect(unsigned windows, window_stats_t *out)
  * the TX context changes the noise the probe sees (board 2026-10-12). */
 #define SPHASE_POSITIONS  9u
 #define SPHASE_TRIES      12u
-#if CONFIG_C5VRX5_EXPERIMENT_SPHASE_NORMALIZED
-#define SPHASE_GATE       SPHASE_NORM_LIMIT
-#define SPHASE_GATE_NAME  "normalized"
-#else
-#define SPHASE_GATE       SPHASE_LIMIT
-#define SPHASE_GATE_NAME  "absolute"
-#endif
 static int s_sphase_excess = -1, s_sphase_white = -1, s_sphase_dc[2];
 static unsigned s_sphase_scans;
 static sphase_scan_t s_sphase_last = {.best = 0x7fffffff, .worst = -1};
@@ -121,15 +113,9 @@ static int sphase_excess(const window_stats_t *w)
     return e > 0 ? e : 0;
 }
 
-/* The gate metric: absolute excess, or HF4/HF2 whiteness (experimental). */
-static int sphase_metric(const window_stats_t *w)
-{
-#if CONFIG_C5VRX5_EXPERIMENT_SPHASE_NORMALIZED
-    return sphase_white_permille(w->hf4_d4, w->hf2_d2);
-#else
-    return sphase_excess(w);
-#endif
-}
+/* The gate metric: absolute excess (HF4/HF2 whiteness is logged only; a
+ * normalized gate failed board repeat scans, phasefix6). */
+static int sphase_metric(const window_stats_t *w) { return sphase_excess(w); }
 
 static int sphase_record(const window_stats_t *w)
 {
@@ -153,7 +139,7 @@ static sphase_verdict_t sphase_scan(void)
     sphase_verdict_t v = SPHASE_UNSETTLED;
     if (s_sphase_last.valid && !sphase_contrast(&s_sphase_last)) {
         /* Every position reads alike: intrinsic noise, slipping cannot help. */
-        if (collect(48, &w)) v = sphase_classify(sphase_record(&w), SPHASE_GATE, &s_sphase_last);
+        if (collect(48, &w)) v = sphase_classify(sphase_record(&w), SPHASE_LIMIT, &s_sphase_last);
     } else {
         /* Positions repeat every three ticks: stop on one near the cleanest. */
         for (unsigned n = 0; s_sphase_last.valid && n < SPHASE_TRIES; ++n) {
@@ -169,7 +155,7 @@ static sphase_verdict_t sphase_scan(void)
         }
     }
     receiver_resume();
-    printf("SPHASE scan gate=%s positions=%u best=%d worst=%d contrast=%u verdict=%s\n", SPHASE_GATE_NAME,
+    printf("SPHASE scan positions=%u best=%d worst=%d contrast=%u verdict=%s\n",
            s_sphase_last.positions, s_sphase_last.best, s_sphase_last.worst, sphase_contrast(&s_sphase_last),
            sphase_verdict_name(v));
     return v;
@@ -188,14 +174,14 @@ static void sphase_qualify(const char *stage, bool fresh_context)
         printf("SPHASE %s state=probe_failed\n", stage);
         return;
     }
-    sphase_verdict_t v = sphase_classify(sphase_record(&w), SPHASE_GATE, &s_sphase_last);
+    sphase_verdict_t v = sphase_classify(sphase_record(&w), SPHASE_LIMIT, &s_sphase_last);
     for (unsigned n = 0; v == SPHASE_UNSETTLED && n < 2u; ++n) {
         ++s_sphase_scans;
         v = sphase_scan();
     }
     s_sphase_state = sphase_verdict_name(v);
-    printf("SPHASE %s state=%s gate=%s excess_mc2=%d white_pm=%d dc_mcell=%d/%d scans=%u best=%d worst=%d\n",
-           stage, s_sphase_state, SPHASE_GATE_NAME, s_sphase_excess, s_sphase_white, s_sphase_dc[0], s_sphase_dc[1],
+    printf("SPHASE %s state=%s excess_mc2=%d white_pm=%d dc_mcell=%d/%d scans=%u best=%d worst=%d\n",
+           stage, s_sphase_state, s_sphase_excess, s_sphase_white, s_sphase_dc[0], s_sphase_dc[1],
            s_sphase_scans, s_sphase_last.valid ? s_sphase_last.best : -1, s_sphase_last.valid ? s_sphase_last.worst : -1);
 }
 
@@ -208,11 +194,11 @@ static void sphase_monitor(void)
     next_us = now + 30000000LL;
     window_stats_t w;
     if (!collect(16, &w)) return;
-    sphase_verdict_t v = sphase_classify(sphase_record(&w), SPHASE_GATE, &s_sphase_last);
+    sphase_verdict_t v = sphase_classify(sphase_record(&w), SPHASE_LIMIT, &s_sphase_last);
     if (v == SPHASE_UNSETTLED && strcmp(s_sphase_state, "drifted") != 0) {
         s_sphase_state = "drifted";
-        printf("SPHASE WARNING live gate=%s excess_mc2=%d white_pm=%d: reported only, repaired at the next boot\n",
-               SPHASE_GATE_NAME, s_sphase_excess, s_sphase_white);
+        printf("SPHASE WARNING live excess_mc2=%d white_pm=%d: reported only, repaired at the next boot\n",
+               s_sphase_excess, s_sphase_white);
     } else if (v != SPHASE_UNSETTLED && strcmp(s_sphase_state, "drifted") == 0) {
         s_sphase_state = sphase_verdict_name(v);
     }
@@ -1110,9 +1096,9 @@ void calibration_print(void)
            (unsigned long)s_dco_searches, (unsigned long)s_dco_carrier_searches, (unsigned long)s_dco_hook_holds,
            (unsigned long)s_dco_aborts, s_drift_avg[0], s_drift_avg[1], (unsigned long)s_drift_nudges,
            (double)s_temp_c);
-    printf("SPHASE state=%s gate=%s excess_mc2=%d limit=%d white_pm=%d norm_limit=%d dc_mcell=%d/%d scans=%u "
-           "best=%d worst=%d contrast=%u rx_div=%lu\n", s_sphase_state, SPHASE_GATE_NAME, s_sphase_excess,
-           SPHASE_LIMIT, s_sphase_white, SPHASE_NORM_LIMIT, s_sphase_dc[0], s_sphase_dc[1], s_sphase_scans,
+    printf("SPHASE state=%s excess_mc2=%d limit=%d white_pm=%d dc_mcell=%d/%d scans=%u "
+           "best=%d worst=%d contrast=%u rx_div=%lu\n", s_sphase_state, s_sphase_excess,
+           SPHASE_LIMIT, s_sphase_white, s_sphase_dc[0], s_sphase_dc[1], s_sphase_scans,
            s_sphase_last.valid ? s_sphase_last.best : -1, s_sphase_last.valid ? s_sphase_last.worst : -1,
            sphase_contrast(&s_sphase_last), (unsigned long)PCR.parl_clk_rx_conf.parl_clk_rx_div_num + 1ul);
 }

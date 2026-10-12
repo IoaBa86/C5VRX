@@ -2,7 +2,6 @@
  * BOOT button and menu, AFC acquisition, PAL/NTSC detection, signal
  * strength and the channel scanner. Observes completed RX descriptors only. */
 #include "receiver.h"
-#include "sdkconfig.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -267,7 +266,7 @@ static void command(int c, unsigned *menu_idle)
             printf("PROGRAM manual refused=cooldown wait_ms=%lu (press P again after waiting)\n",
                    (unsigned long)transport_switch_wait_ms());
         else printf("PROGRAM manual %s: %s\n", transport_program_name(), !ok ?
-                    "refused (needs U85Q or CVT; see prog_verify_fail/prog_restart_fail in T)" :
+                    "refused (needs U85Q; see prog_verify_fail/prog_restart_fail in T)" :
                     menu ? "loaded at menu exit through the normal start sequence" : "switched via pipeline restart");
         break;
     }
@@ -276,23 +275,6 @@ static void command(int c, unsigned *menu_idle)
         printf("PROFILE live switch %s (saved): %s\n", profile_live_mode() ? "ON" : "OFF",
                profile_live_mode() ? "widen after one reliable result, narrow after two agreeing results"
                                    : "report only, PENDING for the next boot or CALIBRATE");
-        break;
-    }
-    case 'V': {
-#if CONFIG_C5VRX5_EXPERIMENT_U85_CVT
-        manual_auto_off();
-        const bool on = !transport_cvt(), menu = s_menu_active;
-        uint32_t wait_before = transport_switch_wait_ms();
-        bool ok = transport_set_cvt(on);
-        if (!ok && wait_before)
-            printf("CVT bench refused=cooldown wait_ms=%lu (press V again after waiting)\n",
-                   (unsigned long)transport_switch_wait_ms());
-        else printf("CVT bench %s program=%s%s\n", !ok ? "refused (see prog_restart_fail in T)" : on ? "ON" : "OFF",
-                    transport_program_name(), !ok ? "" : menu ? " (loaded at menu exit)" :
-                    on ? " (experimental: negative held-out validation, not a range result)" : "");
-#else
-        printf("CVT bench unavailable: build with CONFIG_C5VRX5_EXPERIMENT_U85_CVT (v5/research/CVT_STATUS.md)\n");
-#endif
         break;
     }
     case 'k': case 'j': {
@@ -345,7 +327,6 @@ static void control_task(void *arg)
         /* A calibration status screen owns the picture: no menu, no idle exit. */
         if (menu_status_active()) {
             s_auto_candidate.candidate = false;
-            lane_shadow_window(NULL, 0, afc_context(), s_gain_epoch, false);
             btn = 0; long_fired = false; menu_idle = 0; continue;
         }
         if (boot_grace) { --boot_grace; btn = 0; long_fired = false; }
@@ -391,7 +372,6 @@ static void control_task(void *arg)
             s_auto_candidate.candidate = false;
             afc2_ctrl_invalidate(&afc);
             diag_window(false, false, false); /* failed copies count as missing evidence */
-            lane_shadow_window(NULL, 0, ctx, gain_epoch, false);
             continue;
         }
         metrics_t m = measure_window(s_window, sizeof(s_window));
@@ -450,8 +430,8 @@ static void control_task(void *arg)
             if (sign != s_afc_sign) { s_afc_sign = sign; (void)blob_store("afc_sign", &sign, 1); }
         }
         /* The ladder owns kp/LP only on the U85Q topology (DEFAULT/WIDE): a
-         * MATCHED kp0.5/0.6 profile or the bench CVT tracker keeps its own
-         * LUT, and every request there would be refused by the transport. */
+         * MATCHED kp0.5/0.6 profile keeps its own LUT, and every request
+         * there would be refused by the transport. */
         const bool ladder_active = transport_kp_level() >= 0;
         if (ladder_active && !ladder_was_active) {   /* back on U85Q: start from what runs */
             kp_ladder_reset(&s_kp);
@@ -475,8 +455,6 @@ static void control_task(void *arg)
             }  /* manual target, same backend cooldown */
         }
         diag_window(window_ok, valid, own_write);   /* own_write: an AFC step this window */
-        lane_shadow_window(s_window, sizeof(s_window), ctx, gain_epoch,
-                           window_ok && !own_write && gain_epoch == s_gain_epoch && ctx == afc_context());
         if (s_afc_locked && !was_locked)
             printf("[VIDEO] locked %s %u MHz %s offset_khz=%d gain=%u\n", rf_channel()->name,
                    rf_channel()->freq_mhz, r.standard == 2 ? "PAL" : "NTSC", rf_offset_khz(), s_current_gain);

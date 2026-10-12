@@ -18,6 +18,9 @@
 #include "dsp.h"
 #include "sphase_logic.h"
 
+/* Whiteness separation reference (diagnostic only; not a firmware gate). */
+#define WHITE_REF_PM 600
+
 #define N (48u * 256u)   /* one collect(48) of probe bytes */
 #define TAPS 31
 
@@ -121,10 +124,10 @@ int main(void)
     probe_t mixed = probe(s_buf, N);
     snprintf(name, sizeof(name), "13 MHz noise, clean read: excess %d < %d, white %d per mille", clean.excess,
              SPHASE_LIMIT, clean.white);
-    check(name, clean.excess < SPHASE_LIMIT && clean.white < SPHASE_NORM_LIMIT);
+    check(name, clean.excess < SPHASE_LIMIT && clean.white < WHITE_REF_PM);
     snprintf(name, sizeof(name), "mid-transition read: excess %d >= %d, white %d >= %d", mixed.excess, SPHASE_LIMIT,
-             mixed.white, SPHASE_NORM_LIMIT);
-    check(name, mixed.excess >= SPHASE_LIMIT && mixed.white >= SPHASE_NORM_LIMIT);
+             mixed.white, WHITE_REF_PM);
+    check(name, mixed.excess >= SPHASE_LIMIT && mixed.white >= WHITE_REF_PM);
     stream(s_buf, N, 6.5e6, 2.5, 0.6, false);
     probe_t noisy = probe(s_buf, N);
     snprintf(name, sizeof(name), "intrinsic white noise, clean read: excess %d above the absolute limit",
@@ -164,7 +167,7 @@ int main(void)
     sphase_scan_add(&one, 50);
     check("one measured position is no scan", !one.valid &&
           sphase_classify(800, SPHASE_LIMIT, &one) == SPHASE_UNSETTLED);
-    /* The normalized (experimental) gate sees the same contrast. */
+    /* The logged whiteness shows the same contrast. */
     sphase_scan_t w = scan(6.5e6, 2.5, 0.0, false);
     snprintf(name, sizeof(name), "normalized scan: best %d worst %d per mille, contrast", w.best, w.worst);
     check(name, sphase_contrast(&w));

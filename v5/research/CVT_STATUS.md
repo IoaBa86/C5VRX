@@ -12,16 +12,12 @@ RF C/N. No CPU per-sample processing or live LUT write is added.
 No candidate passes every search gate. The 32-token `sync_bias` candidate
 has one lock gate violation and mean -1.04 dB / worst -2.87 dB SINAD versus
 the appropriate existing MATCHED baseline. Selecting the fewest violations
-does not qualify a candidate for production. Generated CVT and CVT with
-fixed LP are built only with `CONFIG_C5VRX5_EXPERIMENT_U85_CVT`
-(`main/Kconfig.projbuild`, OFF; `idf.py -DC5VRX5_EXPERIMENTS=1` adds
-`sdkconfig.experiments`, which also enables the normalized sampling-phase
-gate for the CI compile check). Console V then switches to `TRACKER_CVT` through the
-verified restart, shares the five-second guard, saves AUTO OFF, and returns
-to the tracker and kp level it left; P toggles its fixed LP. Production and
-published builds print that V is unavailable. CI assembles both programs,
-re-runs the bit-exact checks, verifies that `main/u85q_cvt*.bsasm` equal the
-selected candidate, and compiles the experiment build without publishing it.
+does not qualify a candidate for production. The generated CVT and CVT with
+fixed LP programs are archived research (`u85q_cvt.bsasm`,
+`u85q_cvt_lp.bsasm` in this directory; `u85_cvt.py check` keeps them
+bit-exact and current). The firmware bench build (Kconfig option, console
+V) was removed on 2026-10-12 after the negative validation; git history
+keeps it.
 
 The fixed post-detection LP still consumes both spare opcode slots:
 LDCTIA loads the previous half output and ADDCTIAH adds the new half output
@@ -55,7 +51,7 @@ Status:
   PAL/NTSC, four deviations, CFO +/-1 MHz, DC, and 1/5/20 ms fades; all eight
   fixed kp values with/without LP and floating same-Q4 reference.
 - [done] Bit-exact check of the five alternative 64-state layouts.
-- [done] Bench integration matches this document (Kconfig, CMake, V, CI).
+- [removed] Firmware bench integration (Kconfig, V, CI build), 2026-10-12.
 - [concluded, negative] Further analytical laws: the held-out data do not
   support another law. The radius-aware 24+8 layout already is the
   uncertainty-aware transition; its weak-signal gain comes from the fixed
@@ -76,14 +72,13 @@ Status:
   final qualification (with repair) runs after the status screen has handed
   TX back to live video. `T` and the SPHASE lines log the absolute excess,
   HF4/HF2 whiteness (per mille of white), DC centre and the scan contrast.
-  The normalized gate (`CONFIG_C5VRX5_EXPERIMENT_SPHASE_NORMALIZED`, 600 per
-  mille: model clean ~364, mid-transition ~938) stays OFF: phasefix6 used an
-  earlier normalized gate and failed repeat-scan acceptance on the board.
+  A normalized gate (whiteness; model clean ~364, mid-transition ~938 per
+  mille) is not used: phasefix6 tested one and failed repeat-scan
+  acceptance on the board, and its Kconfig experiment was removed.
   Board acceptance is pending: repeated VTX-off boots and F scans must show
   `settled` or `noise_limited` with the logged contrast, never a slip
   without contrast.
-- Final production build with experiments OFF (CI and local ESP-IDF 6.0.2
-  build pass), app-only flash and reopened console on the board.
+- Final production build (CI and local ESP-IDF 6.0.2 build pass), app-only flash and reopened console on the board.
 - Physical moving-video, colour, 75-ohm voltage, HDZero and conducted
   attenuation acceptance remain unavailable while the operator's VTX is OFF.
 

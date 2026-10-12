@@ -93,8 +93,8 @@ def source(variant=DEFAULT,lp=False):
 
 
 def generate(variant=DEFAULT):
-    (MAIN/'u85q_cvt.bsasm').write_text(source(variant))
-    (MAIN/'u85q_cvt_lp.bsasm').write_text(source(variant,lp=True))
+    (HERE/'u85q_cvt.bsasm').write_text(source(variant))
+    (HERE/'u85q_cvt_lp.bsasm').write_text(source(variant,lp=True))
     (HERE/'data/cvt_selected.json').write_text(json.dumps({'variant':variant,'experimental':True,
                                                         'law':'immutable observation-dependent gain; fixed two-bundle schedule'},indent=2)+'\n')
     print('generated',variant,flush=True)
@@ -132,12 +132,12 @@ def check():
                 assert np.array_equal(got[offset:],ref[:len(got)-offset]),(variant,lp)
             finally:
                 if temp.exists():temp.unlink()
-    # The firmware's bench programs are the selected candidate, regenerated.
+    # The archived research programs are the selected candidate, regenerated.
     selected=tuple(json.loads((HERE/'data/cvt_selected.json').read_text())['variant'])
-    assert (MAIN/'u85q_cvt.bsasm').read_text()==source(selected),'regenerate: python u85_cvt.py generate'
-    assert (MAIN/'u85q_cvt_lp.bsasm').read_text()==source(selected,lp=True),'regenerate: python u85_cvt.py generate'
+    assert (HERE/'u85q_cvt.bsasm').read_text()==source(selected),'regenerate: python u85_cvt.py generate'
+    assert (HERE/'u85q_cvt_lp.bsasm').read_text()==source(selected,lp=True),'regenerate: python u85_cvt.py generate'
     print('PASS:',len(VARIANTS),'immutable CVT LUTs, U85Q/fixed-LP assembly and bit-exact emulator equality;',
-          'main/u85q_cvt*.bsasm current for',selected,flush=True)
+          'research/u85q_cvt*.bsasm current for',selected,flush=True)
 
 
 def job(spec):

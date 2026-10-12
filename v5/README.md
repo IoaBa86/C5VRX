@@ -4,10 +4,9 @@ Analog 5.8 GHz FPV receiver on one Seeed Studio XIAO ESP32-C5 with a passive
 6-bit resistor DAC: live FM video in, composite PAL/NTSC out for goggles.
 
 C5VRX-5 uses one live demodulator. Its receive-chain evidence is recorded in
-[docs/FINDINGS.md](docs/FINDINGS.md). Console `J` additionally enables the
-read-only [IQLaneFusion research shadow](docs/IQLANE_FUSION.md): analytic
-model proposals, off by default, with no lane/gain/decoder actuator. This
-research is not a demonstrated video or range improvement.
+[docs/FINDINGS.md](docs/FINDINGS.md). The [IQLaneFusion research](docs/IQLANE_FUSION.md)
+is host-only (its read-only firmware shadow `J` was removed 2026-10-12);
+it is not a demonstrated video or range improvement.
 
 ## What it does
 
@@ -95,19 +94,18 @@ The menu closes by itself after 30 s without a press.
 (`tools/field_diag_compare.py`), `I` IQ snapshot
 (`tools/capture_iq_snapshot.py`), `o` menu, `c` next channel, `b` next band,
 `n`/`x` menu next/select, `s` scan, `F` calibrate again (as the menu item),
-`M` GAINMAP lines (for a gain-map preset), `J` IQLaneFusion shadow (model
-proposals only), `L` bench-only IQ lane comparison (video stops ~3 s),
+`M` GAINMAP lines (for a gain-map preset), `L` bench-only IQ lane comparison (video stops ~3 s),
 `` ` `` download mode, `h` help.
 
 `K` cycles OFF / AUTO kp / AUTO kp+LP. `k` steps kp calmer, `j` faster;
-`P` manually toggles U85Q/U85Q-LP. `P`, `k`, `j` (and `V`) persist AUTO OFF,
+`P` manually toggles U85Q/U85Q-LP. `P`, `k` and `j` persist AUTO OFF,
 including across reboot; repeated presses do not rewrite unchanged NVS.
 Fresh settings default to AUTO kp+LP (operator decision 2026-10-12);
 an explicitly saved OFF remains OFF. Kp and program changes
 use a brief pipeline restart with a fully verified LUT; they are not seamless.
 All live changes share a **five-second minimum interval**, including manual
-P/k/j, K mode, V and OUTPUT changes. AUTO runs only on the U85Q tracker
-(DEFAULT/WIDE profiles); `T` marks it inactive on MATCHED or CVT. AUTO also requires the same kp/program target
+P/k/j, K mode, OUTPUT and live profile changes. AUTO runs only on the U85Q
+tracker (DEFAULT/WIDE profiles); `T` marks it inactive on MATCHED. AUTO also requires the same kp/program target
 for **two seconds of usable measurements**. Rapid P presses are refused
 with `wait_ms`; they are not queued for delayed programme changes.
 
@@ -117,17 +115,6 @@ Test on the ground and check `T`: `kp_verify_fail`, `prog_verify_fail`,
 cooldown. Live TX uses an owned fixed DMA ring and has a bounded
 20-ms readiness wait with task delays, so a failed start cannot keep the
 control task spinning indefinitely.
-
-`V` switches the bench-only U85-CVT tracker on/off (P toggles its fixed
-LP). It exists only in an experiment build
-(`idf.py -DC5VRX5_EXPERIMENTS=1`, or `CONFIG_C5VRX5_EXPERIMENT_U85_CVT`);
-production and published builds report it unavailable. Note that
-`-DC5VRX5_EXPERIMENTS=1` (`sdkconfig.experiments`) also switches the
-sampling phase to the normalized gate, which failed board repeat scans; set
-only the CVT option for a CVT-only bench build. Like `P`/`k` it
-saves AUTO OFF, uses the verified restart and cooldown and returns to the
-tracker and kp level it left. Its held-out validation is negative against
-MATCHED (`research/CVT_STATUS.md`): a comparison tool, not a range mode.
 
 `g` and menu **OUTPUT** cycle 1.0 / 1.5 / 2.0 / 2.5x. Every boot starts at
 1.0x. Increasing the level can help the weak sync reported in #200, but can

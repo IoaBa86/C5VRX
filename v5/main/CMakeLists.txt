@@ -2,7 +2,7 @@ idf_component_register(
     SRCS
         "main.c" "rf.c" "phy.c" "arc_phy.c" "transport.c" "gain.c" "receiver.c"
         "control.c" "calibration.c" "menu.c" "menu_raster.c" "analog_video_detect.c"
-        "settings.c" "console.c" "profile.c" "diag.c" "lane_shadow.c"
+        "settings.c" "console.c" "profile.c" "diag.c"
     INCLUDE_DIRS "."
     REQUIRES esp_wifi esp_phy nvs_flash esp_event esp_netif esp_driver_parlio
              esp_driver_gpio esp_driver_bitscrambler esp_driver_usb_serial_jtag
@@ -12,11 +12,6 @@ target_bitscrambler_add_src("u85q.bsasm")
 target_bitscrambler_add_src("u85q_kp060.bsasm")
 target_bitscrambler_add_src("u85q_kp050.bsasm")
 target_bitscrambler_add_src("u85q_lp.bsasm")
-# Bench-only U85-CVT LUT on the U85Q / U85Q-LP schedules (Kconfig, OFF).
-if(CONFIG_C5VRX5_EXPERIMENT_U85_CVT)
-    target_bitscrambler_add_src("u85q_cvt.bsasm")
-    target_bitscrambler_add_src("u85q_cvt_lp.bsasm")
-endif()
 
 # Filter capacitor and DC DAC access uses PHY internals recovered from this
 # exact ESP-IDF 6.0.2 libphy; any other PHY binary builds with them refused.

@@ -391,7 +391,7 @@ on, console `A`; off = report only): widen (narrow -> DEFAULT -> WIDE)
 after one reliable result, narrow only after two agreeing results
 (`profile_live_switch_wanted`), via a filter relock plus
 `transport_switch_tracker` (verified restart, shared 5 s guard, filter
-restored on failure); never during startup, menu, CVT or a latched fault.
+restored on failure); never during startup, menu or a latched fault.
 Host-tested; in-flight board test pending. Filter writes are read back (requested vs
 applied); a sweep is stored only after an exact channel/offset restore, a
 read-back best setting, nonzero noise bandwidth and a successful NVS write.
@@ -552,15 +552,15 @@ observation-dependent phase law fits the U85Q 32x32 LUT16 two-bundle schedule
 same-Q4 results) is negative versus MATCHED (-0.89 / -1.09 dB mean); its
 weak-signal gain with a fixed LP is the LP's, not the law's. No exact
 variable-alpha post-LP fits two bundles; periodic LP/bypass stays rejected.
-Bench only: `CONFIG_C5VRX5_EXPERIMENT_U85_CVT` (OFF; CI compiles it via
-`-DC5VRX5_EXPERIMENTS=1`, never published), console V. Sampling phase
+The generated programs are archived in `v5/research/`; the firmware bench
+build (console V) was removed 2026-10-12. Sampling phase
 (`v5/main/sphase_logic.h`, host test `v5/test/test_sphase.c`): above the
 absolute limit only a nine-position scan with contrast is evidence of a
 mid-transition read; positions that read alike are `noise_limited` (no slip,
 not a phase fault). Host model: 0.6-cell intrinsic white noise lifts the clean
 position to ~725 (limit 300), the board's repeated `unsettled` pattern. DC row
 held during scans; final qualification in the live TX context. Board repeats
-pending; the normalized gate stays an OFF experiment.
+pending; no normalized gate (phasefix6 failed board repeat scans).
 
 ### Instructions for future pipeline work
 
@@ -568,8 +568,8 @@ IQLaneFusion research extends U85 and the older adaptive-lane/history work:
 `v5/docs/IQLANE_FUSION.md`, `v5/research/iq_lane_fusion.py`. Exact Q10 cell
 likelihoods, mathematical bitset/gain screening, factorized phase/frequency
 reference, route-transition replay and a fixed-context compressed BS experiment
-are host research. Console J enables a read-only shadow with explicit assumed
-contexts, off by default and no actuators. Full posterior and compressed BS
+are host research. The read-only firmware shadow (console J) was removed
+2026-10-12 as unused bench code (git history keeps it). Full posterior and compressed BS
 program are not equivalent. Preserve the negative fade comparison. Safe live
 arbitrary routing/decoder handover, hardware timing and range remain unproved;
 do not treat model-only proposals or unused counters as physical validation.

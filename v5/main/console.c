@@ -23,7 +23,6 @@ static void status(void)
     profile_print();
     calibration_print();
     transport_print();
-    lane_shadow_print();
 }
 
 /* 8190 contiguous IQ bytes as hex lines (tools/capture_iq_snapshot.py). */
@@ -63,12 +62,10 @@ static void snapshot(void)
 static void help(void)
 {
     printf("C5VRX-5 keys: T status, D range/health report, M gain map (for a preset), R per-second FIELD_DIAG lines on/off,\n"
-           "  J analytic IQLaneFusion shadow on/off (model proposals only, no RF writes),\n"
            "  K kp ladder OFF -> AUTO kp -> AUTO kp+LP (brief restarts), k/j kp calmer/faster, P U85Q/U85Q-LP\n"
            "    (k/j/P save AUTO OFF; fresh settings default to AUTO kp+LP),\n"
            "  g OUTPUT 1.0/1.5/2.0/2.5x (safe 1.0x every boot; high levels may clip wide VTX),\n"
            "  A live VTX profile switch on/off (continuous matching every 30 s; off = report only),\n"
-           "  V bench U85-CVT on/off (experimental build only; saves AUTO OFF, P toggles its fixed LP),\n"
            "  I IQ snapshot, o menu open/close, n/x menu next/select, c next channel, b next band, s scan,\n"
            "  F calibrate (startup steps again; video stops), L bench IQ lane comparison (video stops ~3 s),\n"
            "  ` reboot to USB download (flashing)\n");
@@ -115,9 +112,8 @@ static void console_task(void *arg)
             case 'M': receiver_print_map(); break;
             case 'R': diag_toggle_stream(); break;
             case 'L': lane_compare_request(); break;
-            case 'J': lane_shadow_toggle(); break;
             case 'h': case '?': help(); break;
-            case 'o': case 'n': case 'x': case 'c': case 'b': case 's': case 'K': case 'k': case 'j': case 'P': case 'g': case 'V': case 'A': {
+            case 'o': case 'n': case 'x': case 'c': case 'b': case 's': case 'K': case 'k': case 'j': case 'P': case 'g': case 'A': {
                 int command = c;
                 if (s_commands) (void)xQueueSend(s_commands, &command, 0);
                 break;
@@ -126,7 +122,6 @@ static void console_task(void *arg)
             }
         }
         diag_poll();
-        lane_shadow_poll();
     }
 }
 

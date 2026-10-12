@@ -59,7 +59,7 @@ esp_err_t transport_start(void);
 void transport_stop_tx(void);
 void transport_resume_live(void);
 void transport_start_chain(dma_descriptor_t *first);
-enum { TRACKER_KP085, TRACKER_KP060, TRACKER_KP050, TRACKER_CVT };
+enum { TRACKER_KP085, TRACKER_KP060, TRACKER_KP050 };
 bool transport_set_tracker(int tracker);
 bool transport_switch_tracker(int tracker);   /* live: guarded verified restart */
 uint32_t transport_switch_wait_ms(void);
@@ -70,8 +70,6 @@ int transport_kp_target(void);
 unsigned transport_kp_tick(void);
 bool transport_set_lp(bool lp);            /* U85Q <-> LP via a brief pipeline restart */
 bool transport_lp(void);
-bool transport_set_cvt(bool on);           /* bench U85-CVT (Kconfig), brief restart */
-bool transport_cvt(void);
 const char *transport_program_name(void);
 bool transport_faulted(void);
 uint32_t transport_restart_errors(void);
@@ -196,12 +194,6 @@ void diag_poll(void);                   /* console task: prints queued records *
 void diag_report(void);                 /* console D */
 void diag_toggle_stream(void);          /* console R */
 
-/* ---- lane_shadow.c: opt-in analytic model proposals, no actuator ---- */
-void lane_shadow_toggle(void);         /* console J */
-void lane_shadow_window(const uint8_t *raw, size_t bytes, uint32_t epoch,
-                       uint32_t gain_epoch, bool valid);
-void lane_shadow_print(void);
-void lane_shadow_poll(void);
 
 /* ---- settings.c ---- */
 void settings_load(void);

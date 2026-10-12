@@ -22,7 +22,6 @@
 #include <stdint.h>
 
 #define SPHASE_LIMIT       300   /* milli-cell^2, absolute excess (dsp.h) */
-#define SPHASE_NORM_LIMIT  600   /* per mille of white HF4/HF2 (experimental gate) */
 
 typedef enum { SPHASE_SETTLED, SPHASE_NOISE_LIMITED, SPHASE_UNSETTLED } sphase_verdict_t;
 

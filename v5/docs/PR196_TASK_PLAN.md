@@ -28,7 +28,7 @@ without that equipment/evidence.
   Host part done: scan-contrast verdict with `noise_limited`, DC held during
   scans, final live-context qualification, whiteness/DC/contrast logging
   (`main/sphase_logic.h`, `test/test_sphase.c`). Board repeats pending.
-- [x] U85-CVT (comment 6124064221), negative result, bench-only build: investigate a static nonlinear
+- [x] U85-CVT (comment 6124064221), negative result, research archive only: investigate a static nonlinear
   confidence-aware 1024-entry LUT in one feasible two-bundle program.
   Compare 28+4 and 24+8 token layouts and a small analytical transition-law
   search on identical Q4 against U85Q/MATCHED/LP and the fixed-kp oracle.

@@ -5,10 +5,5 @@ else()
     set(PROJECT_VER "5.0.0-dev")
 endif()
 set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults")
-# Bench experiment build (CI compile check only): -DC5VRX5_EXPERIMENTS=1
-# adds sdkconfig.experiments; production keeps every experiment OFF.
-if(C5VRX5_EXPERIMENTS)
-    list(APPEND SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.experiments")
-endif()
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(c5vrx5)
