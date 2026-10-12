@@ -334,6 +334,23 @@ limit is the worse of goggle lock (90 % of lines) and usable (luma SINAD
 - Pole 1/2 attenuates PAL chroma by only ~6 dB. Whether a goggle then drops
   colour is untested.
 
+**Negative result: a filter that switches itself inside one program.** The
+idea was to have one program with an LP loop and a bypass loop, and switch
+between them on a mode bit in the LUT (taking x's LSB) that the CPU rewrites
+live.
+- The LP loop needs both opcodes, so it can only test the mode bit in a
+  check span every 4 spans (8-instruction limit).
+- In that span the IIR cannot update: it can only hold y or reset y = x.
+- Arithmetic model, deviation 1.0, luma SINAD at 4 dB C/N (U85Q 2.40,
+  U85Q-LP 5.09):
+  - hold: 3.72 at 4 dB, and 7.86 instead of 12.5 at 20 dB;
+  - reset: 3.10 at 4 dB.
+- Both lose most of the gain; the 5 MHz check pattern injects noise.
+- A 5-bit x on its own costs nothing (2.37 vs 2.40).
+
+A dynamic low-pass therefore means a CPU-side program switch on the C/N
+estimate, with hysteresis, or switching in the analog domain.
+
 ## Not firmware levers
 
 - The second IQ40 sample of every span (+0.5..1.1 dB in the C5VRX-4 ledger)
