@@ -454,7 +454,10 @@ static void control_task(void *arg)
         if (s_kp_auto && !s_menu_active && !ladder_active) {
             s_auto_candidate.candidate = false;
         } else if (s_kp_auto && !s_menu_active) {
-            s_kp.narrow = calibration_filter_class_mhz() == 10;   /* MATCHED profiles: 10 MHz curves */
+            /* MATCHED profiles (start level below kp 0.85) run the narrow class:
+             * decided by the profile, not by filter equality, since the narrow
+             * and normal sweep entries may be the same setting. */
+            s_kp.narrow = profile_base_level(profile) > 0;
             uint8_t level = kp_ladder_update_lp(&s_kp, cn_x10, window_ok,
                                                 profile_live_deviation_x100(), now, s_kp_auto == 2);
             bool usable = window_ok && ctx == afc_context();
