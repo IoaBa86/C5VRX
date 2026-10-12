@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/c5vrx-phase8-logo.png" alt="C5VRX Phase8 logo" width="760" />
+  <img src="assets/C5VRX_logo.gif" alt="C5VRX animated logo" width="760" />
 
   <p><strong>ESP32-C5 Analog 5.8 GHz FPV Receiver</strong></p>
   <p>From live 5.8 GHz FPV video to real-time analog CVBS with one Seeed Studio XIAO ESP32-C5 and a passive resistor DAC.</p>
@@ -56,6 +56,11 @@ overload and long sessions still need dedicated tests.
 
 ## Demodulator and gain notes
 
+- [PR #190/#192 receiver findings](docs/pr190-key-findings.md) preserves selected
+  C5VRX/Twotoz/contributor research, scoring corrections, board observations and
+  failed experiments with pinned sources; it does not change firmware defaults.
+- [Other recent PR findings](docs/recent-pr-receiver-findings.md) adds DC/gain
+  recovery, build-identity corrections, AFC placement and direct-IQ timing research.
 - [Direct Gain V3 design](docs/direct-gain-v3-core.md) describes the Q4
   observer, gain model, settle logic, and known hardware tuning limits that
   Direct Gain V4 builds on.
