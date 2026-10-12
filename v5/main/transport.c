@@ -13,6 +13,8 @@
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "hal/misc.h"
+#include "hal/bitscrambler_ll.h"
+#include "kp_lut_io.h"
 #include "hal/parlio_ll.h"
 #include "kp_tables.h"
 #include "snapshot.h"
@@ -32,7 +34,8 @@ BITSCRAMBLER_PROGRAM(s_u85q_kp060, "u85q_kp060");
 BITSCRAMBLER_PROGRAM(s_u85q_kp050, "u85q_kp050");
 /* U85Q-LP: U85Q plus a post-detection IIR low-pass (pole 1/2) in counter A,
  * same LUT and two bundles (v5/research/u85q_lp.py, README sections 12/16).
- * Swapped in live by transport_set_lp(), never through a TX restart. */
+ * transport_set_lp() uses the normal pipeline start sequence; a live
+ * instruction rewrite left the board video black while USB kept running. */
 BITSCRAMBLER_PROGRAM(s_u85q_lp, "u85q_lp");
 static volatile int s_tracker = TRACKER_KP085;
 static bool s_started;   /* live TX running (set once at boot) */
@@ -149,15 +152,10 @@ static esp_err_t start_tx(void)
     return parlio_tx_unit_transmit(s_tx, s_raw_ring, sizeof(s_raw_ring) * 8u, &cfg);
 }
 
-/* Seamless kp (kp_ladder.h): with the U85Q program loaded, the live LUT moves
- * between kp_tables levels entry by entry while video runs. Every level has
- * the same token bits and phase states, so each entry is valid in either
- * table and a half-written table is a valid tracker; nothing is stopped,
- * flushed or resynced. Entries are written in the execution width
- * (lut_mode 1, lut_idx = entry), never via bitscrambler_load_lut(), which
- * switches the running program to a 32-bit LUT while it writes. Each write
- * is read back; a CPU write colliding with a BitScrambler read is a bench
- * question, counted in kp_verify_fail and the TRANSPORT counters. */
+/* The executing core stays in LUT16. The CPU port always addresses 512
+ * packed 32-bit words, as documented by bitscrambler_ll_lutmem_write and
+ * bitscrambler_ll_set_lut_width (execution width, not host width). Changing
+ * lut_mode under live video would change the running program's addressing. */
 static uint16_t s_lut_live[1024];   /* what the LUT RAM holds */
 static bool s_lut_known;            /* shadow valid: U85Q program, LUT16 */
 static uint8_t s_kp_target;
@@ -188,38 +186,33 @@ int transport_kp_level(void)
 
 int transport_kp_target(void) { return s_lut_known ? s_kp_target : -1; }
 
-/* Writes up to max_writes entries toward the target level. Control task only. */
+static bool write_lut_word(void *ctx, unsigned word, uint32_t value)
+{
+    (void)ctx;
+    bitscrambler_ll_lutmem_write(&BITSCRAMBLER, BITSCRAMBLER_DIR_TX, word, value);
+    __asm__ __volatile__("fence iorw, iorw" ::: "memory");
+    BITSCRAMBLER.lut_cfg[BITSCRAMBLER_DIR_TX].cfg0.lut_idx = word;
+    return BITSCRAMBLER.lut_cfg[BITSCRAMBLER_DIR_TX].cfg1.lut == value;
+}
+
+/* Budget is in host words, including failed attempts. Never acknowledge a
+ * failed write in s_lut_live or report a completed level from that write. */
 unsigned transport_kp_tick(unsigned max_writes)
 {
     if (!s_lut_known || !s_started || s_menu_active) return 0;
-    const uint16_t *want = kp_tables[s_kp_target];
-    unsigned n = 0;
-    for (unsigned scanned = 0; scanned < 1024u && n < max_writes; ++scanned) {
-        const unsigned k = s_kp_cursor;
-        s_kp_cursor = (uint16_t)((k + 1u) & 1023u);
-        if (s_lut_live[k] == want[k]) continue;
-        BITSCRAMBLER.lut_cfg[BITSCRAMBLER_DIR_TX].cfg0.lut_idx = k;
-        BITSCRAMBLER.lut_cfg[BITSCRAMBLER_DIR_TX].cfg1.lut = want[k];
-        if ((BITSCRAMBLER.lut_cfg[BITSCRAMBLER_DIR_TX].cfg1.lut & 0xffffu) != want[k]) ++s_kp_verify_fail;
-        s_lut_live[k] = want[k];
-        ++n;
-    }
+    unsigned n = kp_lut_update(s_lut_live, kp_tables[s_kp_target], &s_kp_cursor,
+                               max_writes, write_lut_word, NULL, &s_kp_verify_fail);
     s_kp_writes += n;
     return n;
 }
 
-/* Live program switch U85Q <-> U85Q-LP without stopping TX: pause the TX
- * core, rewrite the eight 9-word instructions (not the LUT, which keeps its
- * live kp level), resume. Both programs read 16 bits per 50 ns span, use the
- * same LUT and the same controller/worker slots, so the stream stays aligned.
- * In the bsasm emulator (u85q_lp.py check_switch) the output equals the new
- * program's steady output within 16 bytes (400 ns) at every switch slot; a
- * switch before a worker moves the DAC stream by one byte (25 ns), because
- * the programs split their 16 bits per span differently. Whether the core
- * pauses and resumes cleanly with rewritten instructions is a bench
- * question: prog_pause_fail / prog_verify_fail and tx_empty / bs_overload. */
-static uint32_t s_prog_switches, s_prog_pause_fail, s_prog_verify_fail;
-static portMUX_TYPE s_prog_lock = portMUX_INITIALIZER_UNLOCKED;
+/* A paused instruction rewrite did not reliably resume video on the board.
+ * Program changes therefore use the existing stop/load/reset/start topology,
+ * with the verified current kp LUT restored before the core starts. This has
+ * a brief video interruption; it is not a sample-seamless program handover. */
+static uint32_t s_prog_switches, s_prog_verify_fail, s_prog_restart_fail;
+static uint32_t s_prog_restart_us;
+static bool resume_live(bool preserve_kp);
 
 static bool program_words(const uint8_t *bin, const uint8_t **inst)
 {
@@ -234,52 +227,61 @@ bool transport_set_lp(bool lp)
 {
     if (lp == s_prog_lp) return true;
     if (s_tracker != TRACKER_KP085) return false;
-    /* Menu open: no live rewrite; the choice is loaded by the proven start
-     * sequence (bitscrambler_load_program) at menu exit. Bench test that
-     * separates the LP program itself from the live switch. */
+    /* Preserve the menu selection path added in eea611b. */
     if (s_menu_active) { s_prog_lp = lp; return true; }
     if (!s_lut_known || !s_started) return false;
-    const uint8_t *inst;
-    if (!program_words(lp ? s_u85q_lp : s_u85q, &inst)) return false;
-    bool paused = false;
-    taskENTER_CRITICAL(&s_prog_lock);
-    BITSCRAMBLER.ctrl[BITSCRAMBLER_DIR_TX].pause = 1;
-    for (unsigned k = 0; k < 64u && !paused; ++k) paused = BITSCRAMBLER.state[BITSCRAMBLER_DIR_TX].in_pause;
-    if (paused) {
-        for (unsigned i = 0; i < 8u; ++i)
-            for (unsigned w = 0; w < 9u; ++w) {
-                uint32_t v;
-                memcpy(&v, inst + (i * 9u + w) * 4u, 4);
-                BITSCRAMBLER.inst_cfg[BITSCRAMBLER_DIR_TX].cfg0.inst_idx = i;
-                BITSCRAMBLER.inst_cfg[BITSCRAMBLER_DIR_TX].cfg0.inst_pos = w;
-                BITSCRAMBLER.inst_cfg[BITSCRAMBLER_DIR_TX].cfg1.inst = v;
-            }
-    }
-    BITSCRAMBLER.ctrl[BITSCRAMBLER_DIR_TX].pause = 0;
-    taskEXIT_CRITICAL(&s_prog_lock);
-    if (!paused) { ++s_prog_pause_fail; return false; }
-    for (unsigned i = 0; i < 8u; ++i)
-        for (unsigned w = 0; w < 9u; ++w) {
-            uint32_t v;
-            memcpy(&v, inst + (i * 9u + w) * 4u, 4);
-            BITSCRAMBLER.inst_cfg[BITSCRAMBLER_DIR_TX].cfg0.inst_idx = i;
-            BITSCRAMBLER.inst_cfg[BITSCRAMBLER_DIR_TX].cfg0.inst_pos = w;
-            if (BITSCRAMBLER.inst_cfg[BITSCRAMBLER_DIR_TX].cfg1.inst != v) ++s_prog_verify_fail;
-        }
+    bool previous = s_prog_lp;
+    int64_t began = esp_timer_get_time();
+    transport_stop_tx();
     s_prog_lp = lp;
+    if (!resume_live(true)) {
+        /* Restore working video with the previous program's baseline LUT;
+         * never leave the peripheral halted on a failed verification. */
+        s_prog_lp = previous;
+        (void)resume_live(false);
+        ++s_prog_restart_fail;
+        ++s_control_epoch;
+        s_prog_restart_us = (uint32_t)(esp_timer_get_time() - began);
+        return false;
+    }
     ++s_prog_switches;
+    s_prog_restart_us = (uint32_t)(esp_timer_get_time() - began);
+    ++s_control_epoch;   /* observers must not join pre/post restart windows */
     return true;
 }
 
 bool transport_lp(void) { return s_prog_lp; }
 
-static void start_demodulator(void)
+static bool start_demodulator(bool preserve_kp)
 {
     ESP_ERROR_CHECK(bitscrambler_enable(s_bs));
-    ESP_ERROR_CHECK(bitscrambler_load_program(s_bs, tracker_program(s_tracker)));
-    kp_reset_shadow();   /* the program brought its own (kp 0.85) LUT */
+    const uint8_t *program = tracker_program(s_tracker);
+    ESP_ERROR_CHECK(bitscrambler_load_program(s_bs, program));
+    if (preserve_kp) {
+        const uint8_t *inst;
+        if (!program_words(program, &inst)) { ++s_prog_verify_fail; return false; }
+        bool verified = true;
+        for (unsigned i = 0; i < 8u; ++i)
+            for (unsigned w = 0; w < BITSCRAMBLER_LL_INST_LEN_WORDS; ++w) {
+                uint32_t expected;
+                memcpy(&expected, inst + (i * BITSCRAMBLER_LL_INST_LEN_WORDS + w) * 4u, 4);
+                /* Instructions have 257 bits: only bit 0 of word 8 exists. */
+                uint32_t mask = w == 8u ? 1u : UINT32_MAX;
+                uint32_t actual = bitscrambler_ll_instmem_read(&BITSCRAMBLER, BITSCRAMBLER_DIR_TX, i, w);
+                if ((actual & mask) != (expected & mask)) { ++s_prog_verify_fail; verified = false; }
+            }
+        for (unsigned word = 0; word < KP_LUT_WORDS; ++word) {
+            ++s_kp_writes;
+            if (!write_lut_word(NULL, word, kp_lut_word(s_lut_live, word))) {
+                ++s_kp_verify_fail;
+                verified = false;
+            }
+        }
+        if (!verified) return false;
+    } else kp_reset_shadow();   /* program loaded its own kp 0.85 LUT */
     ESP_ERROR_CHECK(bitscrambler_reset(s_bs));
     ESP_ERROR_CHECK(bitscrambler_start(s_bs));
+    return true;
 }
 
 static int find_dma(bool rx)
@@ -350,7 +352,7 @@ esp_err_t transport_start(void)
     esp_err_t err = prepare_rx();
     if (err == ESP_OK) err = prepare_tx();
     if (err != ESP_OK) return err;
-    start_demodulator();
+    (void)start_demodulator(false);
     start_rings();
     s_started = true;
     return ESP_OK;
@@ -413,13 +415,19 @@ void transport_stop_chain(void)
 }
 
 /* Menu -> live: the exact boot topology again. */
-void transport_resume_live(void)
+static bool resume_live(bool preserve_kp)
 {
-    start_demodulator();
+    if (!start_demodulator(preserve_kp)) return false;
     ESP_ERROR_CHECK(parlio_rx_unit_disable(s_rx));
     ESP_ERROR_CHECK(parlio_rx_unit_enable(s_rx, false));
     ESP_ERROR_CHECK(parlio_tx_unit_enable(s_tx));
     start_rings();
+    return true;
+}
+
+void transport_resume_live(void)
+{
+    (void)resume_live(false);
 }
 
 void transport_poll_faults(void)
@@ -449,12 +457,12 @@ void transport_print(void)
 {
     printf("TRANSPORT rx_descriptors=%d tx_empty=%lu rx_overflow=%lu dma_faults=%lu bs_overload=%lu "
            "kp_level=%d kp_target=%d kp_writes=%lu kp_verify_fail=%lu program=%s prog_switches=%lu "
-           "prog_pause_fail=%lu prog_verify_fail=%lu\n",
+           "prog_pause_fail=0 prog_verify_fail=%lu prog_restart_fail=%lu prog_restart_us=%lu\n",
            s_rx_node_count, (unsigned long)s_tx_empty, (unsigned long)s_rx_overflow,
            (unsigned long)s_dma_faults, (unsigned long)s_bs_overload, transport_kp_level(),
            transport_kp_target(), (unsigned long)s_kp_writes, (unsigned long)s_kp_verify_fail,
-           s_prog_lp ? "U85Q-LP" : "U85Q", (unsigned long)s_prog_switches, (unsigned long)s_prog_pause_fail,
-           (unsigned long)s_prog_verify_fail);
+           s_prog_lp ? "U85Q-LP" : "U85Q", (unsigned long)s_prog_switches, (unsigned long)s_prog_verify_fail,
+           (unsigned long)s_prog_restart_fail, (unsigned long)s_prog_restart_us);
 }
 
 int ring_node_index(uint32_t addr)

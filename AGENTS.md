@@ -472,25 +472,33 @@ bits, and the counter operand shares output[25:16] with the LUT address.
 - Simulation: the range limit improves by 1.6 dB at deviation 1.0 and by
   0.4 dB at deviation 1.4 (lock-limited). The low-pass wins below ~9-12 dB
   C/N and costs ~2-3.5 dB SINAD on a strong signal.
-- Live switch (`transport_set_lp`): pause the TX core, rewrite the 8
-  instructions (not the LUT), resume. In the emulator the output converges
-  to the new program within 16 bytes at every slot, with at most a 1-byte
-  stream shift.
+- Program switch (`transport_set_lp`): the paused instruction rewrite
+  produced persistent black video on the board (operator, 2026-10-12),
+  while USB stayed alive. Use the existing stop/load/reset/start topology,
+  restore and verify the current kp LUT before starting, and fall back to
+  the previous program with its baseline LUT on verification failure.
+  This briefly interrupts video; emulator convergence does not prove a
+  seamless hardware handover. `prog_restart_us` records the duration;
+  goggle behaviour after this fix remains board-pending.
 - Policy: LP below ~6.5 dB C/N (smoothed, 1.5 dB hysteresis, at least 3 s
   apart); a wide VTX returns to U85Q at the floor.
 - Simulated limit vs today: +3.35 dB (deviation 0.69), +1.6 dB (1.0),
   +0.36 dB (1.4).
-- Bench gate on `P` toggles: `prog_pause_fail`, `prog_verify_fail`,
-  `tx_empty`, `bs_overload`. Board timing and the goggle colour killer are
+- Bench gate on `P` toggles: `prog_restart_fail`, `prog_verify_fail`,
+  `kp_verify_fail`, `tx_empty`, `bs_overload`. Board timing and the goggle colour killer are
   untested.
 
 Seamless kp ladder (`v5/main/kp_ladder.h`, `kp_tables.h`, `transport_kp_tick`,
 `v5/research/kp_morph.py`, README section 13; off by default, `K` AUTO, `k`
 manual):
 - All U85Q kp LUTs share the token bits and phase states, so the live LUT
-  moves between kp 0.85 .. 0.50 entry by entry while video runs, in the
-  LUT16 execution width, without `bitscrambler_load_lut` and without a TX
-  restart.
+  moves between kp 0.85 .. 0.50 while video runs. The CPU LUT port
+  addresses 512 packed 32-bit words regardless of the LUT16 execution
+  width (ESP-IDF 6.0.2 `bitscrambler_ll.h`); the old 1024 half-word
+  writes corrupted neighbours and reported near-total readback failures.
+  Preserve LUT16, write both halves, acknowledge only verified words and
+  retry failed words with a bounded budget (`test_kp_lut_io.c`). No
+  `bitscrambler_load_lut` or TX restart for kp-only steps.
 - Level from a kp curve per deviation class and C/N (`best_combo.py`,
   README section 14, 8 seeds).
   - kp 0.75-0.80 beats 0.85 close in for every deviation.

@@ -51,7 +51,8 @@ jobs:
         shell: bash
         working-directory: v5/test
         run: |
-          for t in test_quiet test_profile test_diag test_afc test_lane_shadow test_kp_ladder; do
+          set -euo pipefail
+          for t in test_quiet test_profile test_diag test_afc test_lane_shadow test_kp_ladder test_kp_lut_io; do
             cc -O2 -std=c11 -Wall -Wextra -Werror -I../main "$t.c" -lm -o "/tmp/$t" && "/tmp/$t" | tail -1
           done
           cc -O2 -std=c11 -Wall -Wextra -Werror -DEXPECT_FADE_HOLD -I../main test_gain_fade.c \

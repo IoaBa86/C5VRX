@@ -234,7 +234,7 @@ static void command(int c, unsigned *menu_idle)
         kp_ladder_reset(&s_kp);
         (void)transport_kp_set(0);
         (void)transport_set_lp(false);
-        printf("KP ladder %s\n", s_kp_auto == 2 ? "AUTO kp + LP (U85Q close in, U85Q-LP at the range edge)" :
+        printf("KP ladder %s\n", s_kp_auto == 2 ? "AUTO kp + LP (program changes briefly restart video; bench test)" :
                s_kp_auto == 1 ? "AUTO kp (U85Q only)" : "OFF");
         break;
     case 'P': {
@@ -242,8 +242,8 @@ static void command(int c, unsigned *menu_idle)
         const bool lp = !transport_lp();
         const bool menu = s_menu_active;
         printf("PROGRAM manual %s: %s\n", lp ? "U85Q-LP" : "U85Q", !transport_set_lp(lp) ?
-               "refused (needs the U85Q tracker; see prog_pause_fail in T)" :
-               menu ? "loaded at menu exit through the normal start sequence" : "switched live");
+               "refused (needs U85Q; see prog_verify_fail/prog_restart_fail in T)" :
+               menu ? "loaded at menu exit through the normal start sequence" : "switched via pipeline restart");
         break;
     }
     case 'k': {
@@ -386,7 +386,7 @@ static void control_task(void *arg)
                                                        s_kp_auto == 2));
             if (s_kp.lp != transport_lp() && !transport_set_lp(s_kp.lp)) s_kp.lp = transport_lp();
         }
-        (void)transport_kp_tick(64);   /* ~0.3-0.6 s per change; each entry valid either way */
+        (void)transport_kp_tick(32);   /* 32 host words = 64 LUT16 entries per tick */
         diag_window(window_ok, valid, own_write);   /* own_write: an AFC step this window */
         lane_shadow_window(s_window, sizeof(s_window), ctx, gain_epoch,
                            window_ok && !own_write && gain_epoch == s_gain_epoch && ctx == afc_context());

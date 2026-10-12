@@ -136,3 +136,32 @@ Within this demodulator class the C5 is close to its ceiling. The remaining
 dB are outside the LUT: the RF front end (LNA, filter, antenna, diversity) or
 hardware with line memory at sample rate. A flight comparison against an
 RX5808 is the open measurement.
+
+## PR #196 ladder and LP handover (2026-10-12)
+
+Operator bench evidence: video appeared stable during five requested kp
+steps, but telemetry reached 1759 verification failures in 1760 attempted
+writes. `P` then produced black video while the USB console continued.
+The earlier software shadow acknowledged failed writes, so reported
+`kp_level` values were not proof of the actual hardware LUT contents.
+
+ESP-IDF 6.0.2's `esp_hal_dma/esp32c5/include/hal/bitscrambler_ll.h`
+explicitly defines LUT width as seen by BitScrambler, not the host, and
+`bitscrambler_ll_lutmem_write` accepts 32-bit word indices. The CPU port
+therefore needs 512 packed words, not 1024 half-word writes. The fix keeps
+LUT16 active, preserves both halves, checks full-word readback and only
+acknowledges successful writes. Failed words remain pending for bounded
+retry. `test_kp_lut_io.c` models this host port and exercises all actual
+ladder tables in both directions, neighbour preservation and injected
+write failure. `kp_writes` now counts attempted host-word writes.
+
+The paused live instruction rewrite is removed. U85Q/LP switches use the
+existing stop/load/reset/start topology with the current kp LUT restored
+and verified before starting. A failed verification restores the previous
+program with its baseline LUT; it does not leave TX halted. `prog_restart_us`
+measures the interruption, `prog_restart_fail` counts failed switches, and
+legacy `prog_pause_fail` remains zero (no pause rewrite). Observers get a
+new control epoch after each restart. The menu selection path from eea611b
+is retained. A program switch briefly interrupts video; host models cannot
+establish goggle continuity. Hardware retest of writes, P toggles and
+AUTO kp+LP remains required; no new range or seamlessness claim is made.

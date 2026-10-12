@@ -85,6 +85,13 @@ The menu closes by itself after 30 s without a press.
 `s` scan, `F` calibrate again (as the menu item), `L` bench-only IQ lane
 comparison (video stops ~3 s), `` ` `` download mode, `h` help.
 
+`K` cycles OFF / AUTO kp / AUTO kp+LP. `k` manually steps kp;
+`P` manually toggles U85Q/U85Q-LP and disables AUTO. Kp-only changes
+update packed CPU LUT words while video runs. Program changes use a brief
+pipeline restart, preserving the verified kp table; they are not seamless.
+Test on the ground and check `T`: `kp_verify_fail`, `prog_verify_fail`,
+`prog_restart_fail`, transport faults and the measured `prog_restart_us`.
+
 ## Credits and license
 
 C5VRX-5 is part of [C5VRX](https://github.com/Twotoz/C5VRX) by Twotoz and
