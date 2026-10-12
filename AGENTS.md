@@ -733,7 +733,8 @@ the project explicitly changes hosting architecture.
   workflow. It runs the host tests and research checks, builds the root
   firmware with ESP-IDF v6.0.2 and publishes:
   - `c5vrx5-v5.0.<run number>` for a firmware change on `main` (immutable;
-    never replace published version assets);
+    never replace published version assets), marked as the repository's
+    Latest release (an unchanged-input main run re-marks the newest one);
   - a mutable `c5vrx5-pr-<number>` prerelease for every same-repository PR
     (`opened`/`synchronize`/`reopened`), deleted when the PR closes. Fork PRs
     never get write-capable publication.
