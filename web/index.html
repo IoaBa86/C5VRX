@@ -47,12 +47,12 @@
 <summary>Documentation</summary>
 <nav class="docs-links" aria-label="Documentation links">
 <a href="https://github.com/Twotoz/C5VRX/blob/main/README.md" target="_blank" rel="noopener noreferrer">Getting started</a>
-<a href="https://github.com/Twotoz/C5VRX/blob/main/docs/hardware-test.md" target="_blank" rel="noopener noreferrer">Hardware & wiring</a>
-<a href="https://github.com/Twotoz/C5VRX/blob/main/README.md#build--flash-guide" target="_blank" rel="noopener noreferrer">Build & flash</a>
-<a href="https://github.com/Twotoz/C5VRX/blob/main/README.md#interactive-serial-console-hotkeys" target="_blank" rel="noopener noreferrer">Receiver controls</a>
-<a href="https://github.com/Twotoz/C5VRX/blob/main/docs/image-quality.md" target="_blank" rel="noopener noreferrer">Image quality</a>
-<a href="https://github.com/Twotoz/C5VRX/blob/main/docs/range-max.md" target="_blank" rel="noopener noreferrer">Range & reception</a>
-<a href="https://github.com/Twotoz/C5VRX/blob/main/docs/KNOWLEDGE_INDEX.md" target="_blank" rel="noopener noreferrer">All documentation</a>
+<a href="https://github.com/Twotoz/C5VRX/blob/main/README.md#hardware" target="_blank" rel="noopener noreferrer">Hardware & wiring</a>
+<a href="https://github.com/Twotoz/C5VRX/blob/main/README.md#flashing" target="_blank" rel="noopener noreferrer">Build & flash</a>
+<a href="https://github.com/Twotoz/C5VRX/blob/main/README.md#serial-console-usb-115200" target="_blank" rel="noopener noreferrer">Receiver controls</a>
+<a href="https://github.com/Twotoz/C5VRX/blob/main/docs/FINDINGS.md" target="_blank" rel="noopener noreferrer">Receiver findings</a>
+<a href="https://github.com/Twotoz/C5VRX/blob/main/docs/FIELD_TEST.md" target="_blank" rel="noopener noreferrer">Range & field tests</a>
+<a href="https://github.com/Twotoz/C5VRX/tree/main/docs" target="_blank" rel="noopener noreferrer">All documentation</a>
 </nav>
 </details>
 </aside>
@@ -249,166 +249,92 @@
 </details>
 </section>
 <section id="terminalView" aria-label="Serial terminal" hidden>
-<div class="shortcuts">
-<div class="command-group">
-<h2>Receiver</h2>
-<div class="command-buttons">
-<button type="button" class="command-button" data-command="c" title="Command: c" disabled>Next channel <kbd>c</kbd>
-</button>
-<button type="button" class="command-button" data-command="C" title="Command: C" disabled>Next band <kbd>C</kbd>
-</button>
-<button type="button" class="command-button" data-command="o" title="Command: o" disabled>Menu <kbd>o</kbd>
-</button>
-<button type="button" class="command-button" data-command="v" title="Command: v" disabled>Video standard <kbd>v</kbd>
-</button>
-</div>
-</div>
-<div class="command-group">
-<h2>Diagnostics</h2>
-<div class="command-buttons">
-<button type="button" class="command-button" data-command="d" title="Command: d" disabled>Status <kbd>d</kbd>
-</button>
-<button type="button" class="command-button" data-command="p" title="Command: p" disabled>Snapshot <kbd>p</kbd>
-</button>
-<button type="button" class="command-button" data-command="l" title="Command: l" disabled>Mark lag <kbd>l</kbd>
-</button>
-<button type="button" class="command-button" data-command="q" title="Command: q" disabled>Quiet logs <kbd>q</kbd>
-</button>
-</div>
-</div>
-<details class="shortcut-details">
-<summary>Gain, frequency & menu controls</summary>
-<div class="command-group">
-<h2>Gain</h2>
-<div class="command-buttons">
-<button type="button" class="command-button" data-command="D" title="Command: D" disabled>Direct gain <kbd>D</kbd>
-</button>
-<button type="button" class="command-button" data-command="N" data-confirm="Toggle native AGC and reboot the receiver?" title="Command: N" disabled>Native AGC toggle <kbd>N</kbd>
-</button>
-<button type="button" class="command-button" data-command="a" title="Command: a" disabled>Active AGC <kbd>a</kbd>
-</button>
-<button type="button" class="command-button" data-command="s" title="Command: s" disabled>Shadow AGC <kbd>s</kbd>
-</button>
-<button type="button" class="command-button" data-command="m" title="Command: m" disabled>Manual gain <kbd>m</kbd>
-</button>
-<button type="button" class="command-button" data-command="-" title="Command: -" disabled>Gain − <kbd>-</kbd>
-</button>
-<button type="button" class="command-button" data-command="+" title="Command: +" disabled>Gain + <kbd>+</kbd>
-</button>
-</div>
-</div>
-<div class="command-group">
-<h2>Frequency</h2>
-<div class="command-buttons">
-<button type="button" class="command-button" data-command="f" title="Command: f" disabled>Cycle AFC mode <kbd>f</kbd>
-</button>
-<button type="button" class="command-button" data-command="," title="Command: ," disabled>−50 kHz <kbd>,</kbd>
-</button>
-<button type="button" class="command-button" data-command="." title="Command: ." disabled>+50 kHz <kbd>.</kbd>
-</button>
-<button type="button" class="command-button" data-command="0" title="Command: 0" disabled>Reset offset <kbd>0</kbd>
-</button>
-</div>
-</div>
-<div class="command-group">
-<h2>Menu navigation</h2>
-<div class="command-buttons">
-<button type="button" class="command-button" data-command="n" title="Command: n" disabled>Next item <kbd>n</kbd>
-</button>
-<button type="button" class="command-button" data-command="&#13;" title="Command: Enter" disabled>Select item <kbd>Enter</kbd>
-</button>
-<button type="button" class="command-button" data-command="O" title="Command: O" disabled>BOOT menu toggle <kbd>O</kbd>
-</button>
-</div>
-</div>
-</details>
-<details class="shortcut-details">
-<summary>Diagnostics & experimental tools</summary>
-<div class="command-group">
-<h2>Measurements</h2>
-<div class="command-buttons">
-<button type="button" class="command-button" data-command="T" title="Command: T" disabled>AGC registers <kbd>T</kbd>
-</button>
-<button type="button" class="command-button" data-command="Q" title="Command: Q" disabled>Raw IQ <kbd>Q</kbd>
-</button>
-<button type="button" class="command-button" data-command="E" title="Command: E" disabled>Phase8 envelope <kbd>E</kbd>
-</button>
-<button type="button" class="command-button" data-command="t" title="Command: t" disabled>Timer inventory <kbd>t</kbd>
-</button>
-<button type="button" class="command-button" data-command="H" title="Command: H" disabled>PHY oracle <kbd>H</kbd>
-</button>
-<button type="button" class="command-button" data-command="r" title="Command: r" disabled>Reset lag counters <kbd>r</kbd>
-</button>
-</div>
-</div>
-<div class="command-group">
-<h2>Experimental</h2>
-<div class="command-buttons">
-<button type="button" class="command-button" data-command="g" title="Command: g" disabled>Gain sweep / abort <kbd>g</kbd>
-</button>
-<button type="button" class="command-button" data-command="G" title="Command: G" disabled>RF-stage sweep <kbd>G</kbd>
-</button>
-<button type="button" class="command-button" data-command="W" title="Command: W" disabled>Bandwidth probe <kbd>W</kbd>
-</button>
-<button type="button" class="command-button" data-command="F" title="Command: F" disabled>FFT probe <kbd>F</kbd>
-</button>
-<button type="button" class="command-button" data-command="A" title="Command: A" disabled>Frequency probe <kbd>A</kbd>
-</button>
-<button type="button" class="command-button" data-command="U" title="Command: U" disabled>RX auto lab <kbd>U</kbd>
-</button>
-<button type="button" class="command-button" data-command="S" title="Command: S" disabled>TX self-noise <kbd>S</kbd>
-</button>
-<button type="button" class="command-button" data-command="R" title="Command: R" disabled>RSSI probe <kbd>R</kbd>
-</button>
-<button type="button" class="command-button" data-command="b" title="Command: b" disabled>Quiet baseline <kbd>b</kbd>
-</button>
-<button type="button" class="command-button" data-command="X" title="Command: X" disabled>Cycle RX profile <kbd>X</kbd>
-</button>
-<button type="button" class="command-button" data-command="I" title="Command: I" disabled>Direct gain V1 <kbd>I</kbd>
-</button>
-<button type="button" class="command-button" data-command="Y" title="Command: Y" disabled>ARC V3 <kbd>Y</kbd>
-</button>
-<button type="button" class="command-button" data-command="e" title="Command: e" disabled>Sample edge <kbd>e</kbd>
-</button>
-<button type="button" class="command-button" data-command="K" data-confirm="Erase stored PHY calibration and reboot the receiver?" title="Command: K" disabled>Fresh calibration + reboot <kbd>K</kbd>
-</button>
-</div>
-</div>
-</details>
-</div>
 <div class="panel terminal-panel">
 <div class="terminal-toolbar">
 <div class="terminal-controls">
 <label for="terminalBaud">Baud</label>
-<select id="terminalBaud">
-<option>115200</option>
-<option>460800</option>
-<option>921600</option>
-</select>
-<button class="action" id="btnTerminalConnect">Connect</button>
-</div>
-<button class="action" id="clear">Clear</button>
-</div>
-<pre class="terminal-output" id="output" tabindex="0" aria-label="Serial output">Connect a device to view serial output.</pre>
-<form class="command-row" id="commandForm">
-<input id="commandInput" placeholder="Send a command" aria-label="Command" disabled autocomplete="off" autocapitalize="off" spellcheck="false">
-<button id="btnSendCommand" class="action" disabled>Send</button>
-</form>
-</div>
-<div class="terminal-options">
-<label class="check">
-<input id="autoScroll" type="checkbox" checked>Auto-scroll</label>
-<div class="ending">
-<label for="ending">Line ending</label>
-<select id="ending">
-<option value="">None</option>
-<option value="lf">LF</option>
-<option value="crlf">CR + LF</option>
-</select>
-</div>
+<select id="terminalBaud"><option>115200</option><option>460800</option><option>921600</option></select>
+<button class="action primary" id="btnTerminalConnect">Connect receiver</button>
 </div>
 <p id="terminalStatus" class="hint" role="status">No device connected</p>
-<p class="hint">Disconnect the terminal before flashing firmware. Shortcut buttons send a single command byte.</p>
+</div>
+<p id="terminalFirmware" class="terminal-identity" role="status">C5VRX-5 controls. Connect to identify your firmware.</p>
+<div class="terminal-workspace">
+<aside class="receiver-controls" aria-label="Receiver controls">
+<div class="receiver-screen">
+<div class="receiver-header"><strong>C5VRX-5</strong><span id="receiverSummary">Refresh status to read receiver settings</span></div>
+<div class="receiver-menu">
+<div class="receiver-nav" role="tablist" aria-label="Receiver menu" aria-orientation="vertical">
+<button type="button" role="tab" id="menu-band" aria-controls="pane-band" aria-selected="true" tabindex="0" data-menu="band">BAND</button>
+<button type="button" role="tab" id="menu-channel" aria-controls="pane-channel" aria-selected="false" tabindex="-1" data-menu="channel">CHANNEL</button>
+<button type="button" role="tab" id="menu-scan" aria-controls="pane-scan" aria-selected="false" tabindex="-1" data-menu="scan">SCAN</button>
+<button type="button" role="tab" id="menu-video" aria-controls="pane-video" aria-selected="false" tabindex="-1" data-menu="video">VIDEO</button>
+<button type="button" role="tab" id="menu-calibrate" aria-controls="pane-calibrate" aria-selected="false" tabindex="-1" data-menu="calibrate">CALIBRATE</button>
+<button type="button" role="tab" id="menu-output" aria-controls="pane-output" aria-selected="false" tabindex="-1" data-menu="output">OUTPUT</button>
+<button type="button" role="tab" id="menu-exit" aria-controls="pane-exit" aria-selected="false" tabindex="-1" data-menu="exit">EXIT</button>
+</div><div class="receiver-content">
+<div role="tabpanel" id="pane-band" aria-labelledby="menu-band"><h2>ACTIVE BAND</h2><p class="receiver-value" data-value="band">—</p><p class="hint">Cycle through the receiver bands.</p><div class="command-group"><h2>Actions</h2><div class="command-buttons">
+<button type="button" class="command-button" data-command="b" data-confirm="Retune to the next band? Live video will be interrupted." disabled>Next band <kbd>b</kbd></button>
+</div></div></div>
+<div role="tabpanel" id="pane-channel" aria-labelledby="menu-channel" hidden><h2>CHANNEL</h2><p class="receiver-value" data-value="channel">—</p><p class="hint">Cycle through the eight channels in the active band.</p><div class="command-group"><h2>Actions</h2><div class="command-buttons">
+<button type="button" class="command-button" data-command="c" data-confirm="Retune to the next channel? Live video will be interrupted." disabled>Next channel <kbd>c</kbd></button>
+</div></div></div>
+<div role="tabpanel" id="pane-scan" aria-labelledby="menu-scan" hidden><h2>FIND THE STRONGEST VIDEO</h2><p class="receiver-value" data-value="scan">—</p><p class="hint">Scan all 48 channels for centred analog video. Live video stops during the scan.</p><div class="command-group"><h2>Actions</h2><div class="command-buttons">
+<button type="button" class="command-button" data-command="s" data-confirm="Scan for the strongest video? Live video will stop while scanning." disabled>Scan channels <kbd>s</kbd></button>
+</div></div></div>
+<div role="tabpanel" id="pane-video" aria-labelledby="menu-video" hidden><h2>VIDEO STANDARD</h2><p class="receiver-value" data-value="video">—</p><p class="hint">Cycle AUTO → NTSC → PAL. AUTO follows the camera. Direct control needs firmware advertising v in its help.</p><div class="command-group"><h2>Actions</h2><div class="command-buttons">
+<button type="button" class="command-button" data-command="v" data-confirm="Cycle AUTO / NTSC / PAL? The receiver saves the selected video standard." disabled>Change video standard <kbd>v</kbd></button>
+</div></div></div>
+<div role="tabpanel" id="pane-calibrate" aria-labelledby="menu-calibrate" hidden><h2>CALIBRATE</h2><p class="receiver-value" data-value="calibrate">—</p><p class="hint">On the ground only. Video stops for up to two minutes. VTX off is best.</p><div class="command-group"><h2>Actions</h2><div class="command-buttons">
+<button type="button" class="command-button" data-command="F" data-confirm="Calibrate on the ground? Live video stops for up to two minutes. VTX off is best." disabled>Calibrate receiver <kbd>F</kbd></button>
+</div></div></div>
+<div role="tabpanel" id="pane-output" aria-labelledby="menu-output" hidden><h2>OUTPUT LEVEL</h2><p class="receiver-value" data-value="output">—</p><p class="hint">Cycle 1.0 / 1.5 / 2.0 / 2.5x. Boot starts at 1.0x. Higher levels may clip wide VTXs; check sync and white into 75 ohm.</p><div class="command-group"><h2>Actions</h2><div class="command-buttons">
+<button type="button" class="command-button" data-command="g" data-confirm="Cycle OUTPUT 1.0 / 1.5 / 2.0 / 2.5x? Higher levels may clip video. Boot resets to 1.0x." disabled>Cycle output level <kbd>g</kbd></button>
+</div></div></div>
+<div role="tabpanel" id="pane-exit" aria-labelledby="menu-exit" hidden><h2>BACK TO LIVE VIDEO</h2><p class="receiver-value" data-value="exit">—</p><p class="hint">Close the on-screen menu without toggling it open. Direct control needs firmware advertising e in its help.</p><div class="command-group"><h2>Actions</h2><div class="command-buttons">
+<button type="button" class="command-button" data-command="e" disabled>Close screen menu <kbd>e</kbd></button>
+</div></div></div>
+</div></div></div>
+<div class="command-group"><h2>On-screen menu</h2><div class="command-buttons">
+<button type="button" class="command-button" data-command="o" data-confirm="Toggle the on-screen menu? Opening it replaces live video." disabled>Open / close screen menu <kbd>o</kbd></button>
+<button type="button" class="command-button" data-command="n" disabled>Next menu item <kbd>n</kbd></button>
+<button type="button" class="command-button" data-command="x" data-confirm="Activate the selected on-screen item? It may retune, change video settings or start calibration." disabled>Select menu item <kbd>x</kbd></button>
+</div></div><details class="shortcut-details"><summary>Diagnostics</summary><div class="command-group"><h2>Diagnostics</h2><div class="command-buttons">
+<button type="button" class="command-button" data-command="T" disabled>Receiver status <kbd>T</kbd></button>
+<button type="button" class="command-button" data-command="D" disabled>Range / health report <kbd>D</kbd></button>
+<button type="button" class="command-button" data-command="R" disabled>Toggle field logging <kbd>R</kbd></button>
+<button type="button" class="command-button" data-command="I" disabled>Capture raw IQ <kbd>I</kbd></button>
+<button type="button" class="command-button" data-command="M" disabled>Export gain map <kbd>M</kbd></button>
+<button type="button" class="command-button" data-command="h" disabled>Firmware help <kbd>h</kbd></button>
+</div></div></details>
+<details class="shortcut-details"><summary>Advanced / bench</summary><p class="hint">Test on the ground. Manual tracker changes save AUTO OFF. Live changes share a five-second firmware cooldown.</p><div class="command-group"><h2>Advanced / bench</h2><div class="command-buttons">
+<button type="button" class="command-button" data-command="K" data-confirm="Cycle OFF / AUTO kp / AUTO kp+LP? The setting is saved; a change can briefly interrupt video." disabled>Cycle automatic rescue <kbd>K</kbd></button>
+<button type="button" class="command-button" data-command="A" data-confirm="Toggle automatic live VTX profile switching? This setting is saved; profile changes can briefly interrupt video." disabled>Toggle live VTX matching <kbd>A</kbd></button>
+<button type="button" class="command-button" data-command="k" data-confirm="Step the tracker calmer? This saves automatic rescue OFF, including after reboot." disabled>Tracker calmer <kbd>k</kbd></button>
+<button type="button" class="command-button" data-command="j" data-confirm="Step the tracker faster? This saves automatic rescue OFF, including after reboot." disabled>Tracker faster <kbd>j</kbd></button>
+<button type="button" class="command-button" data-command="P" data-confirm="Toggle U85Q / U85Q-LP? This saves automatic rescue OFF, including after reboot." disabled>Toggle low-pass manually <kbd>P</kbd></button>
+<button type="button" class="command-button" data-command="L" data-confirm="Run the bench-only IQ lane comparison? Live video stops for about three seconds." disabled>Compare IQ lanes <kbd>L</kbd></button>
+<button type="button" class="command-button" data-command="`" data-confirm="Reboot into USB download mode for flashing? Video stops and the terminal may disconnect." disabled>Enter USB download mode <kbd>`</kbd></button>
+</div></div></details>
+
+</aside>
+<div class="terminal-log">
+<div class="terminal-toolbar">
+<label class="check"><input id="autoScroll" type="checkbox" checked>Auto-scroll</label>
+<div class="terminal-controls"><button class="action" id="downloadLog">Download log</button><button class="action" id="clear">Clear</button></div>
+</div>
+<pre class="terminal-output" id="output" tabindex="0" aria-label="Serial output">Connect a receiver to view serial output.</pre>
+<details class="raw-command"><summary>Send a command key</summary>
+<form class="command-row" id="commandForm">
+<input id="commandInput" maxlength="1" placeholder="One key, e.g. T" aria-label="Single firmware command key" disabled autocomplete="off" autocapitalize="off" spellcheck="false">
+<button id="btnSendCommand" class="action" disabled>Send</button>
+</form>
+<p class="hint">Commands are case-sensitive and send one byte, without Enter. Use h for the firmware's own help.</p>
+</details>
+</div>
+</div>
+</div>
+<p class="hint">Connecting here releases the flasher connection; connecting the flasher releases the terminal. Logs keep the latest 120,000 characters; download before clearing or reconnecting.</p>
 </section>
 
 <aside class="hardware-purchase" aria-label="Get the hardware">
@@ -428,3 +354,4 @@
 </script>
 </body>
 </html>
+

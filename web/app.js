@@ -1,5 +1,6 @@
 import { ESPLoader, Transport } from './esptool.js';
 import { SerialTerminal } from './serial-terminal.js';
+import { ReceiverConsole } from './receiver-console.js';
 
 // DOM Elements
 const btnConnect = document.getElementById('btnConnect');
@@ -387,11 +388,12 @@ btnConnect.addEventListener('click', async () => {
 });
 
 async function connectDevice() {
-  if (isConnecting || isConnected || isFlashing || serialConsole.state !== 'disconnected' || !checkSerialSupport()) return;
+  if (isConnecting || isConnected || isFlashing || !['disconnected', 'connected'].includes(serialConsole.state) || !checkSerialSupport()) return;
   isConnecting = true;
   syncDeviceControls();
 
   try {
+    await serialConsole.disconnect();
     log('Opening Web Serial port selector...');
     port = await navigator.serial.requestPort();
     log('Port selected. Initializing connection...');
@@ -673,9 +675,33 @@ const terminalStatus = document.getElementById('terminalStatus');
 const shortcutButtons = [...document.querySelectorAll('[data-command]')];
 const MAX_LOG_CHARS = 120000;
 let commandBusy = false;
+const receiverConsole = new ReceiverConsole();
+
+function renderReceiver() {
+  const connected = serialConsole.state === 'connected';
+  document.getElementById('terminalFirmware').textContent = !connected
+    ? 'C5VRX-5 controls. Connect to identify your firmware.'
+    : receiverConsole.current
+      ? `C5VRX-5 ${receiverConsole.version || ''} · Values from the last status report; refresh with Receiver status.`
+      : 'Firmware not identified. Use Receiver status or Firmware help. This menu requires C5VRX-5.';
+  const c = connected ? receiverConsole.control : {};
+  document.getElementById('receiverSummary').textContent = c.channel
+    ? `${c.channel} · ${c.freq} MHz · signal ${c.signal}/100 · ${c.standard}`
+    : 'Refresh status to read receiver settings';
+  const values = {
+    band: c.channel?.replace(/[0-9]+$/, ''), channel: c.channel && `${c.channel} · ${c.freq} MHz`,
+    scan: '48 channels', video: c.standard && `${c.standard} · detected ${c.detected}`,
+    calibrate: 'VTX OFF IS BEST', output: connected ? receiverConsole.output.level : '',
+    exit: c.menu === '1' ? 'SCREEN MENU OPEN' : c.menu === '0' ? 'LIVE VIDEO SELECTED' : ''
+  };
+  for (const element of document.querySelectorAll('[data-value]')) element.textContent = values[element.dataset.value] || '—';
+}
 
 function appendSerial(text) {
   serialOutput.textContent = (serialOutput.textContent + text).slice(-MAX_LOG_CHARS);
+  receiverConsole.push(text);
+  renderReceiver();
+  syncDeviceControls();
   if (document.getElementById('autoScroll').checked) serialOutput.scrollTop = serialOutput.scrollHeight;
 }
 
@@ -685,7 +711,9 @@ const serialConsole = new SerialTerminal({
   onState: (state) => {
     const labels = { connected: 'Connected', connecting: 'Connecting…', disconnecting: 'Disconnecting…', disconnected: 'No device connected' };
     terminalStatus.textContent = labels[state];
-    if (state === 'connecting') serialOutput.textContent = '';
+    if (state === 'connecting') { serialOutput.textContent = ''; receiverConsole.reset(); }
+    // onState can run during connect, after construction has completed.
+    renderReceiver();
     syncDeviceControls();
   },
   onError: (error) => {
@@ -701,25 +729,40 @@ function syncDeviceControls() {
   const terminalConnected = serialConsole.state === 'connected';
   const terminalIdle = serialConsole.state === 'disconnected';
   const flashBusy = isConnected || isConnecting || isFlashing;
-  btnConnect.disabled = !supported || isConnecting || isFlashing || !terminalIdle;
-  btnConnect.title = terminalIdle ? '' : 'Disconnect the terminal before connecting the flasher';
-  btnTerminalConnect.disabled = !supported || flashBusy || (!terminalIdle && !terminalConnected);
-  btnTerminalConnect.textContent = terminalConnected ? 'Disconnect' : serialConsole.state === 'connecting' ? 'Connecting…' : 'Connect';
-  btnTerminalConnect.title = flashBusy ? 'Disconnect the flasher before connecting the terminal' : '';
+  btnConnect.disabled = !supported || isConnecting || isFlashing || (!terminalIdle && !terminalConnected);
+  btnConnect.title = terminalConnected ? 'Release the terminal and connect the flasher' : '';
+  btnTerminalConnect.disabled = !supported || isConnecting || isFlashing || (!terminalIdle && !terminalConnected);
+  btnTerminalConnect.textContent = terminalConnected ? 'Disconnect' : serialConsole.state === 'connecting' ? 'Connecting…' : 'Connect receiver';
+  btnTerminalConnect.title = isConnected ? 'Release the flasher and connect the terminal' : '';
   terminalBaud.disabled = !terminalIdle;
   commandInput.disabled = !terminalConnected || commandBusy;
   document.getElementById('btnSendCommand').disabled = !terminalConnected || commandBusy;
-  for (const button of shortcutButtons) button.disabled = !terminalConnected || commandBusy;
+  for (const button of shortcutButtons) button.disabled = !terminalConnected || commandBusy || !receiverConsole.supports(button.dataset.command);
 }
 
 btnTerminalConnect.addEventListener('click', async () => {
-  if (isConnected || isConnecting || isFlashing) return;
+  if (isConnecting || isFlashing) return;
   if (serialConsole.state === 'connected') await serialConsole.disconnect();
-  else if (serialConsole.state === 'disconnected' && checkSerialSupport()) await serialConsole.connect(Number(terminalBaud.value));
+  else if (serialConsole.state === 'disconnected' && checkSerialSupport()) {
+    // Reserve the UI while the previous flasher transport releases the port.
+    isConnecting = true;
+    syncDeviceControls();
+    try {
+      if (isConnected) await disconnectDevice();
+      await serialConsole.connect(Number(terminalBaud.value));
+      if (serialConsole.state === 'connected') await serialConsole.send('hT');
+    } finally { isConnecting = false; syncDeviceControls(); }
+  }
 });
 
 async function sendTerminalCommand(command) {
   if (commandBusy || serialConsole.state !== 'connected') return false;
+  const button = shortcutButtons.find(button => button.dataset.command === command);
+  if (command.length !== 1 || (!button && command !== '?') || !receiverConsole.supports(command)) {
+    appendSerial('\n[Web menu] Unsupported command key. Use h for help; this menu requires C5VRX-5.\n');
+    return false;
+  }
+  if (button?.dataset.confirm && !window.confirm(button.dataset.confirm)) return false;
   commandBusy = true;
   syncDeviceControls();
   try { return await serialConsole.send(command); }
@@ -728,7 +771,6 @@ async function sendTerminalCommand(command) {
 
 for (const button of shortcutButtons) {
   button.addEventListener('click', async () => {
-    if (button.dataset.confirm && !window.confirm(button.dataset.confirm)) return;
     await sendTerminalCommand(button.dataset.command);
   });
 }
@@ -737,11 +779,40 @@ document.getElementById('commandForm').addEventListener('submit', async (event) 
   event.preventDefault();
   const command = commandInput.value;
   if (!command) return;
-  const ending = document.getElementById('ending').value;
-  const suffix = ending === 'lf' ? '\n' : ending === 'crlf' ? '\r\n' : '';
-  if (await sendTerminalCommand(command + suffix)) commandInput.value = '';
+  if (await sendTerminalCommand(command)) commandInput.value = '';
 });
 document.getElementById('clear').addEventListener('click', () => { serialOutput.textContent = ''; });
+document.getElementById('downloadLog').addEventListener('click', () => {
+  const url = URL.createObjectURL(new Blob([serialOutput.textContent], { type: 'text/plain;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `c5vrx-${new Date().toISOString().replace(/[:.]/g, '-')}.log`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+const menuTabs = [...document.querySelectorAll('[data-menu]')];
+function selectMenu(tab, focus = false) {
+  for (const item of menuTabs) {
+    const active = item === tab;
+    item.setAttribute('aria-selected', String(active));
+    item.tabIndex = active ? 0 : -1;
+    document.getElementById(`pane-${item.dataset.menu}`).hidden = !active;
+  }
+  if (focus) tab.focus();
+}
+for (const tab of menuTabs) {
+  tab.addEventListener('click', () => selectMenu(tab));
+  tab.addEventListener('keydown', event => {
+    const index = menuTabs.indexOf(tab);
+    const target = event.key === 'ArrowDown' ? (index + 1) % menuTabs.length
+      : event.key === 'ArrowUp' ? (index + menuTabs.length - 1) % menuTabs.length
+      : event.key === 'Home' ? 0 : event.key === 'End' ? menuTabs.length - 1 : -1;
+    if (target < 0) return;
+    event.preventDefault();
+    selectMenu(menuTabs[target], true);
+  });
+}
 
 for (const [buttonId, terminalView] of [['firmwareTab', false], ['terminalTab', true]]) {
   document.getElementById(buttonId).addEventListener('click', () => {
@@ -768,3 +839,4 @@ docsNav.open = docsBreakpoint.matches;
 docsBreakpoint.addEventListener('change', (event) => {
   docsNav.open = event.matches;
 });
+
