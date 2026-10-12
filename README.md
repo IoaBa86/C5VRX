@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/c5vrx-phase8-logo.png" alt="C5VRX Phase8 logo" width="760" />
+  <img src="assets/C5VRX_logo.gif" alt="C5VRX animated logo" width="760" />
 
   <p><strong>ESP32-C5 Analog 5.8 GHz FPV Receiver</strong></p>
   <p>From live 5.8 GHz FPV video to real-time analog CVBS with one Seeed Studio XIAO ESP32-C5 and a passive resistor DAC.</p>
@@ -21,7 +21,10 @@ Analog 5.8 GHz FPV receiver on one Seeed Studio XIAO ESP32-C5 with a passive
 6-bit resistor DAC: live FM video in, composite PAL/NTSC out for goggles.
 
 C5VRX-5 uses one live demodulator. Its receive-chain evidence is recorded in
-[docs/FINDINGS.md](docs/FINDINGS.md). The [IQLaneFusion research](docs/IQLANE_FUSION.md)
+[docs/FINDINGS.md](docs/FINDINGS.md); the U85Q study it is built on, with
+scoring corrections and failed experiments, is preserved in
+[docs/pr190-key-findings.md](docs/pr190-key-findings.md) and
+[docs/recent-pr-receiver-findings.md](docs/recent-pr-receiver-findings.md). The [IQLaneFusion research](docs/IQLANE_FUSION.md)
 is host-only (its read-only firmware shadow `J` was removed 2026-10-12);
 it is not a demonstrated video or range improvement.
 
