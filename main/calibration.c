@@ -33,6 +33,7 @@
 #include "phy.h"
 #include "profile_logic.h"
 #include "sphase_logic.h"
+#include "dco_slots.h"
 #include "rf.h"
 #include "soc/pcr_struct.h"
 
@@ -528,6 +529,47 @@ static bool dco_same_context(const dco_table_t *a, const dco_table_t *b)
 /* The wanted context lives off the task stack: two full tables on it took
  * 1840 bytes (-fstack-usage) before NVS added its own frames. */
 static RTC_FAST_ATTR dco_table_t s_dco_want;
+
+/* Per-channel tables (dco_slots.h): slot blobs "dco0".."dco5" plus the
+ * index "dco_idx". The single legacy "dco" table is adopted once. */
+static dco_index_t s_dco_index;
+static bool s_dco_index_loaded;
+static uint16_t s_dco_seed_mhz;     /* the current table was seeded from this channel, 0 = own */
+static uint32_t s_dco_seeds;
+
+static void dco_slot_key(unsigned slot, char key[8]) { snprintf(key, 8, "dco%u", slot); }
+
+static bool dco_load_slot(unsigned slot, dco_table_t *out)
+{
+    char key[8];
+    dco_slot_key(slot, key);
+    return blob_load(key, out, sizeof(*out)) && out->version == DCO_VERSION && out->freq == s_dco_index.freq[slot];
+}
+
+static bool dco_save(void)
+{
+    char key[8];
+    const unsigned slot = dco_slot_for_store(&s_dco_index, s_dco.freq);
+    dco_slot_key(slot, key);
+    if (!blob_store(key, &s_dco, sizeof(s_dco))) return false;
+    dco_index_touch(&s_dco_index, slot, s_dco.freq);
+    if (!blob_store("dco_idx", &s_dco_index, sizeof(s_dco_index))) return false;
+    s_dco_seed_mhz = 0;
+    return true;
+}
+
+static void dco_index_load(void)
+{
+    if (s_dco_index_loaded) return;
+    s_dco_index_loaded = true;
+    if (blob_load("dco_idx", &s_dco_index, sizeof(s_dco_index)) && s_dco_index.version == DCO_INDEX_VERSION) return;
+    dco_index_init(&s_dco_index);
+    /* Adopt the single table of earlier builds as the first slot. */
+    if (blob_load("dco", &s_dco, sizeof(s_dco)) && s_dco.version == DCO_VERSION && s_dco.freq) {
+        if (dco_save()) printf("DCO adopted the legacy table freq=%u as slot 0\n", s_dco.freq);
+    }
+}
+
 static void dco_select(void)
 {
     memset(&s_dco_want, 0, sizeof(s_dco_want));
@@ -537,7 +579,27 @@ static void dco_select(void)
     memset(s_dco_found_us, 0, sizeof(s_dco_found_us));
     memset(s_dco_banned, 0, sizeof(s_dco_banned));
     s_dco_floor = 0;
-    if (!blob_load("dco", &s_dco, sizeof(s_dco)) || !dco_same_context(&s_dco, &s_dco_want)) s_dco = s_dco_want;
+    s_dco_seed_mhz = 0;
+    dco_index_load();
+    const uint16_t freq = s_dco_want.freq;
+    const int own = dco_slot_of(&s_dco_index, freq);
+    if (own >= 0 && dco_load_slot((unsigned)own, &s_dco) && dco_same_context(&s_dco, &s_dco_want)) return;
+    /* No own table: start from the nearest measured channel. */
+    const int near = dco_nearest_slot(&s_dco_index, freq);
+    if (near >= 0 && dco_load_slot((unsigned)near, &s_dco)) {
+        const uint16_t from = s_dco.freq;
+        s_dco.freq = freq;
+        if (dco_same_context(&s_dco, &s_dco_want)) {
+            s_dco_seed_mhz = from;
+            ++s_dco_seeds;
+            unsigned ok = 0;
+            for (unsigned g = s_dco.lo; g <= s_dco.hi && g <= ARC_VENDOR_GAIN_MAX; ++g) ok += s_dco.e[g].valid != 0;
+            printf("DCO seeded freq=%u from=%u rows=%u (nearest measured channel; drift nudges trim)\n", freq, from,
+                   ok);
+            return;
+        }
+    }
+    s_dco = s_dco_want;
 }
 
 void dco_post_gain(uint8_t g)
@@ -634,7 +696,7 @@ static bool dco_carrier_search(bool manual)
     if (res.measured) {
         s_dco.e[g] = (dco_entry_t){{(int16_t)res.codes[0], (int16_t)res.codes[1]},
             {(int16_t)res.residual_mcells[0], (int16_t)res.residual_mcells[1]}, DCO_ROW_OK};
-        if (blob_store("dco", &s_dco, sizeof(s_dco))) s_dco_dirty = false;
+        if (dco_save()) s_dco_dirty = false;
     }
     s_dco_found_us[g] = esp_timer_get_time();
     ++s_dco_searches;
@@ -798,7 +860,7 @@ static void dco_startup(bool manual, int64_t deadline)
     else
         status_screen("DC NOT COMPLETE", why, "SAFE DEFAULT, RETRY NEXT BOOT", -1);
     vTaskDelay(pdMS_TO_TICKS(800));
-    if (s_dco_dirty && blob_store("dco", &s_dco, sizeof(s_dco))) s_dco_dirty = false;
+    if (s_dco_dirty && dco_save()) s_dco_dirty = false;
     printf("DCO startup where=%s result=%s searched=%u rows=%u floor_rows=%u missing=%u floor_from_gain=%u\n", where,
            why, done, dco_valid_rows(), dco_rows(DCO_ROW_FLOOR), dco_rows(0), s_dco_floor);
 }
@@ -809,7 +871,7 @@ static void dco_service(void)
 {
     if (!quiet_owner()) return;
     dco_select();
-    if (s_dco_dirty && s_gain.state == DG_HOLD && blob_store("dco", &s_dco, sizeof(s_dco))) s_dco_dirty = false;
+    if (s_dco_dirty && s_gain.state == DG_HOLD && dco_save()) s_dco_dirty = false;
     /* Hold guard: held codes must never coincide with dead or railing IQ. */
     static unsigned bad_ticks;
     const uint8_t g = s_current_gain;
@@ -1096,6 +1158,12 @@ void calibration_print(void)
            (unsigned long)s_dco_searches, (unsigned long)s_dco_carrier_searches, (unsigned long)s_dco_hook_holds,
            (unsigned long)s_dco_aborts, s_drift_avg[0], s_drift_avg[1], (unsigned long)s_drift_nudges,
            (double)s_temp_c);
+    unsigned stored = 0;
+    for (unsigned k = 0; k < DCO_SLOTS; ++k) stored += s_dco_index.freq[k] != 0;
+    printf("DCO tables freq=%u seeded_from=%u seeds=%lu stored_channels=%u/%u:", s_dco.freq, s_dco_seed_mhz,
+           (unsigned long)s_dco_seeds, stored, DCO_SLOTS);
+    for (unsigned k = 0; k < DCO_SLOTS; ++k) if (s_dco_index.freq[k]) printf(" %u", s_dco_index.freq[k]);
+    printf("\n");
     printf("SPHASE state=%s excess_mc2=%d limit=%d white_pm=%d dc_mcell=%d/%d scans=%u "
            "best=%d worst=%d contrast=%u rx_div=%lu\n", s_sphase_state, s_sphase_excess,
            SPHASE_LIMIT, s_sphase_white, s_sphase_dc[0], s_sphase_dc[1], s_sphase_scans,
