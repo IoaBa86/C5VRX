@@ -494,6 +494,10 @@ manual):
 - Evidence: the generator reproduces all U85Q LUTs bit-exactly; mid-field
   live changes in the host model stay at steady-state error and sync; the
   ladder host test passes.
+- Negative result (`adaptive_kp.py`, README section 15): choosing kp by
+  measuring sync-tip noise and burst amplitude with a software U85Q replica
+  on the control windows does worse than the curve (4.30-4.37 vs 4.84 dB
+  mean luma SINAD). The curve is within 0.13 dB of a per-case oracle.
 - Write/read collisions on the board are unknown: bench gate on
   `kp_verify_fail`, `tx_empty` and `bs_overload` before AUTO.
 

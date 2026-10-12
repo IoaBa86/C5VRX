@@ -447,6 +447,32 @@ program change in flight, which is not seamless (section 12).
 **LP plus kp together** adds only 0.1-0.2 dB over LP alone: both are
 low-passes and they overlap.
 
+## 15. Measured kp instead of the curve (`adaptive_kp.py`), negative
+
+The question: can the receiver measure the best kp from the received IQ,
+instead of using the section 14 curve?
+- The CPU runs a bit-exact software U85Q on 20 control windows (one second)
+  for every ladder kp.
+- Per kp it measures the sync-tip noise and the colour-burst amplitude, and
+  picks a kp by one of three rules.
+- Data: `data/adaptive_kp.json`. Deviation 0.69 / 1.0 / 1.4, C/N 1-20 dB,
+  6 seeds: the rule weight was fitted on 3 seeds and tested on the other 3.
+
+Mean true luma SINAD of the chosen kp on the held-out seeds:
+
+| oracle (perfect choice) | kp 0.85 | table curve | min noise | burst^2/noise | burst^1.75/noise |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 4.97 dB | 3.71 dB | **4.84 dB** | 3.94 dB | 4.37 dB | 4.30 dB |
+
+- The curve is already within 0.13 dB of a perfect per-case choice.
+- Measuring does worse:
+  - Minimum noise is optimal at weak signal for narrow and normal VTXs, but
+    picks far too calm a kp on a wide VTX or a strong carrier.
+  - The burst amplitude is too noisy in one second of windows to judge
+    sharpness.
+- What matters is knowing the VTX deviation, not measuring kp. The curve
+  only goes deep for a deviation measured this session.
+
 ## Not firmware levers
 
 - The second IQ40 sample of every span (+0.5..1.1 dB in the C5VRX-4 ledger)
