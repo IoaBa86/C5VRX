@@ -217,6 +217,13 @@ static void scan(void)
 }
 
 /* ---- Menu actions ---------------------------------------------------------- */
+static void cycle_video_standard(void)
+{
+    menu_set_standard_mode(s_std_mode == STD_MODE_AUTO ? STD_MODE_NTSC :
+                           s_std_mode == STD_MODE_NTSC ? STD_MODE_PAL : STD_MODE_AUTO);
+    settings_save();
+}
+
 static void menu_action(void)
 {
     switch (s_menu_cursor) {
@@ -226,9 +233,7 @@ static void menu_action(void)
     case MENU_CALIBRATE: menu_close(); filter_request(); return;   /* runs once the menu is closed */
     case MENU_OUTPUT: (void)transport_set_output((transport_output() + 1u) % 4u); break;
     case MENU_VIDEO:
-        menu_set_standard_mode(s_std_mode == STD_MODE_AUTO ? STD_MODE_NTSC :
-                               s_std_mode == STD_MODE_NTSC ? STD_MODE_PAL : STD_MODE_AUTO);
-        settings_save();
+        cycle_video_standard();
         break;
     default: menu_close(); return;
     }
@@ -241,6 +246,8 @@ static void command(int c, unsigned *menu_idle)
     if (menu_status_active()) return;   /* a calibration owns the picture */
     switch (c) {
     case 'o': if (s_menu_active) menu_close(); else if (menu_open()) s_menu_cursor = 0; break;
+    case 'e': menu_close(); break;  /* idempotent web-menu EXIT */
+    case 'v': cycle_video_standard(); break;
     case 'n': if (s_menu_active) { s_menu_cursor = (s_menu_cursor + 1) % MENU_ITEMS; menu_render(); } break;
     case 'x': if (s_menu_active) menu_action(); break;
     case 'c': rf_next_channel(); after_retune(); break;
@@ -503,3 +510,4 @@ void control_print(void)
            s_kp_auto && transport_kp_level() < 0 ? "(inactive: kp level unverified)" : "", (unsigned long)s_kp.steps,
            (unsigned long)s_kp.lp_switches);
 }
+
