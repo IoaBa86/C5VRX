@@ -271,6 +271,13 @@ static void command(int c, unsigned *menu_idle)
                     menu ? "loaded at menu exit through the normal start sequence" : "switched via pipeline restart");
         break;
     }
+    case 'A': {
+        profile_set_live_mode(!profile_live_mode());
+        printf("PROFILE live switch %s (saved): %s\n", profile_live_mode() ? "ON" : "OFF",
+               profile_live_mode() ? "widen after one reliable result, narrow after two agreeing results"
+                                   : "report only, PENDING for the next boot or CALIBRATE");
+        break;
+    }
     case 'V': {
 #if CONFIG_C5VRX5_EXPERIMENT_U85_CVT
         manual_auto_off();

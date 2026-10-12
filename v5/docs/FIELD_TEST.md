@@ -195,8 +195,10 @@ repeatable conducted attenuation A/B plus matched outdoor A/B.
 Bench-verify RF offset in both directions and actual BW/passband/ENBW, wide
 VTX sync-tip/white margins, CVBS levels/loading, and per-gain DC validity after
 filter/profile changes (`dco_same_context` currently ignores filter/BW fields).
-No intrusive DC search, sampling slip, lane switch or tracker replacement is
-permitted as an automatic in-flight correction (the bounded startup phase
-may slip RX once more after the status screen, before flight). There are no physical measurements
+No intrusive DC search, sampling slip or lane switch is permitted as an
+automatic in-flight correction (the bounded startup phase may slip RX once
+more after the status screen, before flight). The only in-flight tracker
+replacement is the optional live profile switch (`A`, default on): set it
+OFF for an A/B that must keep one profile. There are no physical measurements
 attached to this diagnostic fix; the underlying RF/FM/DSP/output cause remains
 unresolved until those captures exist.

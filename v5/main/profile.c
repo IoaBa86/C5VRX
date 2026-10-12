@@ -8,10 +8,10 @@
  *   deviation 1.7:  16 MHz + kp 0.85, 0.4 dB better and +2 dB SINAD at 8 dB;
  *   deviation 2.0:  16 MHz + kp 0.85, 2.8 dB better (data/wide.txt).
  * The narrow profiles hurt a wide VTX badly, so a profile is only taken
- * from a clear measurement, kept per channel in NVS, and chosen before live
- * TX starts. It never changes under live video: a different profile is
- * applied only while the menu or a status screen owns TX. Anything
- * uncertain keeps DEFAULT.
+ * from a clear measurement, kept per channel in NVS. At startup it is
+ * applied behind a status screen; in flight only by the optional live
+ * switch below (asymmetric, guarded restart). Anything uncertain keeps
+ * DEFAULT.
  *
  * A stored deviation is not a VTX identity: another VTX on the same
  * channel can be much wider. So every boot and every channel change starts
@@ -23,9 +23,13 @@
  * cycle every 30 s (continuous VTX matching, profile_logic.h). Each result
  * updates the session deviation (the kp ladder's class) and is kept as
  * PENDING for the next boot or CALIBRATE; agreement and mismatch streaks are
- * reported. A VTX that reads wide while a matched profile is active is
- * reported loudly; the receiver returns to DEFAULT at the next boot,
- * channel change or CALIBRATE, never by itself in flight.
+ * reported. With the live switch on (NVS prof_live, default, console A) a
+ * reliable result changes the active profile in flight: widening after one
+ * decision, narrowing after two agreeing decisions (profile_logic.h), via
+ * a filter relock plus the guarded, verified tracker restart (a few ms).
+ * In report-only mode a VTX that reads wide while a matched profile is
+ * active is reported loudly and DEFAULT returns at the next boot, channel
+ * change or CALIBRATE.
  *
  * Deviation: the AFC measures the sync tip and the burst-free porch of
  * burst-confirmed lines; their distance is deviation x 1.914 MHz (40 of 140
@@ -58,6 +62,9 @@ static volatile int s_live_dev = -1;          /* this channel session, -1 = none
 static volatile size_t s_live_channel = (size_t)-1;
 static volatile uint32_t s_observed, s_gated, s_gated_cn;
 static dev_monitor_t s_mon;                   /* continuous matching (live only) */
+static bool s_live_switch = true;             /* NVS prof_live: in-flight switch allowed */
+static int s_switch_pending = -1;             /* profile a live switch waits for, -1 none */
+static uint32_t s_live_switches, s_live_switch_fail;
 
 const char *profile_name(int p) { return p >= 0 && p < PROFILES ? s_names[p] : "?"; }
 int profile_active(void) { return s_profile; }
@@ -100,8 +107,19 @@ bool profile_set(int p)
     return true;
 }
 
+bool profile_live_mode(void) { return s_live_switch; }
+void profile_set_live_mode(bool on)
+{
+    uint8_t v = on;
+    s_live_switch = on;
+    if (!on) s_switch_pending = -1;
+    (void)blob_store("prof_live", &v, 1);
+}
+
 void profile_load(void)
 {
+    uint8_t live;
+    if (blob_load("prof_live", &live, 1) && live <= 1u) s_live_switch = live != 0;
     if (!blob_load("vtxdev", s_dev_table, sizeof(s_dev_table))) memset(s_dev_table, 0, sizeof(s_dev_table));
 }
 
@@ -123,6 +141,7 @@ void profile_channel_changed(void)
     s_measuring = MEASURE_OFF;
     s_live_dev = -1;
     s_live_channel = (size_t)-1;
+    s_switch_pending = -1;
     s_reason = "channel_changed";
     if (s_profile == PROFILE_DEFAULT) { profile_live_begin(); return; }
     if (s_menu_active) { (void)profile_set(PROFILE_DEFAULT); }
@@ -158,6 +177,42 @@ void profile_live_begin(void)
     s_measuring = MEASURE_LIVE;
 }
 
+/* In-flight profile switch, control task only (the only restart caller).
+ * Nothing changes unless the shared restart guard is ready, so the filter
+ * relock and the tracker restart happen together or not at all. */
+static void live_apply(void)
+{
+    const int p = s_switch_pending;
+    if (p < 0 || p == s_profile) { s_switch_pending = -1; return; }
+    if (s_menu_active || calibration_in_startup() || transport_faulted() || transport_cvt()) return;
+    if (transport_switch_wait_ms()) return;                  /* retry after the cooldown */
+    rf_filter_t f;
+    const int cls = p == PROFILE_DEFAULT ? FILTER_NORMAL : p == PROFILE_WIDE ? FILTER_WIDE : FILTER_NARROW;
+    if (!filter_setting(cls, &f)) { s_switch_pending = -1; ++s_live_switch_fail; return; }
+    const rf_filter_t before = rf_filter();
+    const int tracker = p == PROFILE_KP050 ? TRACKER_KP050 : p == PROFILE_KP060 ? TRACKER_KP060 : TRACKER_KP085;
+    s_switch_pending = -1;
+    if (!rf_filter_equal(before, f) && !rf_set_filter(f)) {
+        (void)rf_set_filter(before);
+        ++s_live_switch_fail;
+        printf("PROFILE live switch to %s refused: filter code=%d skirt=%u did not read back\n", s_names[p],
+               f.code, f.skirt);
+        return;
+    }
+    if (!transport_switch_tracker(tracker)) {
+        (void)rf_set_filter(before);
+        ++s_live_switch_fail;
+        printf("PROFILE live switch to %s failed: tracker restart (see T recovery); filter restored\n", s_names[p]);
+        return;
+    }
+    const int old = s_profile;
+    s_profile = p;
+    s_reason = "live_switch";
+    ++s_live_switches;
+    printf("PROFILE live switch %s -> %s deviation_x100=%d (filter relock + verified restart)\n", s_names[old],
+           s_names[p], s_live_dev);
+}
+
 static void live_decided(int dev_x100, int64_t now)
 {
     size_t ch = rf_channel_index();
@@ -170,12 +225,16 @@ static void live_decided(int dev_x100, int64_t now)
         if (blob_store("vtxdev", s_dev_table, sizeof(s_dev_table))) s_mon.stored_us = now;
     }
     dev_monitor_decided(&s_mon, dev_x100, want, s_profile, now);
-    const char *what = want == s_profile ? "confirms" :
-                       s_profile != PROFILE_DEFAULT && want == PROFILE_DEFAULT ? "WARNING too wide for" :
+    const bool switch_now = profile_live_switch_wanted(s_live_switch, want, s_profile, s_mon.agree_streak);
+    const char *what = want == s_profile ? "confirms" : switch_now ? "switching from" :
+                       s_live_switch ? "awaits a second agreeing result; active stays" :
+                       profile_width_rank(want) > profile_width_rank(s_profile) ? "WARNING too narrow:" :
                        "pending for the next boot/CALIBRATE; active stays";
-    printf("PROFILE live n=%u channel=%s deviation_x100=%d want=%s %s %s agree=%u mismatch=%u (report only, "
-           "never switched in flight)\n", s_mon.decisions, rf_channel()->name, dev_x100, s_names[want], what,
-           s_names[s_profile], s_mon.agree_streak, s_mon.mismatch_streak);
+    printf("PROFILE live n=%u channel=%s deviation_x100=%d want=%s %s %s agree=%u mismatch=%u mode=%s\n",
+           s_mon.decisions, rf_channel()->name, dev_x100, s_names[want], what, s_names[s_profile],
+           s_mon.agree_streak, s_mon.mismatch_streak, s_live_switch ? "live_switch" : "report_only");
+    s_switch_pending = switch_now ? want : -1;
+    live_apply();
 }
 
 /* One burst-confirmed AFC window; gates on a usable, centred carrier. */
@@ -186,6 +245,7 @@ void profile_observe(const afc2_result_t *r)
     const int64_t now = esp_timer_get_time();
     if (mode == MEASURE_LIVE) {
         if (s_live_channel != rf_channel_index()) return;
+        if (s_switch_pending >= 0) live_apply();                 /* waiting for the restart cooldown */
         if (dev_monitor_tick(&s_mon, now)) dev_reset(&s_dev);   /* new cycle, or a timed-out one */
         if (!s_mon.collecting) return;
     }
@@ -256,10 +316,13 @@ void profile_print(void)
     if (s_measuring == MEASURE_LIVE) {
         const int64_t now = esp_timer_get_time();
         printf("PROFILE monitor period_s=30 collecting=%u next_in_s=%lld decisions=%u timeouts=%u last_x100=%d "
-               "last_age_s=%lld agree=%u mismatch=%u min_cn_db=%d (report only)\n", s_mon.collecting,
+               "last_age_s=%lld agree=%u mismatch=%u min_cn_db=%d mode=%s pending=%s switches=%lu switch_fail=%lu\n",
+               s_mon.collecting,
                s_mon.collecting || s_mon.next_start_us <= now ? 0LL : (s_mon.next_start_us - now) / 1000000,
                s_mon.decisions, s_mon.timeouts, s_mon.last_x100,
                s_mon.decisions ? (now - s_mon.last_us) / 1000000 : -1LL, s_mon.agree_streak, s_mon.mismatch_streak,
-               DEV_MONITOR_MIN_CN_X10 / 10);
+               DEV_MONITOR_MIN_CN_X10 / 10, s_live_switch ? "live_switch" : "report_only",
+               s_switch_pending >= 0 ? s_names[s_switch_pending] : "none", (unsigned long)s_live_switches,
+               (unsigned long)s_live_switch_fail);
     }
 }

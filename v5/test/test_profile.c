@@ -167,6 +167,58 @@ int main(void)
               first_wide >= 0 && first_wide - 300000000LL <= 60000000LL + 15000000LL && mixed == 0u, detail);
         check("live 10 min: mismatch streak counts the wide reports", m.mismatch_streak >= 8u, detail);
     }
+    /* Live profile switch: widen at once, narrow after two agreeing results. */
+    check("live switch: report-only never switches",
+          !profile_live_switch_wanted(false, PROFILE_DEFAULT, PROFILE_KP050, 5u), "");
+    check("live switch: narrow -> DEFAULT on the first result",
+          profile_live_switch_wanted(true, PROFILE_DEFAULT, PROFILE_KP050, 1u), "");
+    check("live switch: DEFAULT -> WIDE on the first result",
+          profile_live_switch_wanted(true, PROFILE_WIDE, PROFILE_DEFAULT, 1u), "");
+    check("live switch: kp0.6 -> kp0.5 waits for agreement",
+          !profile_live_switch_wanted(true, PROFILE_KP050, PROFILE_KP060, 1u) &&
+          profile_live_switch_wanted(true, PROFILE_KP050, PROFILE_KP060, 2u), "");
+    check("live switch: WIDE -> DEFAULT waits for agreement",
+          !profile_live_switch_wanted(true, PROFILE_DEFAULT, PROFILE_WIDE, 1u) &&
+          profile_live_switch_wanted(true, PROFILE_DEFAULT, PROFILE_WIDE, 2u), "");
+    check("live switch: same or invalid profile never",
+          !profile_live_switch_wanted(true, PROFILE_DEFAULT, PROFILE_DEFAULT, 9u) &&
+          !profile_live_switch_wanted(true, -1, PROFILE_DEFAULT, 9u), "");
+    /* The 10-minute run again with the switch applied: a VTX that widens
+     * from 0.69 to 1.70 leaves the narrow profile on the first wide result,
+     * and a clean narrow VTX is entered only after two agreeing results. */
+    {
+        dev_monitor_t m;
+        dev_estimator_t e;
+        dev_monitor_reset(&m, 0);
+        dev_reset(&e);
+        int active = PROFILE_DEFAULT;
+        unsigned switches = 0, narrow_entries = 0;
+        int64_t narrow_at = -1, left_at = -1;
+        for (int64_t t = 0; t < 600000000LL; t += 50000) {
+            if (dev_monitor_tick(&m, t)) dev_reset(&e);
+            if (!m.collecting || uniform() > 0.6) continue;
+            const double dev = t < 300000000LL ? 0.69 : 1.7;
+            double span = dev * DEV_SYNC_KHZ * (1.0 + 0.05 * gauss());
+            if (uniform() < 0.05) span = 300.0 + 3500.0 * uniform();
+            int r = dev_add(&e, (int32_t)span);
+            if (r < 0) continue;
+            int want = profile_class(r, true, true);
+            dev_monitor_decided(&m, r, want, active, t);
+            if (profile_live_switch_wanted(true, want, active, m.agree_streak)) {
+                if (profile_width_rank(want) < profile_width_rank(active)) { ++narrow_entries; if (narrow_at < 0) narrow_at = t; }
+                else if (left_at < 0 && t >= 300000000LL) left_at = t;
+                active = want;
+                ++switches;
+            }
+        }
+        snprintf(detail, sizeof(detail), "switches=%u narrow_at_s=%.1f left_narrow_at_s=%.1f", switches,
+                 narrow_at / 1e6, left_at / 1e6);
+        check("live switch run: narrow entered once, after the second result",
+              narrow_entries == 1u && narrow_at >= 30000000LL, detail);
+        check("live switch run: wide VTX leaves the narrow profile within one cycle",
+              left_at >= 0 && left_at - 300000000LL <= 30000000LL + 15000000LL && active == PROFILE_WIDE, detail);
+        check("live switch run: no flapping", switches == 2u, detail);
+    }
     printf("%s (%d failures)\n", s_fail ? "FAILED" : "PASSED", s_fail);
     return s_fail != 0;
 }

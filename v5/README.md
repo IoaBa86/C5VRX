@@ -32,9 +32,13 @@ research is not a demonstrated video or range improvement.
   then measures the deviation passively every 30 s on live video (burst-
   confirmed sync, AFC lock, C/N >= 8 dB, no clipping, held gain). Each
   result is logged (`PROFILE live`), shown in `T` with agree/mismatch
-  streaks, feeds the kp ladder's deviation class and is kept as pending for
-  the next boot or CALIBRATE. The active profile is never switched in
-  flight (report only).
+  streaks and feeds the kp ladder's deviation class. With the **live
+  switch** on (default, console `A`, NVS `prof_live`) a reliable result
+  changes the profile in flight: wider (narrow -> DEFAULT -> WIDE) after one
+  result, narrower only after two agreeing results, each through a filter
+  relock plus the verified tracker restart (a few ms, shared 5 s cooldown;
+  board test pending). `A` off = report only: the result waits as pending
+  for the next boot or CALIBRATE.
 - **Field diagnostics** (serial `D`, `R`): what is really active, and why
   each dropout happened as far as the receiver can tell
   ([docs/FIELD_TEST.md](docs/FIELD_TEST.md)).

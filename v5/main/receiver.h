@@ -61,6 +61,8 @@ void transport_resume_live(void);
 void transport_start_chain(dma_descriptor_t *first);
 enum { TRACKER_KP085, TRACKER_KP060, TRACKER_KP050, TRACKER_CVT };
 bool transport_set_tracker(int tracker);
+bool transport_switch_tracker(int tracker);   /* live: guarded verified restart */
+uint32_t transport_switch_wait_ms(void);
 int transport_tracker(void);
 bool transport_kp_set(int level);          /* verified kp ladder level (kp_tables.h) */
 int transport_kp_level(void);
@@ -77,7 +79,6 @@ unsigned transport_output(void);
 const char *transport_output_name(void);
 bool transport_set_output(unsigned level);
 bool transport_apply_auto(int level, bool lp);
-uint32_t transport_switch_wait_ms(void);
 void transport_stop_chain(void);
 void transport_poll_faults(void);
 uint32_t transport_fault_count(void);
@@ -186,6 +187,8 @@ void profile_live_begin(void);
 const char *profile_reason(void);
 void profile_set_reason(const char *reason);
 void profile_print(void);
+bool profile_live_mode(void);              /* live profile switch on (NVS prof_live) */
+void profile_set_live_mode(bool on);
 
 /* ---- diag.c: passive field diagnostics (diag_logic.h) ---- */
 void diag_window(bool measured, bool video_valid, bool afc_step);   /* control task, every window */

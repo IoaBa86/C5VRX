@@ -619,6 +619,31 @@ bool transport_set_tracker(int tracker)
 
 int transport_tracker(void) { return s_tracker; }
 
+/* Live tracker change for an in-flight profile switch (profile.c, optional
+ * live mode): the same guarded, verified stop/load/reset/start restart as
+ * P/k, sharing the five-second cooldown, with one checked rollback. The
+ * U85Q tracker restarts at kp 0.85 without LP; AUTO steps on from there. */
+bool transport_switch_tracker(int tracker)
+{
+    if (tracker != TRACKER_KP085 && tracker != TRACKER_KP060 && tracker != TRACKER_KP050) return false;
+    if (s_transport_fault) return false;
+    if (tracker == s_tracker) return true;
+    if (s_menu_active || !s_started) return transport_set_tracker(tracker);
+    int64_t began = esp_timer_get_time();
+    if (!kp_switch_ready(&s_switch_guard, began)) return false;
+    s_tracker = tracker;
+    s_prog_lp = false;
+    if (tracker == TRACKER_KP085) s_kp_target = 0;
+    bool ok = resume_live(tracker == TRACKER_KP085 ? kp_tables[0] : NULL);
+    if (!ok && s_have_verified) { s_tracker = s_verified_tracker; s_prog_lp = s_verified_lp; }
+    if (ok) ++s_prog_switches; else ++s_prog_restart_fail;
+    int64_t finished = esp_timer_get_time();
+    kp_switch_mark(&s_switch_guard, finished);
+    s_prog_restart_us = (uint32_t)(finished - began);
+    ++s_control_epoch;
+    return ok;
+}
+
 /* Live -> menu: the raster takes TX, but RX keeps collecting IQ for filter,
  * DC and profile calibration. Full recovery quiesce stops RX as well. */
 void transport_stop_tx(void)

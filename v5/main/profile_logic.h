@@ -170,3 +170,27 @@ static inline bool dev_monitor_should_store(int stored_x100, int dev_x100, bool 
     if (class_changed) return true;
     return abs(dev_x100 - stored_x100) >= DEV_STORE_DELTA_X100 && now_us - stored_us >= DEV_STORE_GAP_US;
 }
+
+/* ---- Live profile switch (asymmetric) -----------------------------------
+ * Optional, NVS "prof_live" (default on, console A): a reliable continuous
+ * result may change the active profile in flight through the verified
+ * pipeline restart plus a filter relock (a few ms, like an AFC step).
+ * A narrow filter on a wide VTX clips its FM spectrum and costs the most,
+ * so widening follows one reliable decision; narrowing (a gain of ~1.7-3.2
+ * dB range limit, simulation) needs DEV_NARROW_AGREE consecutive agreeing
+ * decisions, i.e. at least one 30 s cycle more. Report-only mode keeps the
+ * old behaviour (PENDING for the next boot). */
+#define DEV_NARROW_AGREE 2u
+
+/* Filter width order of the profiles: KP050 < KP060 < DEFAULT < WIDE. */
+static inline int profile_width_rank(int p)
+{
+    return p == PROFILE_KP050 ? 0 : p == PROFILE_KP060 ? 1 : p == PROFILE_WIDE ? 3 : 2;
+}
+
+static inline bool profile_live_switch_wanted(bool enabled, int want, int active, unsigned agree_streak)
+{
+    if (!enabled || want < 0 || want >= PROFILES || want == active) return false;
+    if (profile_width_rank(want) > profile_width_rank(active)) return true;   /* widen at once */
+    return agree_streak >= DEV_NARROW_AGREE;
+}

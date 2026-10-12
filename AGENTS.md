@@ -374,7 +374,8 @@ deviation <= 1.05; 10 MHz + kp 0.5 for <= 0.80; 16 MHz + kp 0.85 for
 >= 1.60), chosen from three
 consistent deviation batches (highest batch median; host test
 `v5/test/test_profile.c`: no wide VTX >= 1.15 enters a narrow profile),
-applied only while the menu/status screen owns TX. A stored deviation is
+applied while the menu/status screen owns TX at startup (in flight only
+by the optional live switch below). A stored deviation is
 not a VTX identity: every boot and channel change starts DEFAULT; a matched
 profile needs a fresh measurement in the bounded startup phase (waits up to
 20 s for a VTX switched on after a VTX-off calibration). Afterwards
@@ -384,8 +385,14 @@ video, gated on burst-confirmed sync, AFC lock, C/N >= 8 dB (a weak carrier
 reads the deviation narrow), no clipping and held gain; a cycle that cannot
 decide within 120 s restarts. Each result updates the session deviation
 (kp ladder class), is logged with agree/mismatch streaks and kept as PENDING
-(NVS only on a class change or >= 0.03 change, at most every 5 min);
-nothing switches in flight (operator decision 2026-10-12: report only). Filter writes are read back (requested vs
+(NVS only on a class change or >= 0.03 change, at most every 5 min).
+Live profile switch (operator decision 2026-10-12, NVS `prof_live` default
+on, console `A`; off = report only): widen (narrow -> DEFAULT -> WIDE)
+after one reliable result, narrow only after two agreeing results
+(`profile_live_switch_wanted`), via a filter relock plus
+`transport_switch_tracker` (verified restart, shared 5 s guard, filter
+restored on failure); never during startup, menu, CVT or a latched fault.
+Host-tested; in-flight board test pending. Filter writes are read back (requested vs
 applied); a sweep is stored only after an exact channel/offset restore, a
 read-back best setting, nonzero noise bandwidth and a successful NVS write.
 Passive FIELD_DIAG (`v5/main/diag.c`, `diag_logic.h`, host test
