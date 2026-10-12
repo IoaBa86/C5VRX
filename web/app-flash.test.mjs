@@ -171,3 +171,18 @@ test('menu buttons are disabled while the receiver is busy, diagnostics stay usa
   vm.runInContext("appendSerial('HB t_s=6 stage=ready gain=40 menu=0 startup=0 busy=0\\n');", h.context);
   assert.equal(key('c').disabled, false);
 });
+
+test('controls stay locked until the post-flash disconnect completes', async () => {
+  const h = harness('alpha');
+  let release;
+  vm.runInContext('transport = { disconnect: () => new Promise(r => { globalThis.releaseDisconnect = r; }) };', h.context);
+  const done = h.click();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(vm.runInContext('isFlashing', h.context), true);
+  assert.equal(h.get('btnTerminalConnect').disabled, true);
+  release = vm.runInContext('releaseDisconnect', h.context);
+  release();
+  await done;
+  assert.equal(vm.runInContext('isFlashing || isConnected', h.context), false);
+  assert.equal(h.get('btnTerminalConnect').disabled, false);
+});

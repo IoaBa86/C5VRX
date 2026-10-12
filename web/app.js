@@ -412,7 +412,6 @@ btnFlash.addEventListener('click', async () => {
   progressContainer.hidden = false;
   setProgress(0, 'Preparing firmware images…');
 
-  let flashed = false;
   try {
     let fileArray;
     if (activeSource === 'local') {
@@ -447,9 +446,11 @@ btnFlash.addEventListener('click', async () => {
     } catch {
       // The reset pulse can close the USB-CDC port.
     }
-    flashed = true;
     progressStatusText.textContent = 'Done. Open Terminal to watch the receiver boot.';
     log('Flashing completed.');
+    // The ROM loader is gone after the reset: release the port for the
+    // terminal while the controls are still locked.
+    await disconnectDevice('Flashed · the receiver is restarting');
   } catch (err) {
     log(`Flashing failed: ${err.message || err}`, 'error');
     alert(`Flashing error: ${err.message || err}`);
@@ -459,8 +460,6 @@ btnFlash.addEventListener('click', async () => {
     syncDeviceControls();
     updateFlashButtonState();
   }
-  // The ROM loader is gone after the reset: release the port for the terminal.
-  if (flashed) await disconnectDevice('Flashed · the receiver is restarting');
 });
 
 async function fetchReleaseAsset(asset) {
