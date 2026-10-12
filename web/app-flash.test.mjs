@@ -29,8 +29,8 @@ function harness(sourceName, packageType = 'merged', confirmed = true) {
     mockLoader: { writeFlash: async options => flashes.push(options), after: async () => {} }
   });
   vm.runInContext(source, context);
-  for (const id of ['selectRelease', 'selectPrBuild', 'selectAlphaBuild']) get(id).value = '0';
-  for (const id of ['selectPackageType', 'selectPrPackageType', 'selectAlphaPackageType']) get(id).value = packageType;
+  for (const id of ['selectRelease', 'selectAlphaBuild']) get(id).value = '0';
+  for (const id of ['selectPackageType', 'selectAlphaPackageType']) get(id).value = packageType;
   vm.runInContext(`
     activeSource = ${JSON.stringify(sourceName)};
     isConnected = true; esploader = mockLoader;
@@ -40,12 +40,12 @@ function harness(sourceName, packageType = 'merged', confirmed = true) {
       { name: 'c5vrx5.bin', local_url: 'firmware/alpha/c5vrx5.bin', size: 4 },
       { name: 'c5vrx5_merged.bin', local_url: 'firmware/alpha/c5vrx5_merged.bin', size: 4 }
     ] };
-    githubReleases = [rel]; githubPrBuilds = [rel]; githubAlphaBuilds = [rel];
+    githubReleases = [rel]; githubAlphaBuilds = [rel];
   `, context);
   return { get, context, downloads, flashes, alerts, click: () => get('btnFlash').handlers.click() };
 }
 
-for (const remote of ['github', 'pr', 'alpha']) {
+for (const remote of ['github', 'alpha']) {
   test(`${remote} Full firmware downloads the merged binary at 0x0`, async () => {
     const h = harness(remote);
     await h.click();
