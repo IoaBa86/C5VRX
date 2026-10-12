@@ -76,6 +76,43 @@ XIAO ESP32-C5. DAC on D4..D9 (GPIO 23, 24, 11, 12, 8, 9; LSB first) with
 ([schematic](docs/hardware/c5vrx-dac-schematic.png)). The
 receiver uses the ESP32-C5's own Wi-Fi radio; no extra RF parts.
 
+### Wiring the resistor DAC
+
+Six resistors, one per XIAO pin, all joined on one node: that node is the
+video output (CVBS). A seventh resistor from that node to GND is the load.
+
+| XIAO pin | GPIO | DAC bit | resistor to the output node |
+| --- | ---: | --- | ---: |
+| D4 | 23 | bit 0 (LSB) | 8.2 kΩ |
+| D5 | 24 | bit 1 | 3.9 kΩ |
+| D6 | 11 | bit 2 | 2.0 kΩ |
+| D7 | 12 | bit 3 | 1.0 kΩ |
+| D8 | 8 | bit 4 | 470 Ω |
+| D9 | 9 | bit 5 (MSB) | 240 Ω |
+| GND | - | load | 200 Ω (output node to GND) |
+
+```
+D4 --[8.2k]--+
+D5 --[3.9k]--+
+D6 --[2.0k]--+
+D7 --[1.0k]--+-----------> CVBS out (goggle / monitor AV-in, video)
+D8 --[470R]--+     |
+D9 --[240R]--+   [200R]   (optional: 470 pF from the node to GND,
+                   |        improvement unproven)
+GND ---------------+------> GND (goggle / monitor AV-in ground)
+```
+
+- The pin order matters: the largest resistor (8.2k) goes on D4 and the
+  smallest (240R) on D9. A swapped pair gives a scrambled, banded picture.
+- Connect the output node to the video input (centre/tip) of the goggles,
+  a DVR or an analog monitor, and the XIAO GND to its ground. A common
+  ground is required.
+- All values are standard E24; 1 % metal-film resistors are fine. Keep
+  the wires from the pins to the node short.
+- Too dark or too dim on some goggles: try OUTPUT in the menu (1.0-2.5x).
+- The XIAO is powered over USB-C or its 5 V pin as usual; the DAC needs no
+  separate supply.
+
 ## First boot
 
 1. Flash (below) and power the receiver, best with the **VTX off**, for up
@@ -129,8 +166,11 @@ Fresh settings default to AUTO kp+LP (operator decision 2026-10-12);
 an explicitly saved OFF remains OFF. Kp and program changes
 use a brief pipeline restart with a fully verified LUT; they are not seamless.
 All live changes share a **five-second minimum interval**, including manual
-P/k/j, K mode, OUTPUT and live profile changes. AUTO runs only on the U85Q
-tracker (DEFAULT/WIDE profiles); `T` marks it inactive on MATCHED. AUTO also requires the same kp/program target
+P/k/j, K mode, OUTPUT and live profile changes. AUTO runs on every
+profile: a profile sets the filter and the kp it starts from (MATCHED 0.5 /
+0.6, else 0.85), the ladder then owns kp and U85Q-LP, with its own curves on
+the narrow MATCHED filter. With AUTO OFF the profile's start kp stays.
+AUTO also requires the same kp/program target
 for **two seconds of usable measurements**. Rapid P presses are refused
 with `wait_ms`; they are not queued for delayed programme changes.
 

@@ -59,11 +59,10 @@ esp_err_t transport_start(void);
 void transport_stop_tx(void);
 void transport_resume_live(void);
 void transport_start_chain(dma_descriptor_t *first);
-enum { TRACKER_KP085, TRACKER_KP060, TRACKER_KP050 };
-bool transport_set_tracker(int tracker);
-bool transport_switch_tracker(int tracker);   /* live: guarded verified restart */
+/* One tracker topology (U85Q / U85Q-LP); a profile only picks the filter
+ * and the kp level the pipeline starts from (kp_tables.h). */
+bool transport_set_base_level(int level);     /* not live: start level, LP off */
 uint32_t transport_switch_wait_ms(void);
-int transport_tracker(void);
 bool transport_kp_set(int level);          /* verified kp ladder level (kp_tables.h) */
 int transport_kp_level(void);
 int transport_kp_target(void);
@@ -172,6 +171,7 @@ int profile_active(void);
 int profile_deviation_x100(size_t channel);
 int profile_live_deviation_x100(void);     /* measured this channel session, -1 = not yet */
 int profile_for_deviation(int dev_x100);
+int profile_base_level(int profile);       /* kp_tables.h level a profile starts from */
 bool profile_set(int profile);
 void profile_load(void);
 void profile_boot(void);

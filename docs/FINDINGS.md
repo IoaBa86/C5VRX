@@ -318,8 +318,8 @@ worst modeled lock .960; 1.0/CN4 LP kp.70 gives +1.17 dB, lock .995;
 at 1.4/1.7 CN1, the modeled 3-ms fades, or wide/DC1 at CN4. These are
 conditional noise/detail improvements, not attenuation-margin measurements
 or recognisable moving-video proof. Four new hardware programs are not
-justified by this result; the matched-topology restriction still needs
-reconciliation before any universal automatic rescue claim.
+justified by this result. The matched-topology restriction is reconciled
+since (research README section 17); no universal automatic rescue claim.
 
 The first non-oracle OUTPUT probe (`research/output_probe.c`) runs the
 production AFC/Direct Gain helpers passively. It rejects all modeled CN-10,

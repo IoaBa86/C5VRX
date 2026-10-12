@@ -9,7 +9,7 @@ Candidates, all in the existing two-bundle TX BitScrambler:
 
 Per VTX deviation and C/N: luma SINAD and goggle lock (min of ideal and
 peak-clamp AGC) for every candidate, 8 seeds (4 PAL, 4 NTSC), 12 MHz filter
-(the DEFAULT class). Then:
+(the DEFAULT class; FILTER_MHZ=10 runs the MATCHED narrow class). Then:
 - the best fixed kp for U85Q (one setting everywhere);
 - the seamless ladder envelope (best U85Q kp per C/N, lock >= 0.9 of the
   best lock at that point);
@@ -29,6 +29,7 @@ KPS = (0.85, 0.80, 0.75, 0.70, 0.65, 0.60, 0.55, 0.50)
 CNRS = [float(x) for x in os.environ.get('CNRS', '0,1,2,3,4,6,8,12,20,30').split(',')]
 DEVS = [float(x) for x in os.environ.get('DEVS', '0.69,1.0,1.4').split(',')]
 SEEDS = [int(x) for x in os.environ.get('SEEDS', '31,32,33,34,35,36,37,38').split(',')]
+FILTER_MHZ = float(os.environ.get('FILTER_MHZ', '12'))
 
 
 def job(spec):
@@ -38,7 +39,7 @@ def job(spec):
     from u85q_lp import lp_codes
     dev, cnr, seed = spec
     c = sim.make_case(10000 * seed + int(10 * cnr) + int(100 * dev), cnr, ('PAL', 'NTSC')[seed % 2], dev,
-                      filter_hz=12e6, fields=1)
+                      filter_hz=FILTER_MHZ * 1e6, fields=1)
     out = []
     for kp in KPS:
         lut = build_lut(kp)
@@ -75,7 +76,7 @@ def report(rows):
         v = [r[key] for r in rows if r['dev'] == dev and r['prog'] == prog and r['kp'] == kp and r['cnr'] == cnr]
         return float(np.mean(v))
     for dev in DEVS:
-        print(f'\n=== deviation {dev} (12 MHz) ===')
+        print(f'\n=== deviation {dev} ({FILTER_MHZ:g} MHz) ===')
         print('prog  kp    limit_dB  ' + '  '.join(f'C/N{c:g}' for c in CNRS))
         lims = {}
         for prog in ('U85Q', 'LP'):

@@ -16,12 +16,12 @@ the board, so **kp changes also use a pipeline restart**, with the same five
 second backend guard as LP/OUTPUT. Phase-token compatibility of tables is
 an arithmetic property, not proof that a live RAM rewrite is safe.
 
-The MATCHED kp0.5/0.6 program restriction is real. AUTO currently operates
-only on the default/WIDE U85Q topology; MATCHED profiles remain fixed. A
-future reconciliation can preserve a matched filter and start the generic
-U85Q/LP instruction geometry with the appropriate ladder LUT, but must test
-against that best fixed profile and verify the complete transition/output
-state on hardware. It is not part of this follow-up and not silently enabled.
+Update (2026-10-12): the MATCHED restriction is reconciled. The kp0.5/0.6
+programs have the U85Q instructions with ladder LUT levels 7/5, so a
+MATCHED profile now keeps its narrow filter and starts the generic U85Q/LP
+geometry at that level; AUTO then runs with narrow-filter curves
+(research README section 17). Tested against the best fixed profile in
+simulation only; the transition/output state still needs the bench gate.
 
 Current evidence:
 

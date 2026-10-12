@@ -10,7 +10,10 @@
  *
  * Profiles: DEFAULT (normal >= 12 MHz class, kp 0.85), KP060 / KP050
  * (narrow >= 10 MHz class, calmer tracker) for low deviations, WIDE (wide
- * >= 16 MHz class, kp 0.85) for deviations >= 1.6. */
+ * >= 16 MHz class, kp 0.85) for deviations >= 1.6. A profile sets the
+ * filter and the kp level it starts from; with AUTO the kp/LP ladder then
+ * owns kp and U85Q-LP on every profile (the KP060/KP050 LUTs are ladder
+ * levels of the same program). */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -94,6 +97,15 @@ static inline int profile_class(int dev_x100, bool narrow_filter_known, bool wid
     if (!narrow_filter_known) return PROFILE_DEFAULT;
     return dev_x100 <= DEV_KP050_MAX ? PROFILE_KP050 : dev_x100 <= DEV_KP060_MAX ? PROFILE_KP060 : PROFILE_DEFAULT;
 }
+
+/* kp (x100) a profile starts from, and the fixed kp with the ladder OFF. */
+static inline int profile_base_kp_x100(int p)
+{
+    return p == PROFILE_KP050 ? 50 : p == PROFILE_KP060 ? 60 : 85;
+}
+
+/* Its kp_tables.h level (0 = kp 0.85, 0.05 per level). */
+static inline int profile_base_level_for(int p) { return (85 - profile_base_kp_x100(p)) / 5; }
 
 /* ---- Continuous VTX matching: measure and report only -------------------
  * After startup, a passive measurement cycle starts every 30 s on live video

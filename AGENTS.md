@@ -397,7 +397,7 @@ Live profile switch (operator decision 2026-10-12, NVS `prof_live` default
 on, console `A`; off = report only): widen (narrow -> DEFAULT -> WIDE)
 after one reliable result, narrow only after two agreeing results
 (`profile_live_switch_wanted`), via a filter relock plus
-`transport_switch_tracker` (verified restart, shared 5 s guard, filter
+`transport_apply_auto` to the profile start level (verified restart, shared 5 s guard, filter
 restored on failure); never during startup, menu or a latched fault.
 Host-tested; in-flight board test pending. Filter writes are read back (requested vs
 applied); a sweep is stored only after an exact channel/offset restore, a
@@ -528,7 +528,17 @@ bits, and the counter operand shares output[25:16] with the LUT address.
 Verified kp ladder (`main/kp_ladder.h`, `kp_tables.h`, `transport_kp_tick`,
 `research/kp_morph.py`, README section 13; fresh settings default to
 AUTO kp+LP, a saved OFF is respected; `K` cycles OFF/AUTO kp/AUTO kp+LP,
-`k`/`j`/`P` are manual and save OFF; active only on the U85Q tracker):
+`k`/`j`/`P` are manual and save OFF; active on every profile):
+- One tracker topology (2026-10-12, extends PR #196): `u85q_kp060/kp050.bsasm`
+  have the U85Q instructions and their LUTs are `kp_tables.h` levels 5/7
+  bit-exactly, so MATCHED is a narrow filter plus a start level and the
+  ladder (with LP) also runs there; the two programs are no longer built.
+  Narrow-filter curves come from `research/best_combo.py` FILTER_MHZ=10
+  (`data/best_combo_10mhz.json`): range limit 0.59 vs 1.62 dB (deviation
+  0.69) and 0.59 vs 1.10 dB (1.0) against the fixed MATCHED tracker.
+  Simulation only; board test pending. The filter sweep adds codes 52/62/63
+  (blob v4): the board's narrow class sat on the old grid end (code 60,
+  11.9 MHz noise bandwidth, not the modelled 10 MHz).
 - Original entry-by-entry RUN writes and a PAUSE-only experiment both failed
   LUT verification on the physical C5 (2026-10-12). Do not restore them from
   host models. CPU addressing follows LUT width too (ESP32-C5 TRM): keep
