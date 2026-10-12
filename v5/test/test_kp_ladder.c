@@ -48,43 +48,54 @@ int main(void)
 
     kp_ladder_t l;
     int64_t t = 0;
-    /* Strong carrier: stays sharp. */
+    /* Curves (best_combo.py): kp at a C/N per deviation class. */
+    check("deviation 1.0, 20 dB C/N: kp 0.75", kp_level_x100[kp_ladder_target(200, 100)] == 75);
+    check("deviation 1.0, 4..8 dB C/N: kp 0.55", kp_level_x100[kp_ladder_target(40, 100)] == 55 &&
+                                              kp_level_x100[kp_ladder_target(80, 100)] == 55);
+    check("deviation 1.0 near the floor: back to kp 0.75 (lock)", kp_level_x100[kp_ladder_target(0, 100)] == 75);
+    check("deviation 0.69, 8 dB C/N: kp 0.50", kp_level_x100[kp_ladder_target(80, 69)] == 50);
+    check("wide VTX, any C/N: never below kp 0.80", kp_level_x100[kp_ladder_target(40, 140)] == 80 &&
+                                                 kp_level_x100[kp_ladder_target(0, 140)] == 85);
+    check("unknown deviation = wide row", kp_ladder_target(40, -1) == kp_ladder_target(40, 140));
+    int deepest = 0;
+    for (int dev = 0; dev <= 300; dev += 5)
+        for (int cn = -50; cn <= 300; cn += 5) {
+            int lv = kp_ladder_target(cn, dev);
+            if (kp_ladder_class(dev) == KP_CLASS_WIDE && lv > deepest) deepest = lv;
+        }
+    check("wide row never goes deeper than kp 0.80", kp_level_x100[deepest] >= 80);
+    /* Strong carrier, normal VTX: one step to kp 0.80 then 0.75. */
     kp_ladder_reset(&l);
-    check("strong carrier, normal VTX: kp 0.85", run(&l, 200, 15, 100, 20, &t, NULL) == 0);
-    /* Range edge, normal VTX: walks down to kp 0.60 one level at a time. */
+    uint8_t lv = run(&l, 200, 15, 100, 20, &t, NULL);
+    check("strong carrier, deviation 1.0: settles on kp 0.75", kp_level_x100[lv] == 75);
+    /* Range edge (6 dB), normal VTX: walks down one level at a time. */
     unsigned changes = 0;
-    uint8_t lv = run(&l, 30, 15, 100, 20, &t, &changes);
-    snprintf(name, sizeof(name), "range edge, deviation 1.0: kp 0.%02u in %u single steps", kp_level_x100[lv], changes);
-    check(name, lv == 5 && changes == 5);
-    /* Back close in: returns to sharp. */
-    check("carrier strong again: back to kp 0.85", run(&l, 200, 15, 100, 20, &t, NULL) == 0);
-    /* Low-deviation VTX may go to kp 0.50; wide VTX never leaves 0.85. */
-    check("deviation 0.69 at the edge: kp 0.50", run(&l, 20, 10, 69, 20, &t, NULL) == 7);
+    lv = run(&l, 60, 10, 100, 20, &t, &changes);
+    snprintf(name, sizeof(name), "6 dB C/N, deviation 1.0: kp 0.%02u in %u single steps", kp_level_x100[lv], changes);
+    check(name, kp_level_x100[lv] == 55 && changes == 4);
+    check("carrier strong again: back to kp 0.75", kp_level_x100[run(&l, 200, 15, 100, 20, &t, NULL)] == 75);
+    check("deviation 0.69 at 6 dB: kp 0.50", kp_level_x100[run(&l, 60, 10, 69, 20, &t, NULL)] == 50);
     kp_ladder_reset(&l);
-    check("deviation 1.4 at the edge: stays kp 0.85", run(&l, 20, 10, 140, 20, &t, NULL) == 0);
-    check("deviation unknown at the edge: stays kp 0.85", run(&l, 20, 10, 0, 20, &t, NULL) == 0);
-    /* Deviation becomes unknown (channel change) while calm: back at once. */
+    check("deviation 1.4 at 6 dB: kp 0.80", kp_level_x100[run(&l, 60, 10, 140, 20, &t, NULL)] == 80);
+    /* Deviation becomes unknown (channel change) while deep: back at once. */
     kp_ladder_reset(&l);
-    (void)run(&l, 30, 0, 100, 20, &t, NULL);
-    lv = kp_ladder_update(&l, 30, true, 0, t);
-    check("deviation lost while calm: level 0 immediately", lv == 0);
-    /* No hopping: C/N noise of +-3 dB around a midpoint never moves more than
-     * one level away, and changes are rare. */
+    (void)run(&l, 60, 0, 69, 20, &t, NULL);
+    lv = kp_ladder_update(&l, 60, true, -1, t);
+    check("deviation lost while deep: kp 0.80 immediately", kp_level_x100[lv] == 80);
+    /* No hopping: C/N noise of +-3 dB around 8 dB stays within two levels. */
     kp_ladder_reset(&l);
-    (void)run(&l, 80, 0, 100, 10, &t, NULL);
-    uint8_t mid = l.level;
-    changes = 0;
-    uint8_t lo = mid, hi = mid;
+    (void)run(&l, 100, 0, 100, 10, &t, NULL);
+    uint8_t lo = l.level, hi = l.level, mid = l.level;
     for (int k = 0; k < 1200; ++k, t += TICK_US) {     /* 60 s */
-        uint8_t v = kp_ladder_update(&l, 80 + rand() % 61 - 30, true, 100, t);
+        uint8_t v = kp_ladder_update(&l, 100 + rand() % 61 - 30, true, 100, t);
         if (v < lo) lo = v;
         if (v > hi) hi = v;
     }
-    snprintf(name, sizeof(name), "C/N 8 dB +-3 dB noise for 60 s: level %u..%u around %u", lo, hi, mid);
+    snprintf(name, sizeof(name), "C/N 10 dB +-3 dB noise for 60 s: level %u..%u around %u", lo, hi, mid);
     check(name, hi - lo <= 2);
     /* Noise-like windows hold the level. */
     kp_ladder_reset(&l);
-    (void)run(&l, 30, 0, 100, 20, &t, NULL);
+    (void)run(&l, 60, 0, 100, 20, &t, NULL);
     uint8_t held = l.level;
     for (int k = 0; k < 200; ++k, t += TICK_US) (void)kp_ladder_update(&l, 999, false, 100, t);
     check("carrier gone (noise-like windows): level held", l.level == held);
@@ -93,7 +104,7 @@ int main(void)
     int64_t last = -KP_STEP_GAP_US, min_gap = 1LL << 62;
     uint8_t prev = 0;
     for (int k = 0; k < 600; ++k, t += TICK_US) {
-        uint8_t v = kp_ladder_update(&l, k < 300 ? 20 : 200, true, 69, t);
+        uint8_t v = kp_ladder_update(&l, k < 300 ? 60 : 200, true, 69, t);
         if (v != prev) { if (t - last < min_gap) min_gap = t - last; last = t; prev = v; }
     }
     check("steps at least KP_STEP_GAP_US apart", min_gap >= KP_STEP_GAP_US);

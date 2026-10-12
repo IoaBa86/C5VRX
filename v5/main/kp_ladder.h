@@ -1,18 +1,18 @@
 /* C5VRX-5 by Twotoz and the C5VRX contributors: seamless kp ladder policy.
  *
  * The U85Q tracker loop gain kp sets the video bandwidth: a calmer tracker
- * (lower kp) extends the FM threshold at the range edge and costs sharpness
- * on a strong carrier (v5/research README sections 2 and 13). The ladder
- * picks a level (kp_tables.h) from the C/N estimate: sharp close in, calmer
- * far out. transport.c moves the live LUT to that level entry by entry, so
- * nothing stops or resyncs.
+ * (lower kp) extends the FM threshold at the range edge; on a strong carrier
+ * kp 0.75-0.80 is slightly better than 0.85 too (v5/research README section
+ * 14). The ladder picks a level (kp_tables.h) from the C/N estimate and the
+ * deviation class measured this session; transport.c moves the live LUT to
+ * that level entry by entry, so nothing stops or resyncs.
  *
- * - A lower kp only for a VTX whose deviation was measured this session:
- *   a calm tracker on a wide VTX loses the picture (matched.txt). Unknown or
- *   wide deviation keeps level 0 (kp 0.85, the plain U85Q).
+ * - The deep levels only for a VTX whose deviation was measured this
+ *   session: a calm tracker on a wide VTX loses the picture. Unknown or wide
+ *   deviation uses the wide row (kp 0.85 near the floor, 0.80 above).
  * - One level per step, after the target has held for KP_HOLD_US, and at
- *   most one step per KP_STEP_GAP_US. The C/N band is wide (12 -> 4 dB over
- *   the levels), so estimate noise does not hop between levels.
+ *   most one step per KP_STEP_GAP_US, so estimate noise does not hop between
+ *   levels.
  * - Noise-like windows (no C/N estimate) hold the level: the carrier is gone
  *   or the window is unusable, and the next carrier is most likely as far.
  * The C/N estimate comes from the IQ window coherence, not from the tracker,
@@ -23,8 +23,6 @@
 #include <stdint.h>
 
 #define KP_LADDER_LEVELS   8           /* kp 0.85 .. 0.50 in 0.05 steps */
-#define KP_CN_SHARP_X10    120         /* >= 12 dB C/N: level 0 */
-#define KP_CN_CALM_X10     40          /* <= 4 dB C/N: the deepest allowed level */
 #define KP_HOLD_US         1000000LL   /* the target must hold this long */
 #define KP_STEP_GAP_US     500000LL    /* at least this between steps */
 
@@ -44,41 +42,70 @@ static inline void kp_ladder_reset(kp_ladder_t *l)
     l->last_step_us = 0;
 }
 
-/* Deepest level allowed for a deviation measured this session (x100, <= 0
- * unknown). From the 12 MHz rows of v5/research/data/matched.txt: kp 0.5 is
- * best at deviation 0.69, kp 0.6 at 1.0; a deviation of 1.4 keeps kp 0.85. */
-static inline uint8_t kp_ladder_max_level(int dev_x100)
+/* Best kp (x100) per VTX deviation class at C/N 0, 2, 4, 8, 12, 20 dB:
+ * v5/research/best_combo.py, 8 seeds, 12 MHz (data/best_combo.json). The
+ * best SINAD whose goggle lock stays within 0.02 of the best, kept off the
+ * deepest kp near 0-2 dB where a calm tracker loses lock first. kp 0.80
+ * beats 0.85 on a strong carrier for every deviation (+0.25..0.9 dB SINAD).
+ * Unknown deviation uses the wide row. */
+enum { KP_CLASS_LOW, KP_CLASS_NORMAL, KP_CLASS_MID, KP_CLASS_WIDE, KP_CLASSES };
+static const int16_t kp_cn_points_x10[6] = {0, 20, 40, 80, 120, 200};
+static const uint8_t kp_curve_x100[KP_CLASSES][6] = {
+    {70, 55, 50, 50, 50, 75},   /* deviation <= 0.80 */
+    {75, 60, 55, 55, 65, 75},   /* <= 1.05 */
+    {80, 70, 65, 65, 70, 80},   /* <= 1.15 (interpolated, no own run) */
+    {85, 85, 80, 80, 80, 80},   /* wider or unknown */
+};
+
+static inline int kp_ladder_class(int dev_x100)
 {
-    if (dev_x100 <= 0) return 0;
-    if (dev_x100 <= 80) return 7;      /* kp 0.50 */
-    if (dev_x100 <= 105) return 5;     /* kp 0.60 */
-    if (dev_x100 <= 115) return 3;     /* kp 0.70 */
-    return 0;
+    if (dev_x100 <= 0) return KP_CLASS_WIDE;
+    if (dev_x100 <= 80) return KP_CLASS_LOW;
+    if (dev_x100 <= 105) return KP_CLASS_NORMAL;
+    if (dev_x100 <= 115) return KP_CLASS_MID;
+    return KP_CLASS_WIDE;
 }
 
-/* Level the C/N asks for, linear between the sharp and calm points. */
-static inline uint8_t kp_ladder_target(int cn_x10, uint8_t max_level)
+/* kp (x100) the curve asks for at a C/N, linear between the points. */
+static inline int kp_ladder_curve_x100(int cls, int cn_x10)
 {
-    if (!max_level || cn_x10 >= KP_CN_SHARP_X10) return 0;
-    if (cn_x10 <= KP_CN_CALM_X10) return max_level;
-    const int span = KP_CN_SHARP_X10 - KP_CN_CALM_X10;
-    return (uint8_t)(((KP_CN_SHARP_X10 - cn_x10) * max_level + span / 2) / span);
+    const uint8_t *k = kp_curve_x100[cls];
+    if (cn_x10 <= kp_cn_points_x10[0]) return k[0];
+    for (int i = 1; i < 6; ++i)
+        if (cn_x10 <= kp_cn_points_x10[i])
+            return k[i - 1] + (k[i] - k[i - 1]) * (cn_x10 - kp_cn_points_x10[i - 1]) /
+                              (kp_cn_points_x10[i] - kp_cn_points_x10[i - 1]);
+    return k[5];
+}
+
+/* Ladder level (0 = kp 0.85, 0.05 per level) nearest to a kp. */
+static inline uint8_t kp_ladder_level_for(int kp_x100)
+{
+    int lv = (85 - kp_x100 + 2) / 5;
+    return (uint8_t)(lv < 0 ? 0 : lv >= KP_LADDER_LEVELS ? KP_LADDER_LEVELS - 1 : lv);
+}
+
+static inline uint8_t kp_ladder_target(int cn_x10, int dev_x100)
+{
+    return kp_ladder_level_for(kp_ladder_curve_x100(kp_ladder_class(dev_x100), cn_x10));
 }
 
 /* One control window. cn_valid false = noise-like or unusable window.
  * Returns the level the LUT should move to. */
 static inline uint8_t kp_ladder_update(kp_ladder_t *l, int cn_x10, bool cn_valid, int dev_x100, int64_t now_us)
 {
-    const uint8_t max_level = kp_ladder_max_level(dev_x100);
-    if (l->level > max_level) {                 /* deviation changed or unknown: back at once */
-        l->level = max_level;
+    /* Deeper than the wide row ever goes (deviation lost on a channel
+     * change, or measured wide): back to that row's deepest level at once. */
+    const uint8_t safe = kp_ladder_class(dev_x100) == KP_CLASS_WIDE ? kp_ladder_level_for(80) : KP_LADDER_LEVELS - 1;
+    if (l->level > safe) {
+        l->level = safe;
         l->pending_dir = 0;
         l->last_step_us = now_us;
         ++l->steps;
         return l->level;
     }
     if (!cn_valid) { l->pending_dir = 0; return l->level; }
-    const uint8_t target = kp_ladder_target(cn_x10, max_level);
+    const uint8_t target = kp_ladder_target(cn_x10, dev_x100);
     const int8_t dir = target > l->level ? 1 : target < l->level ? -1 : 0;
     if (dir != l->pending_dir) {
         l->pending_dir = dir;

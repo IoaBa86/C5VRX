@@ -482,8 +482,15 @@ manual):
   moves between kp 0.85 .. 0.50 entry by entry while video runs, in the
   LUT16 execution width, without `bitscrambler_load_lut` and without a TX
   restart.
-- Level from the C/N estimate (12 -> 4 dB), capped by the deviation
-  measured this session; unknown or wide deviation stays at 0.85.
+- Level from a kp curve per deviation class and C/N (`best_combo.py`,
+  README section 14, 8 seeds).
+  - kp 0.75-0.80 beats 0.85 close in for every deviation.
+  - It goes calm (0.50-0.55) at 4-12 dB and back up near the floor, where a
+    calm tracker loses lock.
+  - Unknown or wide deviation stays at 0.80-0.85.
+  - Simulated limit: +2.1 dB at deviation 0.69, +0.66 dB at 1.0, 0 dB at
+    1.4. A U85Q / U85Q-LP program switch would add about 1 dB but is not
+    seamless.
 - Evidence: the generator reproduces all U85Q LUTs bit-exactly; mid-field
   live changes in the host model stay at steady-state error and sync; the
   ladder host test passes.

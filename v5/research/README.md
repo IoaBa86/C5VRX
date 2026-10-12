@@ -384,11 +384,8 @@ Evidence:
     jumps.
 
 Firmware, off by default:
-- `K` switches the ladder to AUTO (NVS `kp_auto`). The ladder maps the
-  C/N estimate to a level: 12 dB and up gives kp 0.85, 4 dB and down gives
-  the deepest level allowed by the deviation measured this session.
-  - Allowed depth by deviation: up to 0.80 -> kp 0.50, up to 1.05 -> 0.60,
-    up to 1.15 -> 0.70; wider or unknown stays at 0.85.
+- `K` switches the ladder to AUTO (NVS `kp_auto`). The ladder follows a kp
+  curve per deviation class (section 14).
   - It takes one level per step, after 1 s of agreement, with at least
     0.5 s between steps. `test/test_kp_ladder.c` checks this, including no
     hopping under +-3 dB of estimate noise.
@@ -397,14 +394,58 @@ Firmware, off by default:
 - Active only with the U85Q program (DEFAULT/WIDE profiles). On a WIDE
   VTX it stays at kp 0.85.
 
-Expected effect at deviation 1.0 with the 12 MHz filter
-(`data/matched.txt`): the range limit goes from 2.38 to 1.68 dB at kp 0.6,
-with no loss close in (kp 0.85 there). Simulation only.
+Expected effect: see section 14. Simulation only.
 
 Bench gate before AUTO: run `k` steps under live video and watch `T`.
 `kp_verify_fail` and `tx_empty` / `bs_overload` must stay 0 and the
 picture must not flicker. Whether a CPU LUT write can collide with a
 BitScrambler read is unknown until then.
+
+## 14. The best combination (`best_combo.py`)
+
+Setup: `data/best_combo.json`, 8 seeds (4 PAL, 4 NTSC), 12 MHz filter.
+Every kp 0.85 .. 0.50 was run on U85Q and on U85Q-LP, at deviation 0.69,
+1.0 and 1.4 and C/N 0..30 dB. The range limit is the worse of usable (luma
+SINAD 0 dB) and goggle lock (90 % of lines).
+
+| deviation | U85Q kp 0.85 | best fixed kp | seamless kp curve | U85Q / LP switch |
+| --- | ---: | ---: | ---: | ---: |
+| 0.69 | 4.50 dB | 2.17 dB (0.50) | 2.38 dB | 1.15 dB |
+| 1.0 | 2.36 dB | 1.63 dB (0.55) | 1.70 dB | 0.65 dB |
+| 1.4 | 2.08 dB | 2.08 dB (0.85) | 2.09 dB | 1.63 dB |
+
+**kp 0.85 is not the best setting anywhere.**
+- Close in, kp 0.75-0.80 is better for every deviation: +0.25..0.9 dB
+  SINAD at 20 dB C/N (deviation 1.0: 12.95 vs 12.49).
+- At the edge, a calmer tracker wins.
+- Near the floor (0-2 dB), a very calm tracker loses goggle lock first:
+  deviation 1.0 with kp 0.50 keeps 0.05 of the lines at 0 dB, against 0.85
+  with kp 0.85.
+- The best kp therefore follows a curve: sharp-ish close in, calm at
+  4-12 dB, and back up near the floor.
+
+**Best seamless combination.** U85Q with the live kp curve per deviation
+class (`main/kp_ladder.h`), kp at C/N 0 / 2 / 4 / 8 / 12 / 20 dB:
+
+| class | 0 dB | 2 dB | 4 dB | 8 dB | 12 dB | 20 dB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| deviation <= 0.80 | 0.70 | 0.55 | 0.50 | 0.50 | 0.50 | 0.75 |
+| <= 1.05 | 0.75 | 0.60 | 0.55 | 0.55 | 0.65 | 0.75 |
+| <= 1.15 (interpolated) | 0.80 | 0.70 | 0.65 | 0.65 | 0.70 | 0.80 |
+| wider or unknown | 0.85 | 0.85 | 0.80 | 0.80 | 0.80 | 0.80 |
+
+- Gain over today: +2.1 dB at deviation 0.69, +0.66 dB at deviation 1.0,
+  0 dB at deviation 1.4 (+0.25 dB SINAD close in).
+- The picture is better at every distance, not traded off.
+- The mid row applied to a deviation-1.4 VTX costs 0.23 dB, so a wide VTX
+  must not be classed as mid.
+
+**Best with a program switch.** U85Q close in plus U85Q-LP at 1-6 dB
+(kp 0.50-0.85 by class) is about 1 dB better again at the edge. It needs a
+program change in flight, which is not seamless (section 12).
+
+**LP plus kp together** adds only 0.1-0.2 dB over LP alone: both are
+low-passes and they overlap.
 
 ## Not firmware levers
 
@@ -421,6 +462,7 @@ python range_study.py tracker data/tracker.json
 python range_study.py matched data/matched.json
 CNRS=0,2,4,8,12,16,20,25 python range_study.py strong data/strong.json
 python u85q_lp.py study data/lowpass.json      # U85Q vs U85Q-LP (section 12)
+python best_combo.py data/best_combo.json      # best kp / program per C/N (section 14)
 IDF_PATH=<esp-idf> python u85q_lp.py check     # emulator: U85Q and U85Q-LP bit-exact
 ```
 
