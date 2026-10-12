@@ -49,7 +49,7 @@ BITSCRAMBLER_PROGRAM(s_u85q_cvt, "u85q_cvt");
 BITSCRAMBLER_PROGRAM(s_u85q_cvt_lp, "u85q_cvt_lp");
 #endif
 static volatile int s_tracker = TRACKER_KP085;
-static bool s_started;   /* live TX running (set once at boot) */
+static bool s_started;   /* live TX running (cleared while menu/status/recovery owns TX) */
 static bool s_prog_lp;   /* LP instructions loaded (U85Q or CVT tracker only) */
 static const void *tracker_program(int t)
 {
@@ -757,7 +757,7 @@ void transport_print(void)
            s_transport_fault, s_started);
     printf("TRANSPORT rx_descriptors=%d tx_empty=%lu rx_overflow=%lu dma_faults=%lu bs_overload=%lu "
            "kp_level=%d kp_target=%d kp_writes=%lu kp_verify_fail=%lu program=%s prog_switches=%lu "
-           "switch_wait_ms=%lu kp_switches=%lu kp_restart_fail=%lu kp_restart_us=%lu prog_pause_fail=0 prog_verify_fail=%lu prog_restart_fail=%lu prog_restart_us=%lu\n",
+           "switch_wait_ms=%lu kp_switches=%lu kp_restart_fail=%lu kp_restart_us=%lu prog_verify_fail=%lu prog_restart_fail=%lu prog_restart_us=%lu\n",
            s_rx_node_count, (unsigned long)s_tx_empty, (unsigned long)s_rx_overflow,
            (unsigned long)s_dma_faults, (unsigned long)s_bs_overload, transport_kp_level(),
            transport_kp_target(), (unsigned long)s_kp_writes, (unsigned long)s_kp_verify_fail,

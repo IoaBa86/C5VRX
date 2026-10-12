@@ -5,8 +5,10 @@
  *
  * Everything that interrupts the picture runs only in the STARTUP phase of
  * a boot (or once more after a manual request from the menu / console),
- * never during live video: a receiver must not drop the picture in flight
- * because it decided to calibrate. Startup, bounded to ~2 minutes:
+ * never in flight: a receiver must not drop the picture because it decided
+ * to calibrate. The final sampling-phase qualification and the deviation
+ * step run on the live picture, but still inside this bounded phase (a
+ * repair slip there briefly disturbs it). Startup, bounded to ~2 minutes:
  *  1. sampling phase: PARLIO must not sample MODEM_DIAG mid-transition;
  *  2. narrow analog filter, only when none is stored: one sweep on the own
  *     channel (VTX off) or a quiet channel >= 40 MHz away (VTX on);

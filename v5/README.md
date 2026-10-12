@@ -20,7 +20,8 @@ research is not a demonstrated video or range improvement.
   overload handling and a learned, persisted gain map.
 - **Narrow analog filter**, measured once per board at startup: the lowest
   noise bandwidth that still passes 12 MHz (plus a 10 MHz class for
-  low-deviation VTXs; simulation-based, board test pending).
+  low-deviation VTXs and a 16 MHz class for wide ones; simulation-based,
+  board test pending).
 - **Calibration only at startup**: anything that interrupts the picture
   runs once after power-on (only what is missing) or from the menu item
   CALIBRATE, never during flight. The goggles show what it does and how long.
@@ -42,7 +43,8 @@ research is not a demonstrated video or range improvement.
   reception has no uncorrected DC.
 - **Automatic receive-chain care**: per-gain DC correction, DC drift
   tracking, sampling-phase check, AFC that centres the VTX.
-- **Simple menu**: band, channel, scan, video standard, exit.
+- **Simple menu**: band, channel, scan, video standard, calibrate, output
+  level, exit.
 
 ## Hardware
 
@@ -69,7 +71,8 @@ receiver uses the ESP32-C5's own Wi-Fi radio; no extra RF parts.
 Menu items: **BAND** (next band), **CHANNEL** (next channel), **SCAN**
 (all 48 channels, picks the strongest centred analog video), **VIDEO**
 (AUTO / NTSC / PAL for the menu picture; AUTO follows the camera),
-**CALIBRATE** (on the ground: measure again), **EXIT**.
+**CALIBRATE** (on the ground: measure again), **OUTPUT** (1.0-2.5x DAC
+level), **EXIT**.
 The menu closes by itself after 30 s without a press.
 
 ## Flashing
@@ -87,17 +90,20 @@ The menu closes by itself after 30 s without a press.
 `T` status, `D` range/health report, `R` per-second FIELD_DIAG lines on/off
 (`tools/field_diag_compare.py`), `I` IQ snapshot
 (`tools/capture_iq_snapshot.py`), `o` menu, `c` next channel, `b` next band,
-`s` scan, `F` calibrate again (as the menu item), `L` bench-only IQ lane
-comparison (video stops ~3 s), `` ` `` download mode, `h` help.
+`n`/`x` menu next/select, `s` scan, `F` calibrate again (as the menu item),
+`M` GAINMAP lines (for a gain-map preset), `J` IQLaneFusion shadow (model
+proposals only), `L` bench-only IQ lane comparison (video stops ~3 s),
+`` ` `` download mode, `h` help.
 
 `K` cycles OFF / AUTO kp / AUTO kp+LP. `k` steps kp calmer, `j` faster;
-`P` manually toggles U85Q/U85Q-LP. Both `P` and `k` persist AUTO OFF,
+`P` manually toggles U85Q/U85Q-LP. `P`, `k`, `j` (and `V`) persist AUTO OFF,
 including across reboot; repeated presses do not rewrite unchanged NVS.
 Fresh settings default to AUTO kp+LP (operator decision 2026-10-12);
 an explicitly saved OFF remains OFF. Kp and program changes
 use a brief pipeline restart with a fully verified LUT; they are not seamless.
 All live changes share a **five-second minimum interval**, including manual
-P/k and changes of K mode. AUTO also requires the same kp/program target
+P/k/j, K mode, V and OUTPUT changes. AUTO runs only on the U85Q tracker
+(DEFAULT/WIDE profiles); `T` marks it inactive on MATCHED or CVT. AUTO also requires the same kp/program target
 for **two seconds of usable measurements**. Rapid P presses are refused
 with `wait_ms`; they are not queued for delayed programme changes.
 
@@ -111,7 +117,10 @@ control task spinning indefinitely.
 `V` switches the bench-only U85-CVT tracker on/off (P toggles its fixed
 LP). It exists only in an experiment build
 (`idf.py -DC5VRX5_EXPERIMENTS=1`, or `CONFIG_C5VRX5_EXPERIMENT_U85_CVT`);
-production and published builds report it unavailable. Like `P`/`k` it
+production and published builds report it unavailable. Note that
+`-DC5VRX5_EXPERIMENTS=1` (`sdkconfig.experiments`) also switches the
+sampling phase to the normalized gate, which failed board repeat scans; set
+only the CVT option for a CVT-only bench build. Like `P`/`k` it
 saves AUTO OFF, uses the verified restart and cooldown and returns to the
 tracker and kp level it left. Its held-out validation is negative against
 MATCHED (`research/CVT_STATUS.md`): a comparison tool, not a range mode.

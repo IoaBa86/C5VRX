@@ -327,10 +327,9 @@ limit is the worse of goggle lock (90 % of lines) and usable (luma SINAD
 - **Crossover:** the low-pass wins below ~12 dB C/N at deviation 1.0 and
   below ~9 dB at deviation 1.4. Above that it costs sharpness.
 - **Wide VTXs** become lock-limited, so most of their gain is lost.
-- **Firmware selection is an open decision.** Program changes are refused
-  while TX is live (operator rule 2026-10-11), and an in-flight switch on a
-  C/N estimate would interrupt the picture for a few ms. The firmware does
-  not select U85Q-LP.
+- **Firmware selection (superseded, see section 16).** K mode 2 (the
+  default for fresh settings) selects U85Q-LP live through the guarded,
+  verified pipeline restart, which briefly interrupts the picture.
 - Pole 1/2 attenuates PAL chroma by only ~6 dB. Whether a goggle then drops
   colour is untested.
 
@@ -351,7 +350,14 @@ live.
 A dynamic low-pass therefore means a CPU-side program switch on the C/N
 estimate, with hysteresis, or switching in the analog domain.
 
-## 13. Seamless live kp (`kp_morph.py`, `main/kp_ladder.h`)
+## 13. Live kp (`kp_morph.py`, `main/kp_ladder.h`), verified restart
+
+**Board correction (2026-10-12):** the live entry-by-entry rewrite below
+failed LUT verification on the physical C5 under RUN and PAUSE. The
+firmware now loads and verifies the complete target while the core is
+halted and restarts the pipeline (a few ms of interrupted video). The
+seamless-rewrite reasoning and study below are kept as the host record;
+they are not the firmware path (`v5/docs/FINDINGS.md`).
 
 The U85Q loop gain kp is a dynamic setting already. `u85q.bsasm`,
 `u85q_kp060` and `u85q_kp050` are the same program with different LUTs.
@@ -380,10 +386,11 @@ Evidence:
   - The worst case is 1.16x, a full 0.6 -> 0.85 jump at 20 dB with the fast
     writer.
   - Goggle sync is never worse than steady.
-  - The firmware takes one 0.05 step at a time, which is smaller than these
-    jumps.
+  - The ladder target moves one 0.05 level at a time; one guarded restart
+    then applies the whole accumulated target (possibly several levels plus
+    LP).
 
-Firmware, off by default:
+Firmware (fresh settings default to AUTO kp+LP; a saved OFF is respected):
 - `K` switches the ladder to AUTO (NVS `kp_auto`). The ladder follows a kp
   curve per deviation class (section 14).
   - It takes one level per step: after 1 s of agreement and 0.5 s apart
@@ -395,10 +402,12 @@ Firmware, off by default:
     write, menu) hold the level.
   - `test/test_kp_ladder.c` checks this, including no hopping under +-3 dB
     of estimate noise.
-- `transport_kp_tick` writes up to 64 entries per 50 ms control window and
-  reads each one back. `k` steps one level by hand for the bench test.
-- Active only with the U85Q program (DEFAULT/WIDE profiles). On a WIDE
-  VTX it stays at kp 0.85.
+- `transport_kp_tick` applies a complete, verified LUT16 target through a
+  brief halted pipeline restart (shared 5 s cooldown, 2 s AUTO
+  confirmation). `k`/`j` step one level by hand for the bench test.
+- Active only with the U85Q program (DEFAULT/WIDE profiles); `T` marks AUTO
+  inactive on MATCHED or CVT. Wide or unknown deviation: kp 0.85 near the
+  floor, 0.80 from ~4 dB.
 
 Expected effect: see section 14. Simulation only.
 
@@ -483,10 +492,11 @@ Mean true luma SINAD of the chosen kp on the held-out seeds:
 
 Section 14's best combination needs U85Q-LP at the range edge, so it now
 switches live.
-- **The switch.** `transport_set_lp()` pauses the TX core
-  (`TX_CTRL.pause`), rewrites the eight 9-word instructions and resumes.
-  The LUT is not rewritten, so it keeps its live kp level. There is no TX
-  restart, DMA stop or program reload.
+- **The switch.** Board correction (2026-10-12): the paused instruction
+  rewrite described in the original design gave persistent black video.
+  `transport_set_lp()` now uses the stop/load/reset/start restart with the
+  verified kp LUT restored and one checked rollback. The emulator results
+  below describe the instruction schedules, not a seamless handover.
   - Both programs read 16 bits per span, share the LUT and have their
     controller/worker slots in the same places.
   - The bsasm emulator (`u85q_lp.py check`, in CI) switches at every slot,
@@ -520,10 +530,8 @@ at 20 dB).
 
 Bench gate before K mode 2:
 - Under live video, toggle the program with `P` a few times.
-- `prog_pause_fail`, `prog_verify_fail`, `tx_empty` and `bs_overload` must
-  stay 0 and the picture must not visibly break.
-- Whether the core pauses and resumes cleanly with rewritten instructions is
-  not known until then.
+- `prog_restart_fail`, `prog_verify_fail`, `tx_empty` and `bs_overload`
+  must stay 0 and the picture must not visibly break.
 
 ## Not firmware levers
 

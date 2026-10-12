@@ -111,7 +111,8 @@ VTX video is ~13-14 MHz. Host results, U85E:
 14 MHz costs <= 0.3 dB on a strong signal for every tested deviation, and
 helps every weak case. C5VRX-5 measures the setting per board (VTX off,
 once) and keeps the one with the lowest noise bandwidth that still covers
-14 MHz.
+14 MHz. (Later lowered to a 12 MHz default class, plus 10 MHz narrow and
+16 MHz wide classes; `calibration.c` FILTER_MIN_KHZ.)
 
 ## Receive-chain fixes carried over
 

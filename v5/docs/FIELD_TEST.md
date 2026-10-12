@@ -34,8 +34,9 @@ usable range has barely increased. Video was good indoors through walls but
 poor in an open field. Fewer visible artifacts are not the same as a lower
 usable-video C/N threshold. This protocol separates five things:
 propagation, antenna, receiver sensitivity, chain configuration, and a real
-demodulator cliff. Firmware only observes, so the tests take no risk with
-flight video.
+demodulator cliff. The diagnostics only observe. AUTO kp+LP (the default
+for fresh settings) may briefly restart video on C/N changes; set `K` OFF
+for an A/B that must exclude it.
 
 ## What the firmware reports
 
@@ -119,8 +120,8 @@ Repeat each comparison A/B/A (or ABBA) so that drift and fading average out.
 
 1. **Chain sanity before anything else.** Press `D` with the VTX on and
    check:
-   - filter `applied=1` with class normal or narrow;
-   - `sphase=settled`, `dc_ok=1`, faults not increasing.
+   - filter `applied=1` with class normal, narrow or wide;
+   - `sphase=settled` or `noise_limited`, `dc_ok=1`, faults not increasing.
 
    If any of these fails, fix it first, by rebooting with the VTX off or
    using CALIBRATE on the ground. Comparing RF setups is meaningless
@@ -195,6 +196,7 @@ Bench-verify RF offset in both directions and actual BW/passband/ENBW, wide
 VTX sync-tip/white margins, CVBS levels/loading, and per-gain DC validity after
 filter/profile changes (`dco_same_context` currently ignores filter/BW fields).
 No intrusive DC search, sampling slip, lane switch or tracker replacement is
-permitted as an automatic live correction. There are no physical measurements
+permitted as an automatic in-flight correction (the bounded startup phase
+may slip RX once more after the status screen, before flight). There are no physical measurements
 attached to this diagnostic fix; the underlying RF/FM/DSP/output cause remains
 unresolved until those captures exist.

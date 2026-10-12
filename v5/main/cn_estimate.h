@@ -20,8 +20,8 @@
 #define CN_UNKNOWN_X10 (-990)   /* at or below the noise-only coherence */
 
 /* filter_mhz: 10, 12, 16 or 20 (uncalibrated chip channel); others use the
- * nearest. Returns C/N x10 dB, clamped to 0..20 dB above the noise-only
- * point; CN_UNKNOWN_X10 when the coherence is noise-like. */
+ * nearest. Returns C/N x10 dB, -3..20 dB (slightly negative just above
+ * the noise-only point); CN_UNKNOWN_X10 when the coherence is noise-like. */
 static inline int cn_estimate_x10(int coherence, int filter_mhz)
 {
     /* C/N (dB) :          0     2     4     6     8    10    15    20 */

@@ -364,7 +364,7 @@ porch on -1.0 MHz (matched to the U85Q window, simulation; was -436 kHz).
 PR #196 (`research/c5vrx5-range`): all picture-interrupting calibration runs
 only in a bounded STARTUP phase of a boot (or after the menu CALIBRATE item),
 never in live video, and only for what is missing: sampling-phase repair, one
-filter sweep (12 MHz and 10 MHz classes, lowest noise bandwidth; own channel
+filter sweep (12 MHz, 10 MHz and 16 MHz classes, lowest noise bandwidth; own channel
 with the VTX off, else a quiet channel >= 40 MHz away), DC rows (noise: all
 rows still missing; carrier: current row), and the VTX deviation. Quiet = envelope
 statistic of receiver noise (not phase coherence: 4-bit noise reads 36-61 %
@@ -494,7 +494,7 @@ bits, and the counter operand shares output[25:16] with the LUT address.
   This briefly interrupts video; emulator convergence does not prove a
   seamless hardware handover. `prog_restart_us` records the duration;
   guarded owned-ring bench evidence is in `v5/docs/FINDINGS.md`.
-- Policy: LP below ~6.5 dB C/N (smoothed, 1.5 dB hysteresis); the shared
+- Policy: LP below ~6.5 dB C/N (7 dB mid class, 8.5 dB wide/unknown; smoothed, 1.5 dB hysteresis); the shared
   five-second actuator cooldown and two-second target confirmation apply.
   A wide VTX returns to U85Q at the floor.
 - Simulated limit vs today: +3.35 dB (deviation 0.69), +1.6 dB (1.0),
@@ -504,8 +504,9 @@ bits, and the counter operand shares output[25:16] with the LUT address.
   untested.
 
 Verified kp ladder (`v5/main/kp_ladder.h`, `kp_tables.h`, `transport_kp_tick`,
-`v5/research/kp_morph.py`, README section 13; off by default, `K` AUTO, `k`
-manual):
+`v5/research/kp_morph.py`, README section 13; fresh settings default to
+AUTO kp+LP, a saved OFF is respected; `K` cycles OFF/AUTO kp/AUTO kp+LP,
+`k`/`j`/`P` are manual and save OFF; active only on the U85Q tracker):
 - Original entry-by-entry RUN writes and a PAUSE-only experiment both failed
   LUT verification on the physical C5 (2026-10-12). Do not restore them from
   host models. CPU addressing follows LUT width too (ESP32-C5 TRM): keep

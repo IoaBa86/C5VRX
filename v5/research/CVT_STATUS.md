@@ -15,7 +15,8 @@ the appropriate existing MATCHED baseline. Selecting the fewest violations
 does not qualify a candidate for production. Generated CVT and CVT with
 fixed LP are built only with `CONFIG_C5VRX5_EXPERIMENT_U85_CVT`
 (`main/Kconfig.projbuild`, OFF; `idf.py -DC5VRX5_EXPERIMENTS=1` adds
-`sdkconfig.experiments`). Console V then switches to `TRACKER_CVT` through the
+`sdkconfig.experiments`, which also enables the normalized sampling-phase
+gate for the CI compile check). Console V then switches to `TRACKER_CVT` through the
 verified restart, shares the five-second guard, saves AUTO OFF, and returns
 to the tracker and kp level it left; P toggles its fixed LP. Production and
 published builds print that V is unavailable. CI assembles both programs,
