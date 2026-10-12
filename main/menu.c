@@ -160,8 +160,14 @@ void menu_render(void)
     /* Navigation. */
     rect(0, 8, 92, MENU_UI_LINES - 8, UI_ROOT);
     rect(91, 8, 1, MENU_UI_LINES - 8, UI_DIVIDER);
-    for (int i = 0; i < MENU_ITEMS; ++i) {
-        int y = 8 + i * 8;
+    /* 56 lines: an 8-line header leaves room for six 8-line items, so the
+     * list scrolls with the cursor (seven items put EXIT below the screen). */
+    const int NAV_ROWS = ((int)MENU_UI_LINES - 8) / 8;
+    int first = s_menu_cursor - (NAV_ROWS - 1);
+    if (first < 0) first = 0;
+    if (first > MENU_ITEMS - NAV_ROWS) first = MENU_ITEMS - NAV_ROWS > 0 ? MENU_ITEMS - NAV_ROWS : 0;
+    for (int i = first; i < MENU_ITEMS && i < first + NAV_ROWS; ++i) {
+        int y = 8 + (i - first) * 8;
         bool on = i == s_menu_cursor;
         if (on) { rect(0, y, 91, 8, UI_SELECTED); rect(0, y, 3, 8, UI_WHITE); rect(3, y, 88, 1, UI_SELECTED_EDGE); }
         uint8_t ink = on ? UI_WHITE : UI_MUTED;
@@ -169,6 +175,10 @@ void menu_render(void)
             for (int gx = 0; gx < 8; ++gx)
                 if (s_icons[i][gy] & (0x80u >> gx)) rect(5 + gx, y + gy, 1, 1, ink);
         text(s_items[i], 18, y, ink, 1);
+    }
+    if ((int)MENU_ITEMS > NAV_ROWS) {   /* 1-pixel scroll thumb next to the divider: part of the list shown */
+        const int track = (int)MENU_UI_LINES - 8;
+        rect(90, 8 + first * track / MENU_ITEMS, 1, NAV_ROWS * track / MENU_ITEMS, UI_STRONG);
     }
     switch (s_menu_cursor) {
     case MENU_BAND:

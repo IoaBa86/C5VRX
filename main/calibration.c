@@ -33,6 +33,7 @@
 #include "phy.h"
 #include "profile_logic.h"
 #include "sphase_logic.h"
+#include "dco_slots.h"
 #include "rf.h"
 #include "soc/pcr_struct.h"
 
@@ -528,6 +529,55 @@ static bool dco_same_context(const dco_table_t *a, const dco_table_t *b)
 /* The wanted context lives off the task stack: two full tables on it took
  * 1840 bytes (-fstack-usage) before NVS added its own frames. */
 static RTC_FAST_ATTR dco_table_t s_dco_want;
+
+/* Per-channel tables (dco_slots.h): slot blobs "dco0".."dco5" plus the
+ * index "dco_idx". The single legacy "dco" table is adopted once. */
+static dco_index_t s_dco_index;
+static bool s_dco_index_loaded;
+static uint16_t s_dco_seed_mhz;     /* the current table was seeded from this channel, 0 = own */
+static uint32_t s_dco_seeds;
+static dco_mask_t s_dco_templ;      /* rows of the current table that come from a template */
+
+static unsigned dco_template_rows(void) { return dco_mask_count(s_dco_templ, s_dco.lo, s_dco.hi); }
+
+/* A row measured on the own channel is no longer a template row. */
+static void dco_row_measured(unsigned g) { dco_mask_put(s_dco_templ, g, false); }
+
+static void dco_slot_key(unsigned slot, char key[8]) { snprintf(key, 8, "dco%u", slot); }
+
+static bool dco_load_slot(unsigned slot, dco_table_t *out)
+{
+    char key[8];
+    dco_slot_key(slot, key);
+    return blob_load(key, out, sizeof(*out)) && out->version == DCO_VERSION && out->freq == s_dco_index.freq[slot];
+}
+
+static bool dco_save(void)
+{
+    char key[8];
+    const unsigned slot = dco_slot_for_store(&s_dco_index, s_dco.freq);
+    dco_slot_key(slot, key);
+    if (!blob_store(key, &s_dco, sizeof(s_dco))) return false;
+    dco_index_touch(&s_dco_index, slot, s_dco.freq);
+    memcpy(s_dco_index.templ[slot], s_dco_templ, sizeof(s_dco_templ));
+    if (!blob_store("dco_idx", &s_dco_index, sizeof(s_dco_index))) return false;
+    s_dco_seed_mhz = 0;
+    return true;
+}
+
+static void dco_index_load(void)
+{
+    if (s_dco_index_loaded) return;
+    s_dco_index_loaded = true;
+    if (blob_load("dco_idx", &s_dco_index, sizeof(s_dco_index)) && s_dco_index.version == DCO_INDEX_VERSION) return;
+    dco_index_init(&s_dco_index);
+    /* Adopt the single table of earlier builds as the first slot. */
+    memset(s_dco_templ, 0, sizeof(s_dco_templ));   /* measured on its own channel */
+    if (blob_load("dco", &s_dco, sizeof(s_dco)) && s_dco.version == DCO_VERSION && s_dco.freq) {
+        if (dco_save()) printf("DCO adopted the legacy table freq=%u as slot 0\n", s_dco.freq);
+    }
+}
+
 static void dco_select(void)
 {
     memset(&s_dco_want, 0, sizeof(s_dco_want));
@@ -537,7 +587,34 @@ static void dco_select(void)
     memset(s_dco_found_us, 0, sizeof(s_dco_found_us));
     memset(s_dco_banned, 0, sizeof(s_dco_banned));
     s_dco_floor = 0;
-    if (!blob_load("dco", &s_dco, sizeof(s_dco)) || !dco_same_context(&s_dco, &s_dco_want)) s_dco = s_dco_want;
+    s_dco_seed_mhz = 0;
+    dco_index_load();
+    memset(s_dco_templ, 0, sizeof(s_dco_templ));
+    const uint16_t freq = s_dco_want.freq;
+    const int own = dco_slot_of(&s_dco_index, freq);
+    if (own >= 0 && dco_load_slot((unsigned)own, &s_dco) && dco_same_context(&s_dco, &s_dco_want)) {
+        memcpy(s_dco_templ, s_dco_index.templ[own], sizeof(s_dco_templ));
+        return;
+    }
+    /* No own table: start from the nearest measured channel. */
+    const int near = dco_nearest_slot(&s_dco_index, freq);
+    if (near >= 0 && dco_load_slot((unsigned)near, &s_dco)) {
+        const uint16_t from = s_dco.freq;
+        s_dco.freq = freq;
+        if (dco_same_context(&s_dco, &s_dco_want)) {
+            s_dco_seed_mhz = from;
+            ++s_dco_seeds;
+            unsigned ok = 0;
+            for (unsigned g = s_dco.lo; g <= s_dco.hi && g <= ARC_VENDOR_GAIN_MAX; ++g) {
+                dco_mask_put(s_dco_templ, g, s_dco.e[g].valid != 0);
+                ok += s_dco.e[g].valid != 0;
+            }
+            printf("DCO template freq=%u from=%u rows=%u (nearest measured channel; replaced by own measurements)\n",
+                   freq, from, ok);
+            return;
+        }
+    }
+    s_dco = s_dco_want;
 }
 
 void dco_post_gain(uint8_t g)
@@ -634,7 +711,8 @@ static bool dco_carrier_search(bool manual)
     if (res.measured) {
         s_dco.e[g] = (dco_entry_t){{(int16_t)res.codes[0], (int16_t)res.codes[1]},
             {(int16_t)res.residual_mcells[0], (int16_t)res.residual_mcells[1]}, DCO_ROW_OK};
-        if (blob_store("dco", &s_dco, sizeof(s_dco))) s_dco_dirty = false;
+        dco_row_measured(g);
+        if (dco_save()) s_dco_dirty = false;
     }
     s_dco_found_us[g] = esp_timer_get_time();
     ++s_dco_searches;
@@ -659,14 +737,19 @@ static int dco_quiet_search(uint8_t g)
     } else if (measurable == NOISE_BELOW_STEP) {
         /* Less gain, even less noise: the rows below cannot be searched on
          * noise either. Codes measured on a carrier stay. */
-        for (int k = g; k >= (int)s_dco.lo; --k) if (s_dco.e[k].valid != DCO_ROW_OK) s_dco.e[k].valid = DCO_ROW_FLOOR;
+        for (int k = g; k >= (int)s_dco.lo; --k) {
+            if (s_dco.e[k].valid != DCO_ROW_OK) s_dco.e[k].valid = DCO_ROW_FLOOR;
+            dco_row_measured((unsigned)k);   /* measured: nothing to correct here */
+        }
         s_dco_floor = (uint8_t)(g + 1);
     } else {
         phy_dco_result_t res;
         (void)phy_dco_search(dco_measure, &res);
-        if (res.measured)
+        if (res.measured) {
             s_dco.e[g] = (dco_entry_t){{(int16_t)res.codes[0], (int16_t)res.codes[1]},
                 {(int16_t)res.residual_mcells[0], (int16_t)res.residual_mcells[1]}, DCO_ROW_OK};
+            dco_row_measured(g);
+        }
         s_dco_found_us[g] = esp_timer_get_time();
         ++s_dco_searches;
     }
@@ -695,14 +778,18 @@ bool calibration_dc_ok(uint8_t g)
 
 /* The quiet-noise row search, from the top row down; shared by the own
  * channel (VTX off) and a quiet channel (VTX on). */
-static const char *dco_quiet_rows(bool manual, int64_t deadline, const char *line1, unsigned *done_out)
+/* refine: also measure rows that still come from a template (own channel
+ * quiet at boot), replacing them by this channel's own codes. */
+static const char *dco_quiet_rows(bool manual, bool refine, int64_t deadline, const char *line1, unsigned *done_out)
 {
     const int64_t t0 = esp_timer_get_time();
-    const unsigned rows = manual ? (unsigned)(s_dco.hi - s_dco.lo + 1u) : dco_rows(0);
+    const unsigned rows = manual ? (unsigned)(s_dco.hi - s_dco.lo + 1u) :
+                          dco_rows(0) + (refine ? dco_template_rows() : 0u);
     unsigned done = 0;
     const char *why = "done";
     for (int g = s_dco.hi; g >= (int)s_dco.lo; --g) {
-        if (!manual && s_dco.e[g].valid) continue;               /* stored codes or floor */
+        if (!manual && s_dco.e[g].valid && !(refine && dco_mask_get(s_dco_templ, (unsigned)g)))
+            continue;                                             /* own codes or floor */
         char line2[48];
         unsigned left = done ? (unsigned)((esp_timer_get_time() - t0) / done * (rows - done) / 1000000) + 1u : rows * 2u;
         snprintf(line2, sizeof(line2), "ABOUT %u S LEFT, THEN LIVE VIDEO", left);
@@ -743,7 +830,7 @@ static const char *dco_remote_search(bool manual, int64_t deadline, unsigned *do
     receiver_resume();
     char line1[48];
     snprintf(line1, sizeof(line1), "ON QUIET CHANNEL %s (VTX MAY STAY ON)", rf_channel()->name);
-    const char *why = quiet ? dco_quiet_rows(manual, deadline, line1, done) : "no_quiet_channel";
+    const char *why = quiet ? dco_quiet_rows(manual, false, deadline, line1, done) : "no_quiet_channel";
     /* Back to the exact original tuning, checked like the filter sweep. */
     (void)receiver_pause("DCO_REMOTE");
     bool restored = rf_channel_index() == original;
@@ -768,17 +855,22 @@ static const char *dco_remote_search(bool manual, int64_t deadline, unsigned *do
 static void dco_startup(bool manual, int64_t deadline)
 {
     dco_select();
-    const unsigned missing = dco_rows(0);
-    if (!manual && !missing) {
-        printf("DCO startup skip=complete rows=%u floor_rows=%u\n", dco_valid_rows(), dco_rows(DCO_ROW_FLOOR));
+    const unsigned missing = dco_rows(0), templ = dco_template_rows();
+    const bool carrier = video_recent();
+    /* Template rows (from another channel) are used as they are; they are
+     * replaced only when the own channel can be measured without a detour:
+     * VTX off at boot. With the VTX on there is no quiet-channel trip. */
+    const bool refine = !manual && !missing && templ && !carrier && noise_like();
+    if (!manual && !missing && !refine) {
+        printf("DCO startup skip=complete rows=%u floor_rows=%u template_rows=%u\n", dco_valid_rows(),
+               dco_rows(DCO_ROW_FLOOR), templ);
         return;
     }
-    const bool carrier = video_recent();
     unsigned done = 0;
     const char *why;
-    const char *where = "own";
+    const char *where = refine ? "own_refine" : "own";
     if (!carrier && noise_like()) {
-        why = dco_quiet_rows(manual, deadline, "KEEP THE VTX OFF", &done);
+        why = dco_quiet_rows(manual, refine, deadline, refine ? "OWN CHANNEL, VTX OFF" : "KEEP THE VTX OFF", &done);
     } else {
         /* A carrier on the own channel: measure on a quiet channel; only if
          * there is none, the current row on the carrier's circle. */
@@ -798,7 +890,7 @@ static void dco_startup(bool manual, int64_t deadline)
     else
         status_screen("DC NOT COMPLETE", why, "SAFE DEFAULT, RETRY NEXT BOOT", -1);
     vTaskDelay(pdMS_TO_TICKS(800));
-    if (s_dco_dirty && blob_store("dco", &s_dco, sizeof(s_dco))) s_dco_dirty = false;
+    if (s_dco_dirty && dco_save()) s_dco_dirty = false;
     printf("DCO startup where=%s result=%s searched=%u rows=%u floor_rows=%u missing=%u floor_from_gain=%u\n", where,
            why, done, dco_valid_rows(), dco_rows(DCO_ROW_FLOOR), dco_rows(0), s_dco_floor);
 }
@@ -809,7 +901,7 @@ static void dco_service(void)
 {
     if (!quiet_owner()) return;
     dco_select();
-    if (s_dco_dirty && s_gain.state == DG_HOLD && blob_store("dco", &s_dco, sizeof(s_dco))) s_dco_dirty = false;
+    if (s_dco_dirty && s_gain.state == DG_HOLD && dco_save()) s_dco_dirty = false;
     /* Hold guard: held codes must never coincide with dead or railing IQ. */
     static unsigned bad_ticks;
     const uint8_t g = s_current_gain;
@@ -1096,6 +1188,12 @@ void calibration_print(void)
            (unsigned long)s_dco_searches, (unsigned long)s_dco_carrier_searches, (unsigned long)s_dco_hook_holds,
            (unsigned long)s_dco_aborts, s_drift_avg[0], s_drift_avg[1], (unsigned long)s_drift_nudges,
            (double)s_temp_c);
+    unsigned stored = 0;
+    for (unsigned k = 0; k < DCO_SLOTS; ++k) stored += s_dco_index.freq[k] != 0;
+    printf("DCO tables freq=%u template_rows=%u seeded_from=%u seeds=%lu stored_channels=%u/%u:", s_dco.freq,
+           dco_template_rows(), s_dco_seed_mhz, (unsigned long)s_dco_seeds, stored, DCO_SLOTS);
+    for (unsigned k = 0; k < DCO_SLOTS; ++k) if (s_dco_index.freq[k]) printf(" %u", s_dco_index.freq[k]);
+    printf("\n");
     printf("SPHASE state=%s excess_mc2=%d limit=%d white_pm=%d dc_mcell=%d/%d scans=%u "
            "best=%d worst=%d contrast=%u rx_div=%lu\n", s_sphase_state, s_sphase_excess,
            SPHASE_LIMIT, s_sphase_white, s_sphase_dc[0], s_sphase_dc[1], s_sphase_scans,

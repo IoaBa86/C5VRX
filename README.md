@@ -81,7 +81,11 @@ receiver uses the ESP32-C5's own Wi-Fi radio; no extra RF parts.
 1. Flash (below) and power the receiver, best with the **VTX off**, for up
    to two minutes: the goggles show CALIBRATING with the time left. With a
    VTX on it calibrates the filter on a quiet channel and comes back.
-   Results are stored; later boots skip what is already measured.
+   Results are stored; later boots skip what is already measured. The
+   first DC measurement is the template for every channel: switching
+   channels needs no new DC search, also with the VTX on. When a boot finds
+   the own channel quiet (VTX off), it measures that channel and replaces
+   the template rows with its own; tables are kept for six channels.
 2. Switch the VTX on. Without a stored channel the receiver starts on
    A1 (5865 MHz); use the menu or scan to find yours.
 
