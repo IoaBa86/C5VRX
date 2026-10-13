@@ -393,9 +393,15 @@ static void control_task(void *arg)
         if (afc2_ctrl_sync(&afc, ctx, own_write)) { s_afc_locked = false; afc_lost = 0; }
         own_write = false;
         int64_t now = esp_timer_get_time();
-        bool window_ok = settle == 0 && gain_epoch == s_gain_epoch && ctx == afc_context() &&
-                         now - s_last_gain_write_us >= 100000 &&
-                         afc2_envelope_stationary(s_window, sizeof(s_window));
+        /* The kp/LP ladder only needs a settled receiver (no retune, gain
+         * write or context change); the AFC additionally needs a stationary
+         * envelope. Near the FM threshold receiver noise alone fails that
+         * test (12 MHz class: 46 % of windows pass at 0 dB C/N, 74 % at
+         * 2 dB), which froze the ladder exactly at the range edge
+         * (kp_ladder.h, research/ladder_gate.py). */
+        const bool ladder_ok = kp_ladder_window_usable(settle == 0, gain_epoch == s_gain_epoch,
+                                                       ctx == afc_context(), now - s_last_gain_write_us);
+        bool window_ok = ladder_ok && afc2_envelope_stationary(s_window, sizeof(s_window));
         if (settle) --settle;
         afc2_result_t r = {0};
         if (window_ok) {
@@ -461,10 +467,13 @@ static void control_task(void *arg)
              * decided by the profile, not by filter equality, since the narrow
              * and normal sweep entries may be the same setting. */
             s_kp.narrow = profile_base_level(profile) > 0;
-            uint8_t level = kp_ladder_update_lp(&s_kp, cn_x10, window_ok,
+            uint8_t level = kp_ladder_update_lp(&s_kp, cn_x10, ladder_ok,
                                                 profile_live_deviation_x100(), now, s_kp_auto == 2);
-            bool usable = window_ok && ctx == afc_context();
-            if (kp_switch_confirm(&s_auto_candidate, level, s_kp.lp, ctx, usable, now))
+            bool usable = ladder_ok && ctx == afc_context();
+            /* Confirm the program and the direction, not the exact level the
+             * ladder is stepping through (kp_switch_guard.h). */
+            if (kp_switch_confirm_toward(&s_auto_candidate, level, s_kp.lp, transport_kp_level(), transport_lp(),
+                                         ctx, usable, now))
                 s_mode_reset_pending = !transport_apply_auto(level, s_kp.lp);  /* kp + LP in one guarded restart */
         } else {
             s_auto_candidate.candidate = false;

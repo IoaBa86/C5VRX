@@ -330,3 +330,29 @@ reserve refuses normal/wide candidates; the global C/N proxy also
 underestimates wide strong-carrier confidence. This prototype therefore
 does not qualify a universal automatic OUTPUT servo. White percentiles
 from a few lines cannot guarantee headroom for a subsequent bright scene.
+
+## The ladder froze at the range edge (2026-10-13)
+
+C5VRX by Twotoz and the C5VRX contributors. The kp + LP ladder only helps if
+the control loop lets it reach the edge, and two parts of `control.c`
+stopped it there (research README section 18, `research/ladder_gate.py`):
+
+- The ladder and its switch confirmation shared the AFC window gate, which
+  includes the envelope-stationarity test. Receiver noise near the FM
+  threshold fails it: on the 12 MHz class 46 % of control windows pass at
+  0 dB C/N and 85 % at 3 dB (sim.py IQ). Each failure held the ladder and
+  restarted the confirmation. `kp_ladder_window_usable()` now gates the
+  ladder on settle, gain write and context only; the AFC keeps the test.
+- The confirmation wanted the exact (kp level, program) for 2 s while the
+  ladder steps a level every 0.2-1 s. `kp_switch_confirm_toward()` confirms
+  the program and the direction instead and applies the latest level;
+  oscillation around the running pair still never switches.
+
+Control-loop model with the real headers and the best_combo picture model
+(16 seeds): arriving at the edge and staying there, the C/N where half the
+windows still show a picture improves by 1.0-2.1 dB in 10 of 15 cases
+(deviation 0.69 / 1.0, 12 MHz and MATCHED, with and without fades) and lands
+within 0.2 dB of an instant oracle; deviation 1.4 under fades and MATCHED 1.0
+under fades gain 0..0.3 dB. A slow steady fly-out changes -0.2..+0.2 dB, which
+is why a walk-away test can hide it. Simulation only; board check: `kp_steps`
+and `lp_switches` in `T` should follow the C/N at the edge.

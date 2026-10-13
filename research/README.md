@@ -562,6 +562,75 @@ update). Whether the chip gets narrower is a board measurement.
 
 Simulation only. Bench gate as section 16; then a MATCHED VTX at the edge.
 
+## 18. The ladder froze at the range edge (`ladder_gate.py`)
+
+C5VRX by Twotoz and the C5VRX contributors. Sections 14-17 give the kp + LP
+ladder its range gain, but only if the control loop lets it move there. Two
+things in `control.c` stopped it, both in the regime it was built for.
+
+**The window gate.** The ladder and its two-second switch confirmation used
+the AFC's window gate, which includes `afc2_envelope_stationary()`: every
+32-sample block power within 2.5x of its neighbour. Near the FM threshold
+receiver noise alone fails that test. Share of 4092-byte control windows
+that pass (`data/ladder_gate_rates.json`, sim.py IQ, 4 seeds):
+
+| C/N (20 MHz) | 0 dB | 1 dB | 2 dB | 3 dB | 4 dB | 5 dB | 6 dB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 12 MHz class, deviation 1.0 | 0.46 | 0.60 | 0.74 | 0.85 | 0.94 | 0.99 | 1.00 |
+| 10 MHz class, deviation 0.69 | 0.30 | 0.45 | 0.65 | 0.80 | 0.91 | 0.97 | 0.99 |
+
+A failed window held the ladder and broke the confirmation. Entering LP
+needs 1 s of uninterrupted usable windows, the confirmation 2 s more: at
+3 dB that is 0.85^60, below 0.01 %. The ladder's own rule was already that
+only a retune, gain write or menu holds it, and its C/N comes from the gain
+observer, not from this window. `kp_ladder_window_usable()` now keeps only
+those (settle, gain epoch, 100 ms after a gain write, context); the AFC
+still needs the stationary envelope.
+
+**The exact-target confirmation.** `kp_switch_confirm()` wanted the same
+(level, program) pair for 2 s, while the ladder steps one level every
+0.2-1 s as the C/N drifts, so a fade restarted it on every step. AUTO now
+uses `kp_switch_confirm_toward()`: the candidate is the program plus the side
+of the running level, and the restart applies the latest level. A target
+back on the running pair or on the other side still restarts it, so
+threshold oscillation never switches (`test_kp_switch_guard.c`). The shared
+5 s cooldown is unchanged.
+
+**Model.** `ladder_gate_trace.c` runs the real `kp_ladder.h` and
+`kp_switch_guard.h` in control.c's order (50 ms windows, +-3 dB estimate
+jitter, 500 ms settle and a new context after each restart), with the pass
+rates above. The running program and kp are scored with the best_combo
+means at the true C/N (`data/ladder_gate.json`, 16 seeds). Arriving at the
+edge (14 dB to X in 3 s) and staying there, the mean C/N where half of the
+windows still show a picture (lock >= 0.9 and SINAD >= 0 dB):
+
+| case | fade | before | after | oracle |
+| --- | --- | ---: | ---: | ---: |
+| 12 MHz, deviation 0.69 | none / +-2 dB 2 s / +-4 dB 4 s | 2.50 / 3.53 / 2.83 | 1.50 / 1.40 / 1.48 | 1.50 / 1.23 / 1.31 |
+| 12 MHz, deviation 1.0 | same | 1.50 / 1.94 / 1.91 | 0.51 / 0.83 / 0.82 | 0.50 / 0.90 / 0.98 |
+| 12 MHz, deviation 1.4 | same | 2.50 / 2.23 / 2.09 | 1.50 / 1.96 / 2.12 | 1.50 / 1.92 / 1.99 |
+| 10 MHz MATCHED, deviation 0.69 | same | 2.33 / 2.09 / 2.00 | 0.52 / 0.52 / 0.61 | 0.50 / 0.56 / 0.64 |
+| 10 MHz MATCHED, deviation 1.0 | same | 1.50 / 1.25 / 1.32 | 0.50 / 0.91 / 0.99 | 0.50 / 0.90 / 0.98 |
+
+- Arriving at the edge, the fixed loop gains 1.0-2.1 dB (1.12-1.27x free-
+  space distance) in 10 of the 15 cases, 0.3 dB for MATCHED deviation 1.0
+  under fades and 0..0.3 dB for deviation 1.4 under fades. Every case lands
+  within 0.2 dB of the oracle. Before, the loop stayed in the close-in
+  setting it had (U85Q, kp 0.65-0.85) and often never reached LP.
+- Removing the gate gives most of it. The directional confirmation adds
+  0.6-0.9 dB for deviation 0.69 on the 12 MHz class under fades and
+  ~0-0.1 dB elsewhere.
+- A slow fly-out (0.25 dB/s) changes little (-0.2..+0.2 dB): LP is entered
+  near 5.5 dB, where ~99 % of the windows still pass. That is also why a
+  steady walk-away test can hide this.
+- A wide VTX (1.4) under strong fades is lock-limited either way.
+
+Simulation of the control loop on the best_combo picture model, not a board
+measurement. On the board, `kp_steps`, `lp_switches` and the `[AFC]`/
+FIELD_DIAG records at the edge show whether the ladder now follows the C/N.
+Gain writes (100 ms each) still hold the ladder; how often Direct Gain writes
+at the edge is not modelled here.
+
 ## Not firmware levers
 
 - The second IQ40 sample of every span (+0.5..1.1 dB in the C5VRX-4 ledger)
@@ -580,6 +649,8 @@ python u85q_lp.py study data/lowpass.json      # U85Q vs U85Q-LP (section 12)
 python best_combo.py data/best_combo.json      # best kp / program per C/N (section 14)
 FILTER_MHZ=10 DEVS=0.69,1.0 python best_combo.py data/best_combo_10mhz.json   # section 17
 IDF_PATH=<esp-idf> python u85q_lp.py check     # emulator: U85Q and U85Q-LP bit-exact
+python ladder_gate.py rates data/ladder_gate_rates.json                      # section 18: window gate pass rates
+python ladder_gate.py study data/ladder_gate_rates.json data/ladder_gate.json # section 18: ladder at the edge
 ```
 
 Needs numpy, scipy and numba. `data/tracker_luts.json` holds the kp variant

@@ -33,6 +33,38 @@ int main(void)
     assert(!kp_switch_confirm(&candidate, 2, true, 8, true, 24000000));
     assert(!kp_switch_confirm(&candidate, 2, true, 8, true, 25999999));
     assert(kp_switch_confirm(&candidate, 2, true, 8, true, 26000000));
-    puts("PASS: shared five-second cooldown, two-second confirmation, jitter, invalid windows, contexts");
+
+    /* Directional confirmation (control.c AUTO): running level 2, U85Q. */
+    kp_switch_guard_t dir = {0};
+    assert(!kp_switch_confirm_toward(&dir, 2, false, 2, false, 7, true, 0));        /* nothing to do */
+    assert(!dir.candidate);
+    /* A ladder stepping down 3, 4, 5 every 0.5 s confirms after 2 s and
+     * carries the latest level; the exact-level guard restarted each step. */
+    kp_switch_guard_t exact = {0};
+    bool exact_ok = false, dir_ok = false;
+    for (int64_t t = 0; t <= 2000000; t += 50000) {
+        int level = 3 + (int)(t / 500000);
+        if (level > 5) level = 5;
+        exact_ok |= kp_switch_confirm(&exact, level, false, 7, true, t);
+        dir_ok = kp_switch_confirm_toward(&dir, level, false, 2, false, 7, true, t);
+    }
+    assert(!exact_ok && dir_ok && dir.level == 5);
+    /* Oscillation around the running level never confirms. */
+    dir = (kp_switch_guard_t){0};
+    for (int64_t t = 0; t < 20000000; t += 50000)
+        assert(!kp_switch_confirm_toward(&dir, (t / 50000) & 1 ? 3 : 1, false, 2, false, 7, true, t));
+    for (int64_t t = 0; t < 20000000; t += 50000)
+        assert(!kp_switch_confirm_toward(&dir, (t / 50000) & 1 ? 3 : 2, false, 2, false, 7, true, t));
+    /* A program change is keyed on the program: the level may move. */
+    dir = (kp_switch_guard_t){0};
+    assert(!kp_switch_confirm_toward(&dir, 1, true, 2, false, 7, true, 0));
+    assert(!kp_switch_confirm_toward(&dir, 0, true, 2, false, 7, true, 1000000));
+    assert(kp_switch_confirm_toward(&dir, 2, true, 2, false, 7, true, 2000000) && dir.level == 2 && dir.lp);
+    /* Invalid windows and a new context restart it. */
+    assert(!kp_switch_confirm_toward(&dir, 2, true, 2, false, 7, false, 2050000));
+    assert(!kp_switch_confirm_toward(&dir, 2, true, 2, false, 7, true, 2100000));
+    assert(!kp_switch_confirm_toward(&dir, 2, true, 2, false, 8, true, 4100000));
+    assert(kp_switch_confirm_toward(&dir, 2, true, 2, false, 8, true, 6100000));
+    puts("PASS: shared five-second cooldown, two-second confirmation, jitter, invalid windows, contexts, direction");
     return 0;
 }

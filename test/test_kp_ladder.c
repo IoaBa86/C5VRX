@@ -119,6 +119,13 @@ int main(void)
     uint8_t held = l.level;
     for (int k = 0; k < 200; ++k, t += TICK_US) (void)kp_ladder_update(&l, CN_UNKNOWN_X10, false, 100, t);
     check("unusable windows: level held", l.level == held);
+    /* Window usability: settle, gain write and context only (control.c). */
+    check("usable: settled, no gain write for 100 ms, same context",
+          kp_ladder_window_usable(true, true, true, KP_GAIN_WRITE_GUARD_US));
+    check("unusable: settling, gain write, context change, recent gain write",
+          !kp_ladder_window_usable(false, true, true, 1000000) && !kp_ladder_window_usable(true, false, true, 1000000) &&
+          !kp_ladder_window_usable(true, true, false, 1000000) &&
+          !kp_ladder_window_usable(true, true, true, KP_GAIN_WRITE_GUARD_US - 1));
     /* Step spacing: never two steps closer than the gap. */
     kp_ladder_reset(&l);
     int64_t last = -KP_STEP_GAP_US, min_gap = 1LL << 62;

@@ -19,7 +19,10 @@
  *   must get back up quickly.
  * - A noise-like window (CN_UNKNOWN_X10: coherence at or below plain noise)
  *   is the floor, not missing evidence: it targets the curve's 0 dB point.
- *   Only an unusable window (retune, gain write, menu) holds the level.
+ *   Only an unusable window (retune, gain write, menu) holds the level:
+ *   kp_ladder_window_usable(). The AFC's envelope-stationarity test is not
+ *   part of it; receiver noise near the threshold fails it, and with it the
+ *   ladder froze at the range edge (research README section 18).
  * The C/N estimate comes from the IQ window coherence, not from the tracker,
  * so a kp change cannot feed back into it. Pure logic: host test
  * test/test_kp_ladder.c. */
@@ -49,6 +52,17 @@ typedef struct {
     uint32_t steps;
     bool narrow;            /* narrow (MATCHED, 10 MHz class) filter: own curves; set by the caller */
 } kp_ladder_t;
+
+/* A control window the ladder may use: settled after a retune or restart,
+ * no gain write during or in the 100 ms before it, unchanged context. The
+ * C/N comes from the gain observer's coherence, so a noisy, non-stationary
+ * window is evidence (the floor), never a reason to hold. */
+#define KP_GAIN_WRITE_GUARD_US 100000LL
+static inline bool kp_ladder_window_usable(bool settled, bool gain_unchanged, bool context_unchanged,
+                                           int64_t since_gain_write_us)
+{
+    return settled && gain_unchanged && context_unchanged && since_gain_write_us >= KP_GAIN_WRITE_GUARD_US;
+}
 
 static inline void kp_ladder_reset(kp_ladder_t *l)
 {
