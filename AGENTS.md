@@ -565,6 +565,14 @@ AUTO kp+LP, a saved OFF is respected; `K` cycles OFF/AUTO kp/AUTO kp+LP,
   re-submit driver loop transactions; wait at most 20 ms with vTaskDelay,
   then return failure and attempt baseline recovery. Cooldown alone is not
   a substitute for bounding hardware waits.
+- Edge gating (2026-10-13, `research/ladder_gate.py`, README section 18):
+  the ladder and its confirmation must not use the AFC's envelope-
+  stationarity test (receiver noise near threshold fails it; 46 % of
+  12 MHz windows pass at 0 dB C/N), only settle / gain write / context
+  (`kp_ladder_window_usable`). AUTO confirms program + direction
+  (`kp_switch_confirm_toward`), not the exact level. Control-loop model:
+  1.0-2.1 dB at the edge in 10 of 15 cases, within 0.2 dB of an oracle;
+  slow fly-out about unchanged. Simulation; board check pending.
 - Evidence limits: host simulations still describe the DSP curve, not
   continuous hardware output; goggle behaviour and final spam-test evidence
   are recorded in `docs/FINDINGS.md`. See README sections 13-16 for the
