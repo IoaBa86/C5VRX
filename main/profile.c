@@ -34,7 +34,7 @@
  * change or CALIBRATE.
  *
  * Deviation: the AFC measures the sync tip and the burst-free porch of
- * burst-confirmed lines; their distance is deviation x 1.914 MHz (40 of 140
+ * confirmed lines (burst or line timing); their distance is deviation x 1.914 MHz (40 of 140
  * IRE over 6.7 MHz). A decision needs three batches of 32 estimates, each
  * with a spread <= 8 % and all medians within 5 % of each other, on a
  * centred (AFC locked), coherent carrier in the healthy gain band, at a

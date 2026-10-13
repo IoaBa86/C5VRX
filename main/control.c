@@ -420,8 +420,8 @@ static void control_task(void *arg)
             afc2_ctrl_observe(&afc, &r);
         } else afc2_ctrl_miss(&afc);   /* settle and context changes reset via afc2_ctrl_sync */
         s_cfo_khz = r.porch_pairs ? r.porch_khz : 0;
-        bool valid = window_ok && r.lines && r.standard && r.porch_pairs && r.sync_pairs &&
-                     r.burst_x10 >= AFC2_BURST_MIN_X10;
+        /* Burst or line timing confirmed the syncs (afc2_measure). */
+        bool valid = window_ok && r.lines && r.standard && r.porch_pairs && r.sync_pairs;
         if (valid) { s_last_video_us = now; standard_vote(r.standard); profile_observe(&r); }
         bool was = s_afc_locked;
         s_afc_locked = afc2_native_lock(s_afc_locked, valid, afc2_ctrl_can_lock(&afc, true), afc.n, &afc_lost);

@@ -134,8 +134,7 @@ static inline void afc2_ctrl_miss(afc2_ctrl_t *c)
 static inline void afc2_ctrl_observe(afc2_ctrl_t *c, const afc2_result_t *r)
 {
     if (c->since_correction < 0xffffu) ++c->since_correction;
-    if (!r || !r->lines || !r->standard || !r->polarity ||
-        r->burst_x10 < AFC2_BURST_MIN_X10 || !r->sync_pairs || !r->porch_pairs) {
+    if (!r || !r->lines || !r->standard || !r->polarity || !r->sync_pairs || !r->porch_pairs) {
         afc2_ctrl_miss(c);
         return;
     }
