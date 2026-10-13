@@ -565,8 +565,78 @@ never locking, so the deviation is never measured; the FLOOR-row DC itself.
 - `ladder_gate.py check` passes with the new timing (after 0.48-0.82 dB vs
   oracle 0.50-0.90).
 
-Still open: AFC measurement needs the colour burst to accept a line
-(`afc2_measure`), so a B/W camera (or a camera switching to B/W in the dark)
-never locks; line-period timing could validate sync instead. The coherence
-C/N model reads low on a strong carrier; it now only steers kp within a
-program.
+Follow-up: AFC now also accepts syncs confirmed by the preceding line's
+PAL/NTSC period, so a B/W camera can supply measurements without a colour
+burst (`d199d02`). The short control window may contain only one sync;
+such windows remain missing evidence. Host tests/build passed; board test
+pending.
+
+### Envelope C/N instead of phase coherence (2026-10-13, board test pending)
+
+The phase-step coherence model read 9-13 dB next to the VTX and could select
+weak-signal kp levels on a strong carrier. A fast FM swing also fails its
+45-degree phase-step test, so the model depends on picture/deviation.
+
+- `dg_measure` now computes the DC-removed envelope statistic
+  `100 * mean(|z|^2)^2 / var(|z|^2)` on the existing observer probe.
+  A fixed IQ point has no residual power and remains unknown. This extends
+  the envelope statistic already used by calibration, outside the hardware
+  sample path.
+- `cn_estimate_env_x10` uses four filter-class tables. All runtime C/N
+  consumers (kp, AFC correction, profile gates, diagnostic traces and
+  per-second records) use the envelope estimate. Fixed-point windows are
+  excluded from the per-second envelope average; a majority makes C/N
+  unknown. `T` GAIN adds `env_x100`, `stuck` and `cn_x10`.
+- Reproduction: `python research/cn_envelope.py`; full results in
+  `research/data/cn_envelope.txt`. PAL, two seeds, deviations 0.69/1.0/1.4,
+  256-byte probes matching `copy_probe_window`. Deviation 1.0 medians exactly
+  reproduce the tables. Noise-only medians are 114-116; the unknown cutoff
+  is 130. Deviations 0.69/1.4 differ by up to ~1.1 dB through 12 dB C/N
+  (the earlier ~0.5 dB claim was too optimistic). Above ~15 dB, filter AM
+  and quantisation limit accuracy; values saturate at 20 dB.
+- Host checks cover analytic envelope moments, DC translations on both
+  axes, fixed and rotating IQ, monotonicity over the full uint16 range,
+  and the 6 dB AFC boundary for every filter class.
+- Log audit: normal and narrow sometimes share the same setting at
+  13.125 MHz, but the old class lookup matched narrow first and reported
+  10 MHz. Normal now wins a shared setting; a distinct narrow setting
+  measured wider than 11 MHz also uses the 12 MHz C/N model, matching the
+  kp ladder's existing width boundary.
+- `range_diag_vtx_off.txt` said `OK strong carrier with gain headroom`
+  while `video_recent=0` and the last 60 s had no sync. The strong-estimate
+  verdict now requires recent video evidence and is labelled
+  `VIDEO_EVIDENCE`; it is not a claim about displayed picture quality.
+
+Validation: all 13 C host executables pass (including 68 kp-ladder and 24
+gain-fade checks), diagnostic-log tests pass, the full envelope sweep
+reproduces the tables, and `ladder_gate.py check` passes. ESP-IDF v6.0.2
+build passes without warnings.
+
+### Gain-driven LP independent of IQ windows (2026-10-13)
+
+Operator: from G70 the receiver should stay on LP. The gain thresholds were
+already present, but failed copies exited the control loop before the policy
+and gain-write guards held its confirmation. A decision based on gain still
+depended on C/N window availability.
+
+- Separate evidence for LP and kp: in AUTO kp+LP, G70 enters LP, G65-69
+  retains it, and below G65 releases after the adaptive hold. The existing
+  rescue confirmation/restart gap remains. Copy failures, unknown C/N and
+  gain writes do not block the program policy; missing C/N holds kp.
+- Retune settle, scan/calibration/menu ownership, unknown verified transport
+  state and manual modes still block automatic switching. Pending program
+  and kp evidence have independent stale timers. Failed copies remain
+  missing AFC evidence and never read the stale sample buffer.
+- Host regression follows G70 with no usable IQ through the actual switch
+  confirmation: LP is confirmed within 1 s, without creating C/N or moving
+  kp. It also covers G65-83 staying on LP, G64 release, ownership and manual
+  mode. No hardware/range claim; board test pending.
+- The envelope calculation uses integer raw moments in the existing sample
+  loop and translates them to the DC centre once per probe. This removes
+  the unfinished implementation's two extra passes and per-sample floating
+  point. A direct centred oracle agrees within one ratio unit on 64
+  asymmetric/correlated probes. Actual C5 observer timing remains to be checked.
+
+These are simulation-derived decision estimates, not independently measured
+RF C/N. After flashing, compare VTX-off and close-VTX logs, kp selection,
+`afc_locked`, and `obs_us_max` to check the added observer cost on the C5.

@@ -505,8 +505,12 @@ const char *calibration_filter_result(void) { return s_filter_result; }
 int calibration_filter_class_mhz(void)
 {
     rf_filter_t f, now = rf_filter();
-    if (filter_setting(FILTER_NARROW, &f) && rf_filter_equal(f, now)) return 10;
+    /* The sweep can select the same setting for normal and narrow (board:
+     * both 13.125 MHz). Prefer normal, and do not call a measured >11 MHz
+     * narrow entry 10 MHz; the kp ladder uses the same width boundary. */
     if (filter_setting(FILTER_NORMAL, &f) && rf_filter_equal(f, now)) return 12;
+    if (filter_setting(FILTER_NARROW, &f) && rf_filter_equal(f, now))
+        return s_filter_cal.narrow.width_khz > 11000u ? 12 : 10;
     if (filter_setting(FILTER_WIDE, &f) && rf_filter_equal(f, now)) return 16;
     return 20;
 }

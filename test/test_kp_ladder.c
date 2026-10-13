@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include "kp_ladder.h"
 #include "kp_tables.h"
+#include "kp_switch_guard.h"
 
 /* U85Q-only ladder (K mode 1): the joint update with LP disallowed. */
 static uint8_t kp_ladder_update(kp_ladder_t *l, int cn_x10, bool ok, int dev, int64_t t)
@@ -232,6 +233,34 @@ int main(void)
         for (int k = 0; k < 40; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, 40, true, 100, tj, true);
         check("calm for 30 s: hold back to 2 s", j.lp && j.release_hold_us == KP_LP_RELEASE_BASE_US);
     }
+    /* Envelope C/N model (cn_estimate.h, research/cn_envelope.py medians). */
+    check("envelope: noise (115) is unknown, 12 MHz 262 -> 4 dB, 1543 -> 20 dB",
+          cn_estimate_env_x10(115, 12) == CN_UNKNOWN_X10 && cn_estimate_env_x10(262, 12) == 40 &&
+          cn_estimate_env_x10(1543, 12) == 200 && cn_estimate_env_x10(5000, 12) == 200);
+    check("envelope: monotonic across the 12 MHz table",
+          cn_estimate_env_x10(300, 12) < cn_estimate_env_x10(600, 12) &&
+          cn_estimate_env_x10(600, 12) < cn_estimate_env_x10(1000, 12));
+    {
+        const int filters[] = {10, 12, 16, 20};
+        const int weak[] = {222, 204, 178, 161};
+        const int gate[] = {395, 355, 298, 255};
+        const int strong[] = {532, 479, 403, 342};
+        bool monotonic = true, afc_gate = true;
+        for (unsigned f = 0; f < 4u; ++f) {
+            int previous = CN_UNKNOWN_X10;
+            for (int ratio = 0; ratio <= 65535; ++ratio) {
+                int cn = cn_estimate_env_x10(ratio, filters[f]);
+                if (cn < previous) monotonic = false;
+                previous = cn;
+            }
+            afc_gate = afc_gate && cn_estimate_env_x10(weak[f], filters[f]) < AFC_MIN_CN_X10 &&
+                       cn_estimate_env_x10(gate[f] - 1, filters[f]) < AFC_MIN_CN_X10 &&
+                       cn_estimate_env_x10(gate[f], filters[f]) == AFC_MIN_CN_X10 &&
+                       cn_estimate_env_x10(strong[f], filters[f]) >= AFC_MIN_CN_X10;
+        }
+        check("envelope: monotonic over uint16 range for all filters", monotonic);
+        check("envelope: AFC rejects weak carriers and opens at 6 dB for all filters", afc_gate);
+    }
     {   /* LP by gain: in at G70, out below G65, whatever the C/N model says. */
         kp_ladder_t gl;
         int64_t tg = 0;
@@ -248,6 +277,48 @@ int main(void)
         gl.gain = 60;
         for (int k = 0; k < 100; ++k, tg += TICK_US) (void)kp_ladder_update_lp(&gl, 200, true, 0, tg, true);
         check("gain G60: back to U85Q after the release hold", !gl.lp);
+    }
+    {   /* Gain policy reaches the real switch guard even with no usable IQ:
+         * failed copies, unknown C/N, or continuous gain writes. */
+        kp_ladder_t gl;
+        kp_switch_guard_t guard = {0};
+        kp_ladder_reset(&gl);
+        gl.gain = 70;
+        gl.level = 1;
+        bool applied_lp = false;
+        int64_t applied_at = -1;
+        for (int64_t t = 1000000; t <= 2000000; t += TICK_US) {
+            uint8_t level = kp_ladder_update_evidence(&gl, CN_UNKNOWN_X10, false, true, 0, t, true);
+            if (kp_switch_confirm_toward(&guard, level, gl.lp, 1, applied_lp, 7, true, t)) {
+                applied_lp = gl.lp;
+                applied_at = t;
+            }
+        }
+        check("G70 with no usable IQ: LP confirmed within 1 s", applied_lp && applied_at <= 2000000);
+        check("missing IQ cannot invent C/N or move kp", !gl.cn_init && gl.level == 1);
+        for (int64_t t = 2050000; t <= 4000000; t += TICK_US) {
+            gl.gain = t / TICK_US % 2 ? 65 : 83;
+            (void)kp_ladder_update_evidence(&gl, 200, false, true, 0, t, true);
+        }
+        check("G65-G83 with no usable IQ: stays LP even if C/N says 20 dB", gl.lp);
+        gl.gain = 64;
+        for (int64_t t = 4050000; t <= 10000000; t += TICK_US)
+            (void)kp_ladder_update_evidence(&gl, 200, false, true, 0, t, true);
+        check("G64 with no usable IQ: releases after the hold", !gl.lp);
+        kp_ladder_reset(&gl);
+        gl.gain = 83;
+        for (int64_t t = 1000000; t <= 3000000; t += TICK_US)
+            (void)kp_ladder_update_evidence(&gl, 200, false, false, 0, t, true);
+        check("PHY/retune ownership still blocks gain-driven LP", !gl.lp);
+        for (int64_t t = 3050000; t <= 4000000; t += TICK_US)
+            (void)kp_ladder_update_evidence(&gl, 200, false, true, 0, t, true);
+        check("LP starts once ownership is released, without IQ", gl.lp);
+        (void)kp_ladder_update_evidence(&gl, 200, false, true, 0, 4050000, false);
+        check("manual/no-LP mode still disables LP", !gl.lp);
+        kp_ladder_reset(&gl);
+        for (int64_t t = 1000000; t <= 3000000; t += TICK_US)
+            (void)kp_ladder_update_evidence(&gl, 40, false, true, 0, t, true);
+        check("unknown gain plus missing IQ cannot choose LP", !gl.lp);
     }
     {   /* Narrow 10 MHz filter (MATCHED profiles): own curves, LP still allowed. */
         kp_ladder_t n;

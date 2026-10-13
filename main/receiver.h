@@ -98,6 +98,7 @@ extern volatile uint32_t s_control_epoch;   /* bumps on retune/scan/calibration 
 extern volatile int64_t s_last_gain_write_us;
 extern volatile int s_obs_p50, s_obs_p95, s_obs_origin_pm, s_obs_clip_pm, s_obs_coherence;
 extern volatile bool s_obs_stuck;   /* fixed IQ point, not a carrier (gain.h dg_stuck) */
+extern volatile int s_obs_env_ratio_x100;   /* gain.h env_ratio_x100 of the latest window */
 extern volatile uint32_t s_obs_us_max, s_obs_windows;
 extern dg_map_blob_t s_gain_map_saved;
 extern bool s_gain_map_saved_valid;

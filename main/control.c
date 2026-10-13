@@ -384,29 +384,34 @@ static void control_task(void *arg)
             settle = own_write ? 2u : RETUNE_SETTLE_TICKS;
         }
         uint32_t gain_epoch = s_gain_epoch, ctx = afc_context();
-        if (s_scan_active || !copy_control_window(s_window, sizeof(s_window))) {
-            /* A failed copy is a gap, not disagreement: the guard drops its
-             * candidate only after KP_SWITCH_STALE_US without evidence. */
-            if (s_scan_active) { s_auto_candidate.candidate = false; afc2_ctrl_invalidate(&afc); }
-            else { ++s_ladder_copy_fail; afc2_ctrl_miss(&afc); }
-            diag_window(false, false, false); /* failed copies count as missing evidence */
+        if (s_scan_active) {
+            s_auto_candidate.candidate = false;
+            afc2_ctrl_invalidate(&afc);
+            diag_window(false, false, false);
             continue;
         }
-        metrics_t m = measure_window(s_window, sizeof(s_window));
-        s_signal_strength = (s_signal_strength * 3 + strength(&m, s_current_gain) + 2) / 4;
+        const bool copied = copy_control_window(s_window, sizeof(s_window));
+        if (!copied) ++s_ladder_copy_fail;
+        metrics_t m = {0};
+        if (copied) {
+            m = measure_window(s_window, sizeof(s_window));
+            s_signal_strength = (s_signal_strength * 3 + strength(&m, s_current_gain) + 2) / 4;
+        }
 
-        /* AFC: burst-confirmed sync/porch levels only (issue #115), never the
+        /* AFC: burst/line-timing-confirmed sync/porch levels, never the
          * scene-biased FM slope; acquisition only, sticky once locked. */
         if (afc2_ctrl_sync(&afc, ctx, own_write)) { s_afc_locked = false; afc_lost = 0; }
         own_write = false;
         int64_t now = esp_timer_get_time();
-        /* The kp/LP ladder only needs a settled receiver (no retune, gain
+        /* The kp estimate only needs a settled receiver (no retune, gain
          * write or context change); the AFC additionally needs a stationary
          * envelope. Near the FM threshold receiver noise alone fails that
          * test (12 MHz class: 46 % of windows pass at 0 dB C/N, 74 % at
          * 2 dB), which froze the ladder exactly at the range edge
-         * (kp_ladder.h, research/ladder_gate.py). */
-        const bool ladder_ok = kp_ladder_window_usable(settle == 0, ctx == afc_context(), now - s_last_gain_write_us);
+         * (kp_ladder.h, research/ladder_gate.py). Gain-driven LP needs no
+         * successful copy or C/N window; retune/PHY ownership still gates it. */
+        const bool program_ok = settle == 0 && ctx == afc_context() && !phy_busy();
+        const bool ladder_ok = copied && kp_ladder_window_usable(program_ok, ctx == afc_context(), now - s_last_gain_write_us);
         ++s_ladder_windows;
         s_ladder_settle += settle != 0;
         s_ladder_ctx += ctx != afc_context();
@@ -419,12 +424,12 @@ static void control_task(void *arg)
             r = afc2_measure(s_window, sizeof(s_window), c5vrx_phase8_gain_lut);
             afc2_ctrl_observe(&afc, &r);
         } else afc2_ctrl_miss(&afc);   /* settle and context changes reset via afc2_ctrl_sync */
-        s_cfo_khz = r.porch_pairs ? r.porch_khz : 0;
+        if (copied) s_cfo_khz = r.porch_pairs ? r.porch_khz : 0;
         /* Burst or line timing confirmed the syncs (afc2_measure). */
         bool valid = window_ok && r.lines && r.standard && r.porch_pairs && r.sync_pairs;
         if (valid) { s_last_video_us = now; standard_vote(r.standard); profile_observe(&r); }
         bool was = s_afc_locked;
-        s_afc_locked = afc2_native_lock(s_afc_locked, valid, afc2_ctrl_can_lock(&afc, true), afc.n, &afc_lost);
+        if (copied) s_afc_locked = afc2_native_lock(s_afc_locked, valid, afc2_ctrl_can_lock(&afc, true), afc.n, &afc_lost);
         if (was && !s_afc_locked) afc2_ctrl_reset(&afc, ctx, true);
         /* Re-acquisition retunes only on a strong carrier: at the range edge
          * the porch estimate is pulled toward the receiver centre and would
@@ -434,7 +439,7 @@ static void control_task(void *arg)
         if (!s_afc_locked && window_ok && m.q_phase >= 55 && !s_menu_active &&
             phy_try_actuator(phy_generation())) {
             int32_t step = 0;
-            const bool strong = !s_obs_stuck && afc_correction_allowed(s_obs_coherence, calibration_filter_class_mhz());
+            const bool strong = receiver_obs_cn_x10() >= AFC_MIN_CN_X10;   /* envelope C/N model */
             if (afc2_ctrl_decide(&afc, gain_epoch == s_gain_epoch && strong, &step)) {
                 rf_set_offset_khz(rf_offset_khz() + (int)step);
                 s_last_gain_write_us = esp_timer_get_time();   /* restore re-forces gain */
@@ -481,9 +486,10 @@ static void control_task(void *arg)
             s_kp.narrow = kp_ladder_narrow_rows(profile_base_level(profile) > 0, calibration_narrow_width_khz());
             s_kp.wide = profile == PROFILE_WIDE;   /* the 16 MHz rows of a measured wide VTX */
             s_kp.gain = s_current_gain;            /* LP follows the gain (kp_ladder.h KP_LP_GAIN_*) */
-            uint8_t level = kp_ladder_update_lp(&s_kp, cn_x10, ladder_ok,
-                                                profile_live_deviation_x100(), now, s_kp_auto == 2);
-            bool usable = ladder_ok && ctx == afc_context();
+            const bool program_usable = program_ok && ctx == afc_context();
+            uint8_t level = kp_ladder_update_evidence(&s_kp, cn_x10, ladder_ok, program_usable,
+                                                      profile_live_deviation_x100(), now, s_kp_auto == 2);
+            bool usable = (s_kp.lp != transport_lp() ? program_usable : ladder_ok) && ctx == afc_context();
             /* Confirm the program and the direction, not the exact level the
              * ladder is stepping through (kp_switch_guard.h). */
             if (kp_switch_confirm_toward(&s_auto_candidate, level, s_kp.lp, transport_kp_level(), transport_lp(),

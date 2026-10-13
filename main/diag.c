@@ -50,7 +50,7 @@ static volatile bool s_stream;
 static struct {
     int64_t start_us;
     unsigned windows, measured, video, gain_sum, stuck;
-    long coh, p50, origin, clip;
+    long coh, p50, origin, clip, env;
     uint32_t faults;
     bool owned;           /* menu / calibration / scan owned TX or gain */
     bool afc_step;
@@ -114,7 +114,7 @@ static void close_second(int64_t now)
     r.coherence = (int16_t)(s_acc.coh / (long)s_acc.windows);
     /* Mostly a fixed IQ point this second: no carrier to estimate. */
     r.cn_x10 = (int16_t)(s_acc.stuck * 2u >= s_acc.windows ? CN_UNKNOWN_X10
-                                                          : cn_estimate_x10(r.coherence, calibration_filter_class_mhz()));
+                         : cn_estimate_env_x10((int)(s_acc.env / (long)(s_acc.windows - s_acc.stuck)), calibration_filter_class_mhz()));
     r.p50 = (int16_t)(s_acc.p50 / (long)s_acc.windows);
     r.origin_pm = (int16_t)(s_acc.origin / (long)s_acc.windows);
     r.clip_pm = (int16_t)(s_acc.clip / (long)s_acc.windows);
@@ -166,7 +166,7 @@ void diag_window(bool measured, bool video_valid, bool afc_step)
     trace_faults = faults_now;
     point.flags |= afc_step ? DIAG_F_AFC_STEP : 0u;
     point.coherence = (int16_t)s_obs_coherence;
-    point.cn_x10 = (int16_t)(s_obs_stuck ? CN_UNKNOWN_X10 : cn_estimate_x10(point.coherence, calibration_filter_class_mhz()));
+    point.cn_x10 = (int16_t)receiver_obs_cn_x10();
     point.p50 = (int16_t)s_obs_p50;
     point.origin_pm = (int16_t)s_obs_origin_pm;
     point.clip_pm = (int16_t)s_obs_clip_pm;
@@ -192,6 +192,7 @@ void diag_window(bool measured, bool video_valid, bool afc_step)
     s_acc.video += measured && video_valid;
     s_acc.gain_sum += s_current_gain;
     s_acc.coh += s_obs_coherence;
+    if (!s_obs_stuck) s_acc.env += s_obs_env_ratio_x100;
     s_acc.stuck += s_obs_stuck;
     s_acc.p50 += s_obs_p50;
     s_acc.origin += s_obs_origin_pm;
@@ -338,9 +339,10 @@ void diag_report(void)
     printf("RANGE_DIAG chain sphase=%s dc_ok=%u dc_held=%u lane=%s faults=%lu\n", calibration_sphase_state(),
            calibration_dc_ok(g), phy_dco_held(), rf_lane_name(rf_lane()), (unsigned long)transport_fault_count());
     const int cls_mhz = calibration_filter_class_mhz(), cn = receiver_obs_cn_x10();
+    const bool video_recent = s_last_video_us && esp_timer_get_time() - s_last_video_us < 2000000;
     printf("RANGE_DIAG iq p50=%d coherence=%d cn_est_x10=%d (model, %d MHz class) origin_pm=%d clip_pm=%d "
            "video_recent=%u\n", s_obs_p50, s_obs_coherence, cn, cls_mhz, s_obs_origin_pm, s_obs_clip_pm,
-           s_last_video_us && esp_timer_get_time() - s_last_video_us < 2000000);
+           video_recent);
 
     /* Verdicts: evidence, not a measured cause. */
     bool any = false;
@@ -357,8 +359,8 @@ void diag_report(void)
             "WEAK_CARRIER table maximum, C/N estimate 2-8 dB: near the usable-picture threshold");
     VERDICT(g >= table->max_index && s_obs_p50 <= 4 && s_obs_origin_pm >= 650,
             "QUANTISER_LIMITED noise below one ultrafine step at the table maximum: check with the VTX off");
-    VERDICT(g + DIAG_FADE_HEADROOM <= table->max_index && cn >= DIAG_WEAK_CN_X10,
-            "OK strong carrier with gain headroom");
+    VERDICT(video_recent && g + DIAG_FADE_HEADROOM <= table->max_index && cn >= DIAG_WEAK_CN_X10,
+            "VIDEO_EVIDENCE strong C/N estimate with gain headroom");
     if (!any) printf("RANGE_DIAG verdict=UNKNOWN no specific evidence\n");
 #undef VERDICT
 

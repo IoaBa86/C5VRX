@@ -418,8 +418,8 @@ gets a DSP/output investigation before any headroom/fade hypothesis. Console `L`
 coarse, ABBA, behind a status screen); production stays fixed ultrafine.
 Channels above 5885 MHz (R8, E6-E8) are flagged out of the documented C5
 range. AFC re-acquisition retunes only at a C/N estimate >= 6 dB
-(`main/cn_estimate.h`: coherence -> C/N per filter class, since 4-bit
-noise alone reads ~42/58/61 % coherent at 20/12/10 MHz): below it the porch
+(`main/cn_estimate.h`: DC-removed envelope -> C/N per filter class;
+the historical coherence model is retained only for comparison): below it the porch
 estimate is pulled toward the receiver centre (`research/afc_bias.py`,
 host model: +65..250 kHz at 0-2 dB C/N, which passed the MAD gate), so the
 old gate could walk the offset the wrong way at the range edge. Open-field
@@ -496,6 +496,21 @@ verified rollback, then latch live OFF on failure while USB remains available
 `.github/workflows/c5vrx5.yml` publishes `c5vrx5-v5.0.N` and `c5vrx5-pr-N`
 for the flasher's C5VRX-5 tab. Board: runs and holds video; range is not
 yet measured. Evidence: `docs/FINDINGS.md`.
+
+Envelope C/N (2026-10-13, `research/cn_envelope.py`,
+`research/data/cn_envelope.txt`): extends the existing calibration envelope
+statistic to the gain observer's 4 x 64-byte probe. Phase-step coherence read
+9-13 dB next to the VTX on the board; runtime kp, AFC, profile gates and
+diagnostics now use DC-removed power mean-squared/variance instead. Four
+filter-class tables reproduce from PAL, two seeds, deviation 1.0; deviations
+0.69/1.4 differ by up to ~1.1 dB through 12 dB C/N. Fixed IQ points stay
+unknown and do not inflate per-second envelope averages. Above ~15 dB,
+filter AM and quantisation limit accuracy. Host model/tests and firmware
+build only; new estimator hardware validation and observer timing pending.
+Gain-driven LP now has independent program evidence: AUTO kp+LP enters from
+G70 even with missing IQ or gain writes, retains LP at G65-69, and releases
+below G65 after the adaptive hold. Missing C/N holds kp; retunes and PHY
+ownership hold LP. Host regressions follow this through the switch guard.
 
 U85Q-LP (`research/u85q_lp.py`, README sections 12 and 16, `main/u85q_lp.bsasm`;
 the range-edge program of the kp + LP ladder, K mode 2): U85Q plus a post-detection IIR

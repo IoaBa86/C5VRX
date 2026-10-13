@@ -21,6 +21,7 @@
  */
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "gain.h"
 
@@ -184,6 +185,49 @@ int main(void)
         dg_observation_t stuck = dg_measure(dc_point, sizeof(dc_point), lut, 1000);
         check("fixed DC point: repeat_pm 1000, span 0, coherence 100, stuck",
               stuck.repeat_pm == 1000 && stuck.span == 0 && stuck.coherence == 100 && dg_stuck(&stuck));
+        check("fixed DC point has no envelope power", stuck.env_ratio_x100 == 0);
+        /* Equal populations at powers 18 and 98: mean 58, variance 1600,
+         * so mean^2/variance * 100 = 210.25. A DC translation must leave
+         * the result unchanged (both signed nibble axes, without clipping). */
+        uint8_t envelope[256], shifted[256];
+        for (unsigned k = 0; k < 256u; ++k) {
+            int hi = k & 4u ? 3 : 1, lo = -hi - 1;
+            int ci = k & 1u ? hi : lo, cq = k & 2u ? hi : lo;
+            envelope[k] = (uint8_t)(((unsigned)ci & 15u) << 4 | ((unsigned)cq & 15u));
+            shifted[k] = (uint8_t)(((unsigned)(ci + 1) & 15u) << 4 | ((unsigned)(cq - 1) & 15u));
+        }
+        dg_observation_t env = dg_measure(envelope, sizeof(envelope), lut, 1000);
+        dg_observation_t dc_env = dg_measure(shifted, sizeof(shifted), lut, 1000);
+        check("envelope moments match analytic ratio", env.env_ratio_x100 == 210);
+        check("envelope ratio ignores DC on both IQ axes", dc_env.env_ratio_x100 == env.env_ratio_x100);
+        /* Check translated raw moments against a direct DC-centred oracle,
+         * including asymmetric means, correlated axes and short windows. */
+        bool moments_ok = true;
+        uint32_t seed = 19;
+        for (unsigned trial = 0; trial < 64u; ++trial) {
+            size_t count = 1u + trial * 4u;
+            double mx = 0, my = 0, sp = 0, spp = 0;
+            for (size_t k = 0; k < count; ++k) {
+                seed = seed * 1664525u + 1013904223u;
+                envelope[k] = (uint8_t)(seed >> 24);
+                if (trial & 1u) envelope[k] = (uint8_t)((envelope[k] & 15u) * 17u);
+                mx += 2 * ((int8_t)(envelope[k] & 240u) >> 4) + 1;
+                my += 2 * ((int8_t)((envelope[k] & 15u) << 4) >> 4) + 1;
+            }
+            mx /= count; my /= count;
+            for (size_t k = 0; k < count; ++k) {
+                double x = 2 * ((int8_t)(envelope[k] & 240u) >> 4) + 1 - mx;
+                double y = 2 * ((int8_t)((envelope[k] & 15u) << 4) >> 4) + 1 - my;
+                double p = x * x + y * y;
+                sp += p; spp += p * p;
+            }
+            double mp = sp / count, var = spp / count - mp * mp;
+            double ratio = mp <= 0 ? 0 : var > 0 ? 100 * mp * mp / var : 65535;
+            int expected = ratio > 65535 ? 65535 : (int)(ratio + .5);
+            dg_observation_t measured = dg_measure(envelope, count, lut, 1000);
+            moments_ok = moments_ok && abs((int)measured.env_ratio_x100 - expected) <= 1;
+        }
+        check("integer envelope moments match the centred oracle (64 asymmetric/correlated probes)", moments_ok);
         /* A strong clean carrier: radius 4 cells, slow rotation, so most
          * neighbours repeat, but the circle spans many codes (board, G27). */
         uint8_t circle[256];
@@ -195,6 +239,7 @@ int main(void)
         dg_observation_t strong = dg_measure(circle, sizeof(circle), lut, 1000);
         printf("strong slow carrier: repeat_pm %u span %u\n", strong.repeat_pm, strong.span);
         check("a strong slowly rotating carrier is not a fixed point", strong.repeat_pm >= 400 && !dg_stuck(&strong));
+        check("clean rotating carrier has a constant envelope", strong.env_ratio_x100 > 1543);
         /* The same envelope with noise on it (weak carrier at G73-75) is not stuck. */
         dg_observation_t noisy = stuck;
         noisy.repeat_pm = 300;

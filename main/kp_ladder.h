@@ -17,13 +17,15 @@
  *   levels. Toward a sharper kp (lower level) the hold and gap are shorter:
  *   near the floor a calm tracker loses lock first, so a collapsing carrier
  *   must get back up quickly.
- * - A noise-like window (CN_UNKNOWN_X10: coherence at or below plain noise)
+ * - A noise-like window (CN_UNKNOWN_X10: envelope at or below plain noise)
  *   is the floor, not missing evidence: it targets the curve's 0 dB point.
  *   Only an unusable window (retune, gain write, menu) holds the level:
  *   kp_ladder_window_usable(); a short unusable gap keeps pending changes. The AFC's envelope-stationarity test is not
  *   part of it; receiver noise near the threshold fails it, and with it the
  *   ladder froze at the range edge (research README section 18).
- * The C/N estimate comes from the IQ window coherence, not from the tracker,
+ * LP follows the gain even without usable IQ; only retune/PHY ownership
+ * holds that policy. Missing C/N holds kp. The C/N estimate comes from the
+ * IQ envelope, not from the tracker,
  * so a kp change cannot feed back into it. Pure logic: host test
  * test/test_kp_ladder.c. */
 #pragma once
@@ -73,7 +75,8 @@ typedef struct {
     int8_t pending_dir;     /* direction of the target seen since pending_since */
     int64_t pending_since;
     int64_t last_step_us;
-    int64_t last_usable_us; /* last usable window (unusable gaps up to KP_STALE_US hold) */
+    int64_t last_usable_us; /* last usable C/N window */
+    int64_t last_program_us; /* last usable gain/program observation */
     int64_t release_hold_us; /* current LP release hold (adaptive, see KP_LP_RELEASE_*) */
     int64_t released_us;     /* last LP -> U85Q */
     uint32_t steps;
@@ -84,10 +87,10 @@ typedef struct {
 
 /* A control window the ladder may use: settled after a retune or restart,
  * unchanged context, no gain write in the last KP_GAIN_WRITE_GUARD_US. The
- * C/N comes from the gain observer's coherence, so a noisy, non-stationary
+ * C/N comes from the gain observer's envelope, so a noisy, non-stationary
  * window is evidence (the floor), never a reason to hold.
  *
- * The coherence is one ~6 us observer probe taken right before the control
+ * The envelope is one ~6 us observer probe taken right before the control
  * window reads it, and Direct Gain settles a write in 0.3-1 ms. A 100 ms
  * guard plus "no write during the 50 ms window" made every window unusable
  * while the carrier faded: 50-120 writes a second at the range edge (board
@@ -120,6 +123,7 @@ static inline void kp_ladder_reset(kp_ladder_t *l)
     l->pending_since = 0;
     l->last_step_us = 0;
     l->last_usable_us = 0;
+    l->last_program_us = 0;
     l->release_hold_us = KP_LP_RELEASE_BASE_US;
     l->released_us = -(1LL << 40);
 }
@@ -261,11 +265,11 @@ static inline bool kp_ladder_want_lp(int cls, int cn_x10, bool lp)
     return kp_ladder_want_lp_g(cls, cn_x10, lp, false);
 }
 
-/* One control window. window_ok false = unusable window (hold); a usable
- * noise-like window passes cn_x10 = CN_UNKNOWN_X10 and means the floor.
+/* Separate evidence: window_ok controls C/N/kp, program_ok controls LP.
+ * A usable noise-like window passes CN_UNKNOWN_X10 and means the floor.
  * Returns the level the LUT should move to. */
-static inline uint8_t kp_ladder_update_lp(kp_ladder_t *l, int cn_x10, bool window_ok, int dev_x100, int64_t now_us,
-                                          bool allow_lp)
+static inline uint8_t kp_ladder_update_evidence(kp_ladder_t *l, int cn_x10, bool window_ok, bool program_ok,
+                                                int dev_x100, int64_t now_us, bool allow_lp)
 {
     if (!allow_lp && l->lp) {                   /* LP not allowed (mode change): back to U85Q at once */
         l->lp = false;
@@ -283,17 +287,23 @@ static inline uint8_t kp_ladder_update_lp(kp_ladder_t *l, int cn_x10, bool windo
         ++l->steps;
         return l->level;
     }
-    if (now_us - l->last_usable_us > KP_STALE_US) { l->pending_dir = 0; l->lp_pending = -1; }
-    if (!window_ok) return l->level;
-    l->last_usable_us = now_us;
+    if (now_us - l->last_usable_us > KP_STALE_US) l->pending_dir = 0;
+    if (now_us - l->last_program_us > KP_STALE_US) l->lp_pending = -1;
     /* Per-window estimates jitter by a few dB: decide on a smoothed C/N
      * (first-order, 1/8 per 50 ms window, ~0.4 s). A noise-like window
      * counts as 0 dB. */
-    const int raw_cn = cn_x10 <= CN_UNKNOWN_X10 ? 0 : cn_x10;
-    if (!l->cn_init) { l->cn_q4 = raw_cn * 16; l->cn_init = true; }
-    else l->cn_q4 += (raw_cn * 16 - l->cn_q4) / 8;
-    const int cn = l->cn_q4 / 16;
-    if (allow_lp) {
+    if (window_ok) {
+        l->last_usable_us = now_us;
+        const int raw_cn = cn_x10 <= CN_UNKNOWN_X10 ? 0 : cn_x10;
+        if (!l->cn_init) { l->cn_q4 = raw_cn * 16; l->cn_init = true; }
+        else l->cn_q4 += (raw_cn * 16 - l->cn_q4) / 8;
+    }
+    const int cn = l->cn_init ? l->cn_q4 / 16 : 0;
+    /* A known gain is evidence for LP without any IQ measurement. Retunes
+     * and PHY ownership still hold it. The C/N fallback needs a window. */
+    const bool program_evidence = program_ok && (l->gain || window_ok);
+    if (program_evidence) l->last_program_us = now_us;
+    if (allow_lp && program_evidence) {
         /* Program first: a switch lands on the new program's curve level at
          * this C/N, a quality-matched point (the curves cross near the
          * switch C/N), then kp steps on as usual. */
@@ -313,13 +323,14 @@ static inline uint8_t kp_ladder_update_lp(kp_ladder_t *l, int cn_x10, bool windo
             l->lp_pending = -1;
             l->lp_switch_us = now_us;
             ++l->lp_switches;
-            l->level = kp_ladder_target_g(cn, dev_x100, l->lp, l->narrow, l->wide);
+            if (window_ok) l->level = kp_ladder_target_g(cn, dev_x100, l->lp, l->narrow, l->wide);
             l->pending_dir = 0;
             l->last_step_us = now_us;
             ++l->steps;
             return l->level;
         }
     }
+    if (!window_ok) return l->level;
     const uint8_t target = kp_ladder_target_g(cn, dev_x100, l->lp, l->narrow, l->wide);
     const int8_t dir = target > l->level ? 1 : target < l->level ? -1 : 0;
     if (dir != l->pending_dir) {
@@ -334,4 +345,11 @@ static inline uint8_t kp_ladder_update_lp(kp_ladder_t *l, int cn_x10, bool windo
         ++l->steps;
     }
     return l->level;
+}
+
+/* Existing model callers offer a single validity flag for both policies. */
+static inline uint8_t kp_ladder_update_lp(kp_ladder_t *l, int cn_x10, bool window_ok, int dev_x100, int64_t now_us,
+                                          bool allow_lp)
+{
+    return kp_ladder_update_evidence(l, cn_x10, window_ok, window_ok, dev_x100, now_us, allow_lp);
 }
