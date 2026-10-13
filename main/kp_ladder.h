@@ -51,6 +51,16 @@
 #define KP_LP_FLAP_WINDOW_US  30000000LL  /* LP needed again within this: double the hold */
 #define KP_LP_GAP_US          3000000LL   /* leaving: at least this after the last program switch */
 
+/* The program follows the receiver's gain, not the coherence C/N model:
+ * the gain index is the received level, and LP is for a link that has run
+ * out of gain. The model read 9-13 dB next to the VTX (LP threshold 8.5 dB)
+ * and 4-20 dB on the uncorrected DC with no VTX (board walks 2026-10-13).
+ * On the board receiver noise becomes visible from ~G70 (first DCO row with
+ * a noise-dithered search); sync was poor from ~G40-55 in the walks, but
+ * those include the DC park. Operator choice: LP from G70, back below G65. */
+#define KP_LP_GAIN_ON  70u
+#define KP_LP_GAIN_OFF 65u
+
 typedef struct {
     uint8_t level;          /* current target level, 0 = kp 0.85 */
     bool lp;                /* U85Q-LP program (post-detection low-pass) */
@@ -69,6 +79,7 @@ typedef struct {
     uint32_t steps;
     bool narrow;            /* narrow (MATCHED, 10 MHz class) filter: own curves; set by the caller */
     bool wide;              /* WIDE profile (16 MHz class) filter: own curves; set by the caller */
+    uint8_t gain;           /* receiver gain index; set by the caller, 0 = unknown (C/N rule) */
 } kp_ladder_t;
 
 /* A control window the ladder may use: settled after a retune or restart,
@@ -99,6 +110,7 @@ static inline void kp_ladder_reset(kp_ladder_t *l)
     l->level = 0;
     l->lp = false;
     l->narrow = false;
+    l->gain = 0;
     l->wide = false;
     l->lp_pending = -1;
     l->lp_since = 0;
@@ -285,7 +297,8 @@ static inline uint8_t kp_ladder_update_lp(kp_ladder_t *l, int cn_x10, bool windo
         /* Program first: a switch lands on the new program's curve level at
          * this C/N, a quality-matched point (the curves cross near the
          * switch C/N), then kp steps on as usual. */
-        const int8_t want = kp_ladder_want_lp_g(kp_ladder_class(dev_x100), cn, l->lp, l->wide) ? 1 : 0;
+        const int8_t want = l->gain ? (l->gain >= (l->lp ? KP_LP_GAIN_OFF : KP_LP_GAIN_ON) ? 1 : 0)
+                                    : (kp_ladder_want_lp_g(kp_ladder_class(dev_x100), cn, l->lp, l->wide) ? 1 : 0);
         if (want == (int8_t)l->lp) l->lp_pending = -1;
         else if (want != l->lp_pending) { l->lp_pending = want; l->lp_since = now_us; }
         else if (now_us - l->lp_since >= (want ? KP_LP_ENTER_HOLD_US : l->release_hold_us) &&

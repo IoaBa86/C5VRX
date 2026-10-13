@@ -232,6 +232,23 @@ int main(void)
         for (int k = 0; k < 40; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, 40, true, 100, tj, true);
         check("calm for 30 s: hold back to 2 s", j.lp && j.release_hold_us == KP_LP_RELEASE_BASE_US);
     }
+    {   /* LP by gain: in at G70, out below G65, whatever the C/N model says. */
+        kp_ladder_t gl;
+        int64_t tg = 0;
+        kp_ladder_reset(&gl);
+        gl.gain = 30;
+        for (int k = 0; k < 100; ++k, tg += TICK_US) (void)kp_ladder_update_lp(&gl, 40, true, 0, tg, true);
+        check("gain G30, model 4 dB: U85Q (strong carrier)", !gl.lp);
+        gl.gain = 72;
+        for (int k = 0; k < 20; ++k, tg += TICK_US) (void)kp_ladder_update_lp(&gl, 200, true, 0, tg, true);
+        check("gain G72, model 20 dB: LP within 1 s", gl.lp);
+        gl.gain = 67;
+        for (int k = 0; k < 200; ++k, tg += TICK_US) (void)kp_ladder_update_lp(&gl, 200, true, 0, tg, true);
+        check("gain G67: stays LP (hysteresis)", gl.lp);
+        gl.gain = 60;
+        for (int k = 0; k < 100; ++k, tg += TICK_US) (void)kp_ladder_update_lp(&gl, 200, true, 0, tg, true);
+        check("gain G60: back to U85Q after the release hold", !gl.lp);
+    }
     {   /* Narrow 10 MHz filter (MATCHED profiles): own curves, LP still allowed. */
         kp_ladder_t n;
         int64_t tn = 0;
