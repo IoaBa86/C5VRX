@@ -543,3 +543,30 @@ never locking, so the deviation is never measured; the FLOOR-row DC itself.
   still inflates the coherence. Another reason to fix the DC itself.
 - 12 program and 11 kp switches in 250 s; `copy_fail` 44 % of control
   windows (1812 of 4132).
+
+### Second round of fixes (2026-10-13, not yet board-tested)
+
+- **FLOOR-row DC** (`phy_dco_search_flat`, `calibration.c`, DCO_VERSION 7):
+  rows whose noise is below one quantizer step get DCO codes by bisecting,
+  per axis, the code where the fixed output code flips (DC within half a
+  cell). Only rows without a flip in +-96 codes stay FLOOR. This targets the
+  root of the G59-67 park ("black screen, gain stuck at 65"). Board check:
+  boot log `DCO flat ... ok` lines, `T` DCO `floor_rows` near 0, gain
+  reaching G75-83 with the VTX off.
+- **LP follows the gain** (`kp_ladder.h` KP_LP_GAIN_ON/OFF): LP from G70,
+  back below G65, with the fast entry and adaptive release above. kp within
+  a program still follows the C/N curve.
+- **AFC through missing windows** (`afc2_ctrl_miss`): failed copies,
+  non-stationary windows and windows without a burst no longer clear the 16
+  estimates; more than 20 in a row (1 s) do. Host test: two thirds missing
+  keeps 14 of 16.
+- **Control-window copy** holds the scheduler for the copy. Board check:
+  `T` LADDER `copy_fail` near 0.
+- `ladder_gate.py check` passes with the new timing (after 0.48-0.82 dB vs
+  oracle 0.50-0.90).
+
+Still open: AFC measurement needs the colour burst to accept a line
+(`afc2_measure`), so a B/W camera (or a camera switching to B/W in the dark)
+never locks; line-period timing could validate sync instead. The coherence
+C/N model reads low on a strong carrier; it now only steers kp within a
+program.
