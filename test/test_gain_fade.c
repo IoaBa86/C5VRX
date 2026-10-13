@@ -195,17 +195,6 @@ int main(void)
         dg_observation_t strong = dg_measure(circle, sizeof(circle), lut, 1000);
         printf("strong slow carrier: repeat_pm %u span %u\n", strong.repeat_pm, strong.span);
         check("a strong slowly rotating carrier is not a fixed point", strong.repeat_pm >= 400 && !dg_stuck(&strong));
-        dg_reset(&g, &table, 59);
-        uint64_t t = 1000000;
-        uint8_t to = 59;
-        for (unsigned k = 0; k < 50u; ++k, t += TICK_US) {
-            stuck.observed_us = t;
-            to = dg_tick(&g, &stuck);
-            if (to != g.current_gain) break;
-            dg_sync_applied(&g, to, t);
-        }
-        printf("fixed DC point at G59: Direct Gain goes to G%u\n", g.current_gain);
-        check("fixed DC point at G59: listen at the table maximum", g.current_gain == table.max_index);
         /* The same envelope with noise on it (weak carrier at G73-75) is not stuck. */
         dg_observation_t noisy = stuck;
         noisy.repeat_pm = 300;

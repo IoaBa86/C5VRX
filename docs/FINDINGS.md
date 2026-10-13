@@ -518,3 +518,28 @@ Not changed yet: the wide-class curve with an unknown deviation (U85Q kp
 0.85 below 2 dB, LP only 2-8.5 dB) and with it the LP flapping at the edge
 (the replay best case still applies 15 program changes in 114 s); the AFC
 never locking, so the deviation is never measured; the FLOOR-row DC itself.
+
+### Walk 3 on 2d0088f, and a revert (2026-10-13)
+
+`walk3_close_check.log`, `walk3_gain_loop.log`:
+
+- **Close in (G25-36, 0-120 s):** no fixed-point windows (`stuck_iq=0`),
+  but the C/N model still dipped below 8.5 dB in 19 of 115 s with a perfect
+  picture, and LP was applied twice (46-51 s, 124-130 s). Next to the VTX
+  the smoothed C/N sits at 9-13 dB, only just above the LP threshold: the
+  coherence model reads too low on a strong real carrier (sim tables:
+  deviation 1.0 PAL; a 45-degree step test also fails on fast FM swings).
+- **Direct Gain looped** after the fixed-point change: with the VTX off
+  ~1400 writes and hundreds of overloads a second, at the weak spots
+  75-600/s. The fixed point sent the gain to G83; the first window after
+  the write still carried the row's uncorrected DC and clipped, the
+  overload dropped the gain into the FLOOR rows (18 this boot, G54-71, DC
+  up to (-4.3, +3.8) cells, P50 51-87 with clipping) and round again.
+  **Reverted for Direct Gain**: `dg_stuck` now only feeds the C/N model.
+  The G59 park with the VTX off is back; the fix belongs in the DCO path
+  (correct the FLOOR rows' DC), not in the gain controller.
+- **Weak spot 147-195 s:** sync 0 at G60-67 (FLOOR rows) with coherence
+  85-98 and C/N 4-12 dB: the DC point with a little carrier on it (span > 2)
+  still inflates the coherence. Another reason to fix the DC itself.
+- 12 program and 11 kp switches in 250 s; `copy_fail` 44 % of control
+  windows (1812 of 4132).

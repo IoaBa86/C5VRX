@@ -123,7 +123,7 @@ static dg_transition_t transition_kind(const direct_gain_t *g, uint8_t from, uin
 
 static bool carrier(const dg_observation_t *o)
 {
-    return o->coherence >= 55 && o->p50 >= 5 && o->origin_pm < 650 && !dg_stuck(o);
+    return o->coherence >= 55 && o->p50 >= 5 && o->origin_pm < 650;
 }
 
 /* Healthy band P50 13..32 (r ~3.5..5.6 cells), the zero-write zone. */
@@ -469,7 +469,7 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
     if (!g || !o) return 0u;
     dg_observation_t prior = g->last_tracking;
     g->last_tracking = *o;
-    bool no_carrier = (o->p50 <= 4 && o->origin_pm >= 650 && o->coherence < 20) || dg_stuck(o);
+    bool no_carrier = o->p50 <= 4 && o->origin_pm >= 650 && o->coherence < 20;
     bool saturated = o->clip_pm >= 100 || o->p95 >= 95;
     if (!saturated) g->saturated_run = false;
     else if (!g->saturated_run) { g->saturated_run = true; g->saturated_since_us = o->observed_us; }
