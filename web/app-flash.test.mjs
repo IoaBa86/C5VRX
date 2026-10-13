@@ -20,13 +20,14 @@ function harness(sourceName, packageType = 'merged', confirmed = true) {
   const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   const shortcuts = [...html.matchAll(/<button[^>]*data-command="([^"]+)"([^>]*)>/g)].map((match, i) => {
     const element = get(`shortcut-${i}`);
-    element.dataset = { command: match[1], confirm: match[2].match(/data-confirm="([^"]+)"/)?.[1] };
+    element.dataset = { command: match[1], hint: match[2].match(/data-hint="([^"]+)"/)?.[1] };
     return element;
   });
   const downloads = [], flashes = [], alerts = [], commands = [], lifecycle = [];
   const context = vm.createContext({
     console, URL, Date, TextDecoder, TextEncoder, ReceiverConsole, MENU_COMMAND_KEYS, setTimeout, clearTimeout,
-    document: { baseURI: 'https://c5vrx.com/', getElementById: get,
+    setInterval: () => 0, clearInterval() {},
+    document: { baseURI: 'https://c5vrx.com/', getElementById: get, visibilityState: 'visible',
       querySelectorAll: selector => selector === '[data-command]' ? shortcuts : [], addEventListener() {}, createElement: () => get('option') },
     navigator: { serial: { addEventListener() {} } },
     window: { confirm: () => confirmed, matchMedia: () => ({ matches: true, addEventListener() {} }) },
@@ -103,20 +104,38 @@ test('terminal connection releases flasher before identifying firmware', async (
   assert.equal(h.get('btnConnect').disabled, false);
 });
 
-test('manual and button commands share confirmations and send no Enter', async () => {
-  const h = harness('alpha', 'merged', false);
+test('menu buttons and typed keys send at once: no browser popup, no Enter', async () => {
+  const h = harness('alpha', 'merged', false);   // a confirm() answer of "cancel" must not matter
   vm.runInContext("isConnected = false; serialConsole.state = 'connected'; receiverConsole.push('C5VRX-5 keys: T status\\n');", h.context);
   const calibrate = h.shortcuts.find(b => b.dataset.command === 'F');
   await calibrate.handlers.click();
+  assert.deepEqual(h.commands, ['F']);
   h.get('commandInput').value = 'F';
   await h.get('commandForm').handlers.submit({ preventDefault() {} });
-  assert.deepEqual(h.commands, []);
-  h.get('commandInput').value = 'T';
-  await h.get('commandForm').handlers.submit({ preventDefault() {} });
-  assert.deepEqual(h.commands, ['T']);
+  assert.deepEqual(h.commands, ['F', 'F']);
   h.get('commandInput').value = 'Fg';
   await h.get('commandForm').handlers.submit({ preventDefault() {} });
-  assert.deepEqual(h.commands, ['T']);
+  assert.deepEqual(h.commands, ['F', 'F']);
+  vm.runInContext('syncDeviceControls()', h.context);
+  assert.match(calibrate.title, /Live video stops/, 'the warning stays visible as a tooltip');
+});
+
+test('the STATUS beat updates the menu by itself and stays out of the log', async () => {
+  const h = harness('alpha');
+  vm.runInContext("isConnected = false; serialConsole.state = 'connected'", h.context);
+  vm.runInContext("appendSerial('C5VRX5 version=v5.0.9 demod=U85Q\\nSTATUS channel=F4 freq=5800 afc_locked=1 standard=AUTO detected=PAL signal=71 menu=0 mode=WIDE kp_auto=2 output=1.5x live=1 busy=0\\nHB t_s=4\\nSTAT')", h.context);
+  vm.runInContext("appendSerial('US channel=F4 freq=5800 signal=72 busy=0\\n'); flushLog()", h.context);
+  const shown = h.get('output').textContent;
+  assert.doesNotMatch(shown, /STATUS/);
+  assert.match(shown, /HB t_s=4/);
+  const view = vm.runInContext('receiverConsole.view()', h.context);
+  assert.equal(view.channel, 'F4');
+  assert.equal(view.signal, 72);
+  assert.equal(view.output, '1.5x');
+  assert.equal(view.profile, 'WIDE');
+  await h.shortcuts.find(b => b.dataset.command === 'c').handlers.click();
+  await new Promise(resolve => setTimeout(resolve, 800));
+  assert.deepEqual(h.commands, ['c'], 'with the beat no extra status report is requested');
 });
 
 test('legacy identity leaves current shortcuts disabled and help usable', () => {

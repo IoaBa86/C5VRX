@@ -513,6 +513,20 @@ void control_start(void)
     ESP_ERROR_CHECK(xTaskCreate(control_task, "control", 6144, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 }
 
+/* Status beat for the web menu (web/receiver-console.js): one short line
+ * every 2 s from the console task, so the menu follows the receiver
+ * without a status request. Read-only. */
+void control_print_beat(void)
+{
+    printf("STATUS channel=%s freq=%u afc_locked=%u standard=%s detected=%s signal=%d menu=%u mode=%s kp_auto=%u "
+           "output=%s live=%u busy=%u\n",
+           rf_channel()->name, rf_frequency_mhz(), s_afc_locked,
+           s_std_mode == STD_MODE_AUTO ? "AUTO" : s_std_mode == STD_MODE_PAL ? "PAL" : "NTSC",
+           s_detected_std_valid ? (s_detected_std == VIDEO_STD_PAL ? "PAL" : "NTSC") : "none",
+           s_signal_strength, s_menu_active, profile_name(profile_active()), s_kp_auto, transport_output_name(),
+           profile_live_mode(), menu_status_active());
+}
+
 void control_print(void)
 {
     printf("CONTROL channel=%s freq=%u offset_khz=%d cfo_khz=%d afc_locked=%u afc_corrections=%u "

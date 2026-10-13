@@ -229,10 +229,12 @@ BAND, CHANNEL, SCAN, VIDEO, CALIBRATE, OUTPUT and EXIT. Selecting a menu
 page only changes the browser view; its action button sends the command.
 It identifies C5VRX-5 from firmware help/status and displays the last reported
 band, channel, frequency, signal, video standard, output level, screen-menu
-state, scan result and calibration state. After a command that changes one of
-these it requests one status report (`T`); scan and calibration refresh when
-they finish (`SCAN result`, heartbeat `startup=0`). There is no periodic
-polling; **Refresh status** asks again. VIDEO/EXIT direct actions require
+state, scan result and calibration state. It updates by itself: the firmware
+sends a short `STATUS` line every 2 s (`control_print_beat`), which the menu
+reads and keeps out of the log. Firmware without that beat gets a `T` request
+after a command, when a scan or calibration finishes and every 10 s while
+idle. The firmware lists also refresh by themselves (every minute and when
+the page is shown again), keeping the selected build. VIDEO/EXIT direct actions require
 firmware advertising `v`/`e` in its help; older C5VRX-5 builds can still use
 the on-screen menu controls. Legacy builds do not enable the C5VRX-5 action
 menu. `#terminal` opens the Terminal view directly.
@@ -243,8 +245,9 @@ lane test) the firmware ignores menu keys; it now answers each with
 heartbeat, and the web menu greys out those buttons until it ends.
 
 Diagnostics and bench controls are collapsed by default. Commands send one
-case-sensitive byte without Enter. Actions that change reception or stored
-settings ask for confirmation, including when typed manually. Connecting the
+case-sensitive byte without Enter. Commands are sent at once without a
+browser popup; what an action changes is shown as the button's tooltip.
+Connecting the
 terminal releases the flasher, and connecting the flasher releases the terminal;
 they never open a port together. **Download log** saves the displayed text,
 including FIELD_DIAG and raw IQ captures. The display retains the latest

@@ -86,7 +86,6 @@
               <label for="selectAlphaBuild">Build</label>
               <div class="select-row">
                 <select id="selectAlphaBuild" class="form-control"><option value="">Loading C5VRX-5 builds…</option></select>
-                <button type="button" id="btnRefreshAlphaBuilds" class="action" title="Refresh C5VRX-5 builds">Refresh</button>
               </div>
             </div>
             <details class="release-metadata">
@@ -136,7 +135,6 @@
               <label for="selectRelease">Version</label>
               <div class="select-row">
                 <select id="selectRelease" class="form-control"><option value="">Loading releases…</option></select>
-                <button type="button" id="btnRefreshReleases" class="action" title="Refresh releases">Refresh</button>
               </div>
             </div>
             <details class="release-metadata">
@@ -201,7 +199,6 @@
               <label for="terminalBaud">Baud</label>
               <select id="terminalBaud"><option>115200</option><option>460800</option><option>921600</option></select>
               <button type="button" class="action primary" id="btnTerminalConnect">Connect receiver</button>
-              <button type="button" class="action" id="btnRefreshStatus" data-command="T" disabled>Refresh status</button>
             </div>
             <p id="terminalStatus" class="connection-state" role="status" data-state="disconnected">No device connected</p>
           </div>
@@ -232,38 +229,38 @@
                   <h2>BAND</h2>
                   <dl class="readouts"><div><dt>Active band</dt><dd data-value="band">—</dd></div><div><dt>Channel</dt><dd data-value="channel">—</dd></div></dl>
                   <p class="hint">Steps through R, A, B, E, F and L. Live video is interrupted while it retunes.</p>
-                  <button type="button" class="command-button" data-command="b" data-confirm="Retune to the next band? Live video will be interrupted." disabled>Next band <kbd>b</kbd></button>
+                  <button type="button" class="command-button" data-command="b" data-hint="Retune to the next band? Live video will be interrupted." disabled>Next band <kbd>b</kbd></button>
                 </div>
                 <div role="tabpanel" id="pane-channel" aria-labelledby="menu-channel" hidden>
                   <h2>CHANNEL</h2>
                   <dl class="readouts"><div><dt>Active</dt><dd data-value="channel">—</dd></div><div><dt>Center</dt><dd data-value="freq">—</dd></div></dl>
                   <div class="signal-row"><span>Signal</span><div class="meter"><div class="meter-fill" data-meter="signal"></div></div><span data-value="signal">—</span></div>
                   <p class="hint">Steps through the eight channels of the active band.</p>
-                  <button type="button" class="command-button" data-command="c" data-confirm="Retune to the next channel? Live video will be interrupted." disabled>Next channel <kbd>c</kbd></button>
+                  <button type="button" class="command-button" data-command="c" data-hint="Retune to the next channel? Live video will be interrupted." disabled>Next channel <kbd>c</kbd></button>
                 </div>
                 <div role="tabpanel" id="pane-scan" aria-labelledby="menu-scan" hidden>
                   <h2>SCAN</h2>
                   <dl class="readouts"><div><dt>Status</dt><dd data-value="scan">—</dd></div></dl>
                   <p class="hint">Checks all 48 channels and keeps the strongest analog video centred on a channel. Live video stops while scanning.</p>
-                  <button type="button" class="command-button" data-command="s" data-confirm="Scan for the strongest video? Live video will stop while scanning." disabled>Scan 48 channels <kbd>s</kbd></button>
+                  <button type="button" class="command-button" data-command="s" data-hint="Scan for the strongest video? Live video will stop while scanning." disabled>Scan 48 channels <kbd>s</kbd></button>
                 </div>
                 <div role="tabpanel" id="pane-video" aria-labelledby="menu-video" hidden>
                   <h2>VIDEO STANDARD</h2>
                   <dl class="readouts"><div><dt>Standard</dt><dd data-value="standard">—</dd></div><div><dt>Detected</dt><dd data-value="detected">—</dd></div></dl>
                   <p class="hint">Cycles AUTO → NTSC → PAL for the menu picture. AUTO follows the camera.</p>
-                  <button type="button" class="command-button" data-command="v" data-confirm="Cycle AUTO / NTSC / PAL? The receiver saves the selected video standard." disabled>Change video standard <kbd>v</kbd></button>
+                  <button type="button" class="command-button" data-command="v" data-hint="Cycle AUTO / NTSC / PAL? The receiver saves the selected video standard." disabled>Change video standard <kbd>v</kbd></button>
                 </div>
                 <div role="tabpanel" id="pane-calibrate" aria-labelledby="menu-calibrate" hidden>
                   <h2>CALIBRATE</h2>
                   <dl class="readouts"><div><dt>Calibration</dt><dd data-value="calibrate">—</dd></div></dl>
                   <p class="hint">On the ground only. Video stops for up to two minutes; switch the VTX off for the best result.</p>
-                  <button type="button" class="command-button" data-command="F" data-confirm="Calibrate on the ground? Live video stops for up to two minutes. VTX off is best." disabled>Calibrate receiver <kbd>F</kbd></button>
+                  <button type="button" class="command-button" data-command="F" data-hint="Calibrate on the ground? Live video stops for up to two minutes. VTX off is best." disabled>Calibrate receiver <kbd>F</kbd></button>
                 </div>
                 <div role="tabpanel" id="pane-output" aria-labelledby="menu-output" hidden>
                   <h2>OUTPUT LEVEL</h2>
                   <dl class="readouts"><div><dt>Level</dt><dd data-value="output">—</dd></div></dl>
                   <p class="hint">Cycles 1.0 / 1.5 / 2.0 / 2.5x; every boot starts at 1.0x. Higher levels can clip a wide VTX: check sync and white into 75 ohm.</p>
-                  <button type="button" class="command-button" data-command="g" data-confirm="Cycle OUTPUT 1.0 / 1.5 / 2.0 / 2.5x? Higher levels may clip video. Boot resets to 1.0x." disabled>Next output level <kbd>g</kbd></button>
+                  <button type="button" class="command-button" data-command="g" data-hint="Cycle OUTPUT 1.0 / 1.5 / 2.0 / 2.5x? Higher levels may clip video. Boot resets to 1.0x." disabled>Next output level <kbd>g</kbd></button>
                 </div>
                 <div role="tabpanel" id="pane-exit" aria-labelledby="menu-exit" hidden>
                   <h2>BACK TO LIVE VIDEO</h2>
@@ -279,14 +276,15 @@
             <div class="command-group">
               <h2>On-screen menu (goggles)</h2>
               <div class="command-buttons">
-                <button type="button" class="command-button" data-command="o" data-confirm="Toggle the on-screen menu? Opening it replaces live video." disabled>Open / close <kbd>o</kbd></button>
+                <button type="button" class="command-button" data-command="o" data-hint="Toggle the on-screen menu? Opening it replaces live video." disabled>Open / close <kbd>o</kbd></button>
                 <button type="button" class="command-button" data-command="n" disabled>Next item <kbd>n</kbd></button>
-                <button type="button" class="command-button" data-command="x" data-confirm="Activate the selected on-screen item? It may retune, change video settings or start calibration." disabled>Select item <kbd>x</kbd></button>
+                <button type="button" class="command-button" data-command="x" data-hint="Activate the selected on-screen item? It may retune, change video settings or start calibration." disabled>Select item <kbd>x</kbd></button>
               </div>
             </div>
             <details class="shortcut-details">
               <summary>Diagnostics</summary>
               <div class="command-buttons">
+                <button type="button" class="command-button" data-command="T" disabled>Full status report <kbd>T</kbd></button>
                 <button type="button" class="command-button" data-command="D" disabled>Range / health report <kbd>D</kbd></button>
                 <button type="button" class="command-button" data-command="R" disabled>Field logging on/off <kbd>R</kbd></button>
                 <button type="button" class="command-button" data-command="I" disabled>Capture raw IQ <kbd>I</kbd></button>
@@ -303,13 +301,13 @@
               </dl>
               <p class="hint">Test on the ground. Manual tracker changes save automatic rescue OFF. Live changes share a five-second firmware cooldown.</p>
               <div class="command-buttons">
-                <button type="button" class="command-button" data-command="K" data-confirm="Cycle OFF / AUTO kp / AUTO kp+LP? The setting is saved; a change can briefly interrupt video." disabled>Cycle automatic rescue <kbd>K</kbd></button>
-                <button type="button" class="command-button" data-command="A" data-confirm="Toggle automatic live VTX profile switching? This setting is saved; profile changes can briefly interrupt video." disabled>Toggle live VTX matching <kbd>A</kbd></button>
-                <button type="button" class="command-button" data-command="k" data-confirm="Step the tracker calmer? This saves automatic rescue OFF, including after reboot." disabled>Tracker calmer <kbd>k</kbd></button>
-                <button type="button" class="command-button" data-command="j" data-confirm="Step the tracker faster? This saves automatic rescue OFF, including after reboot." disabled>Tracker faster <kbd>j</kbd></button>
-                <button type="button" class="command-button" data-command="P" data-confirm="Toggle U85Q / U85Q-LP? This saves automatic rescue OFF, including after reboot." disabled>Toggle low-pass <kbd>P</kbd></button>
-                <button type="button" class="command-button" data-command="L" data-confirm="Run the bench-only IQ lane comparison? Live video stops for about three seconds." disabled>Compare IQ lanes <kbd>L</kbd></button>
-                <button type="button" class="command-button" data-command="`" data-confirm="Reboot into USB download mode for flashing? Video stops and the terminal disconnects." disabled>USB download mode <kbd>`</kbd></button>
+                <button type="button" class="command-button" data-command="K" data-hint="Cycle OFF / AUTO kp / AUTO kp+LP? The setting is saved; a change can briefly interrupt video." disabled>Cycle automatic rescue <kbd>K</kbd></button>
+                <button type="button" class="command-button" data-command="A" data-hint="Toggle automatic live VTX profile switching? This setting is saved; profile changes can briefly interrupt video." disabled>Toggle live VTX matching <kbd>A</kbd></button>
+                <button type="button" class="command-button" data-command="k" data-hint="Step the tracker calmer? This saves automatic rescue OFF, including after reboot." disabled>Tracker calmer <kbd>k</kbd></button>
+                <button type="button" class="command-button" data-command="j" data-hint="Step the tracker faster? This saves automatic rescue OFF, including after reboot." disabled>Tracker faster <kbd>j</kbd></button>
+                <button type="button" class="command-button" data-command="P" data-hint="Toggle U85Q / U85Q-LP? This saves automatic rescue OFF, including after reboot." disabled>Toggle low-pass <kbd>P</kbd></button>
+                <button type="button" class="command-button" data-command="L" data-hint="Run the bench-only IQ lane comparison? Live video stops for about three seconds." disabled>Compare IQ lanes <kbd>L</kbd></button>
+                <button type="button" class="command-button" data-command="`" data-hint="Reboot into USB download mode for flashing? Video stops and the terminal disconnects." disabled>USB download mode <kbd>`</kbd></button>
               </div>
             </details>
           </div>
@@ -328,7 +326,7 @@
             <p class="hint log-hint">Keys are case-sensitive and send one byte without Enter; <kbd>h</kbd> lists them. The log keeps the latest 120,000 characters.</p>
           </div>
         </div>
-        <p class="hint">Connecting the terminal releases the flasher and the other way round; they never share the port. The menu refreshes the status after each command.</p>
+        <p class="hint">Connecting the terminal releases the flasher and the other way round; they never share the port. The menu updates by itself while the receiver is connected.</p>
       </section>
 
       <aside class="hardware-purchase" aria-label="Get the hardware">

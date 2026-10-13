@@ -126,6 +126,7 @@ extern QueueHandle_t s_commands;
 void control_start(void);
 video_standard_t menu_standard(void);
 void control_print(void);
+void control_print_beat(void);   /* STATUS line every 2 s (console.c) */
 
 /* ---- calibration.c ---- */
 void calibration_start(void);

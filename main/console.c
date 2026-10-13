@@ -123,6 +123,12 @@ static void console_task(void *arg)
             }
         }
         diag_poll();
+        /* Status beat for the web menu: it updates without a T request. */
+        static int64_t status_beat;
+        if (esp_timer_get_time() - status_beat >= 2000000) {
+            status_beat = esp_timer_get_time();
+            control_print_beat();
+        }
     }
 }
 

@@ -41,7 +41,7 @@ test('reconnect discards firmware capabilities and previous settings', () => {
   assert.equal(state.pending.length, 4096);
 });
 
-test('every web shortcut is an actual current console byte, with bench confirmations', () => {
+test('every web shortcut is an actual current console byte, with its warning as a hint', () => {
   const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   const consoleSource = fs.readFileSync(new URL('../main/console.c', import.meta.url), 'utf8');
   const accepted = new Set([...consoleSource.matchAll(/(?:case|c ==) '([^'])'/g)].map(m => m[1]));
@@ -51,7 +51,8 @@ test('every web shortcut is an actual current console byte, with bench confirmat
     assert.equal(key.length, 1);
     assert.ok(accepted.has(key), `Firmware does not accept ${key}`);
     if (['c', 'b', 's', 'o', 'x', 'v', 'K', 'k', 'j', 'P', 'g', 'A', 'F', 'L', '`'].includes(key))
-      assert.match(markup, /data-confirm=/, `${key} requires its action warning`);
+      assert.match(markup, /data-hint=/, `${key} requires its action warning`);
+    assert.doesNotMatch(markup, /data-confirm=/, 'menu commands never open a browser popup');
   }
 });
 
@@ -133,4 +134,21 @@ test('busy-gated keys are exactly the keys the console routes to command()', asy
   const routed = consoleSource.match(/case 'o':[^\n]*/)[0];
   const keys = new Set([...routed.matchAll(/case '([^'])'/g)].map(m => m[1]));
   assert.deepEqual([...MENU_COMMAND_KEYS].sort(), [...keys].sort());
+});
+
+test('STATUS beat fills the menu and marks firmware that reports by itself', () => {
+  const state = new ReceiverConsole();
+  state.push('C5VRX5 version=v5.0.9 demod=U85Q\n', 1000);
+  assert.equal(state.reportsByItself(1000), false);
+  const events = state.push('STATUS channel=R1 freq=5658 afc_locked=0 standard=PAL detected=none signal=12 menu=1 mode=DEFAULT kp_auto=1 output=2.0x live=0 busy=1\n', 2000);
+  assert.ok(events.includes('status'));
+  const view = state.view();
+  assert.equal(view.channel, 'R1');
+  assert.equal(view.locked, false);
+  assert.equal(view.output, '2.0x');
+  assert.equal(view.liveProfile, false);
+  assert.equal(view.kpMode, 'AUTO kp');
+  assert.equal(view.busy, true);
+  assert.equal(state.reportsByItself(5000), true);
+  assert.equal(state.reportsByItself(9000), false, 'a silent receiver falls back to status requests');
 });
