@@ -434,5 +434,26 @@ This is not PR 211 code: gain.c and the DCO FLOOR rule are unchanged by
 it. PR 211's ladder only made it visible, because its C/N input is the same
 coherence.
 
-Open: an IQ capture with the VTX weak (not off) at G59 and at a forced
-G70-83 to measure what the carrier looks like on both.
+At the sync edge, after a reboot (`edge_serial.log`, `weak_*.bin`; VTX
+placed where the picture is between desync and just video):
+
+- The gain now sits at G70-76 (OK rows, `DCO held=1`) and receiver noise
+  is visible (spread 1.8-2.5 cells, 11-13 codes per axis), DC still
+  (+1.4..2.2, -0.8..-1.3) cells. Coherence 54-68 %, `cn_est_x10` mostly
+  CN_UNKNOWN or -2..+3 dB, briefly 3-6 dB when sync returns.
+  `dc_coherence_check.py` agrees within a few points with and without DC
+  removal here: with real noise the DC no longer dominates.
+- Still no switch in 40 s (`prog_switches=0`, `kp_switches=0`), internal
+  `lp_switches` 4 -> 6. Here this is the curve, not a gate: the deviation
+  is unknown (`deviation_x100=0`), so the ladder uses the wide class, whose
+  LP window is 2.0-8.5 dB (`kp_lp_floor_x10` 1.5 dB + hysteresis/3) and
+  whose kp row is 0.85 up to 2 dB. A noise-like window counts as 0 dB, so
+  at the edge the wanted pair is U85Q kp 0.85, the pair already running.
+- The deviation is never measured because `profile_observe()` needs
+  `s_afc_locked`, and the AFC never locked in either boot, even close in
+  (sync 52-62 %, `afc_corrections=0`). With no deviation the ladder can
+  only ever use the wide class.
+
+Open: whether the G59 park returns in this boot with the VTX off; why the
+AFC never locks (burst gate `AFC2_BURST_MIN_X10`, CFO -476 kHz seen once);
+an IQ capture of the weak carrier at G59 for comparison.
