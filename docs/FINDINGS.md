@@ -406,7 +406,33 @@ Findings only, no fix yet.
   writes per second; `kp_ladder_window_usable()` rejects any window with a
   write in the previous 100 ms, so the smoothed C/N was not even updated.
 
-Open: why the DCO leaves ~(-1.5, +3) cells of DC at G59, whether G59-83
-would show receiver noise if the gain were allowed there, and an
-IQ capture with the VTX weak (not off) to see the carrier around the DC
-point.
+Where the DC comes from and why the gain stops at G59
+(`range_diag_vtx_off.txt`, `T` DCO line; gain.c, calibration.c):
+
+- **G59-60 are DCO FLOOR rows, so their DC is never corrected.** The DCO
+  table covers the top RF stage, G54-83 (`top_rf_stage_from=54`): 14 rows
+  OK, 16 FLOOR. `dco_quiet_search()` marks a row and every row below it
+  FLOOR when the receiver noise there is below one quantizer step ("nothing
+  to correct"), so FLOOR is G54-69. Below the noise step the DC is still
+  there: (-1.5, +3) cells at G59, `dc_ok=1`, `dc_held=0`. The noise being
+  below one step is exactly what makes the DC a clean constant.
+- **That DC point sits inside the Direct Gain healthy band.** `healthy()`
+  wants `carrier()` (coherence >= 55, P50 >= 5, origin < 650) and P50
+  13..32; the DC point gives coherence 99-100, P50 ~15, origin 0. The gain
+  climbs while the DC is below the band and holds as soon as the DC alone
+  reaches it: G59-60, about 23 steps below the maximum. `no_carrier`
+  (P50 <= 4, origin >= 650, coherence < 20) can never fire on it, so the
+  "listen at the table maximum" path is never taken.
+- **A weak VTX is therefore invisible.** At G59 even receiver noise is
+  below one LSB, so a carrier near the sensitivity limit is too; noise
+  only dithers the quantizer from ~G70 (first OK row). The range edge is
+  set by where the DC point parks the gain, not by the demodulator.
+- `RANGE_DIAG verdict=OK strong carrier with gain headroom` with the VTX
+  off, for the same reason.
+
+This is not PR 211 code: gain.c and the DCO FLOOR rule are unchanged by
+it. PR 211's ladder only made it visible, because its C/N input is the same
+coherence.
+
+Open: an IQ capture with the VTX weak (not off) at G59 and at a forced
+G70-83 to measure what the carrier looks like on both.
