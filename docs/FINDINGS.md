@@ -457,3 +457,34 @@ placed where the picture is between desync and just video):
 Open: whether the G59 park returns in this boot with the VTX off; why the
 AFC never locks (burst gate `AFC2_BURST_MIN_X10`, CFO -476 kHz seen once);
 an IQ capture of the weak carrier at G59 for comparison.
+
+Hard check of the steering (`research/field_walk_analysis.py`,
+`research/ladder_replay.py`: the C ladder and guard in Python, wide class,
+each 1 s FIELD_DIAG C/N held for its 20 windows):
+
+- **The C/N alone would have switched LP 15 times in the walk.** Best case
+  (every window usable): first apply at 60.8 s, 15 internal LP changes, 15
+  applies. Board: 6 internal changes (from 85 s), 0 applies. So a gate
+  outside the C/N held the ladder.
+- **One unusable window resets everything.** The guard wants 40 unbroken
+  usable windows (2 s), the LP hold 20 (1 s). Random unusable windows in
+  the replay: 1 % -> 13 applies, 5 % -> 3, 10 % -> 2, 20 % -> 0 (6 internal
+  changes at 10 %, as on the board). `measurement_coverage_pct` while the
+  C/N was in the LP band was 50 % (walk) and 49-62 % (edge); that counts
+  the AFC envelope test and failed window copies too, so it bounds the
+  ladder's share from below only. 57-77 s add the gain writes (50-120/s).
+  Which gate fails the other windows is not visible in the log: `T` has no
+  counter for unusable ladder windows or guard resets.
+- **Even the best case flaps.** 15 program restarts in 114 s in the walk;
+  at the edge LP is on for 2-4 s and off again, because a noise-like window
+  counts as 0 dB, which is below the wide class's 1.5 dB LP floor.
+- **The deviation decides most of the range and is never known.** The
+  wide class (unknown deviation) keeps U85Q kp 0.85 below 2 dB and gains
+  0.36 dB from the ladder in simulation; for deviation 1.0 the kp + LP
+  ladder is worth 1.6 dB and for 0.69 3.35 dB (research README section
+  16). The board never measures it because the AFC never locks.
+- **Max gain is not the issue in boot 2.** At G70-78 receiver noise spans
+  1.8-2.5 cells per axis, so the 4-bit quantizer is not what limits C/N
+  there; more gain would mainly move the envelope out of the band. The
+  G59 park of boot 1 is the gain problem (DC point, above).
+
