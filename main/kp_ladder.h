@@ -51,6 +51,7 @@ typedef struct {
     int64_t last_step_us;
     uint32_t steps;
     bool narrow;            /* narrow (MATCHED, 10 MHz class) filter: own curves; set by the caller */
+    bool wide;              /* WIDE profile (16 MHz class) filter: own curves; set by the caller */
 } kp_ladder_t;
 
 /* A control window the ladder may use: settled after a retune or restart,
@@ -69,6 +70,7 @@ static inline void kp_ladder_reset(kp_ladder_t *l)
     l->level = 0;
     l->lp = false;
     l->narrow = false;
+    l->wide = false;
     l->lp_pending = -1;
     l->lp_since = 0;
     l->lp_switch_us = -(1LL << 40);
@@ -120,6 +122,33 @@ static const uint8_t kp_lp_curve_narrow_x100[2][6] = {
     {60, 50, 50, 50, 50, 50},
     {80, 70, 70, 70, 70, 70},
 };
+/* The narrow rows come from a 10 MHz filter model. The board's narrow
+ * sweep entry measured 11.9 MHz (docs/FINDINGS.md): there the 12 MHz rows
+ * fit better (data/best_combo.json, deviation 0.69: range limit 1.15 vs
+ * 1.28 dB, SINAD at 30 dB 11.4 vs 11.1; deviation 1.0: equal limit, 13.7
+ * vs 13.2 dB). So a MATCHED profile uses the narrow rows only when its
+ * filter measured at most halfway between the two models; an unknown width
+ * keeps them. Simulation, research README section 19. */
+#define KP_NARROW_MAX_WIDTH_KHZ 11000u
+static inline bool kp_ladder_narrow_rows(bool matched_profile, unsigned narrow_width_khz)
+{
+    return matched_profile && (narrow_width_khz == 0u || narrow_width_khz <= KP_NARROW_MAX_WIDTH_KHZ);
+}
+
+/* The WIDE profile's own rows (research/best_combo.py, FILTER_MHZ=16,
+ * deviation 1.4 / 1.7 / 2.0, data/best_combo_16mhz.json; README section
+ * 19). The 12 MHz wide row was made for an unknown or deviation-1.4 VTX on
+ * the 12 MHz class; on the 16 MHz filter of a measured wide VTX:
+ * - kp 0.85 everywhere: kp 0.80 costs 0.5 dB SINAD at 12 dB C/N for
+ *   deviation 1.7 and 2.2-2.8 dB at 12-30 dB for deviation 2.0;
+ * - LP up to 9.5 dB (crossovers ~9.5-13 dB), LP kp 0.85.
+ * Range limit unchanged (2.75 / 2.86 / 3.96 dB): the existing LP rule
+ * already reaches the best in that data; the gain is a sharper picture
+ * between 8.5 dB and close in. Simulation, not measured range. */
+static const uint8_t kp_curve_wide16_x100[6] = {85, 85, 85, 85, 85, 85};
+static const uint8_t kp_lp_curve_wide16_x100[6] = {85, 85, 85, 85, 85, 85};
+#define KP_LP_ON_WIDE16_X10 95
+
 static const int16_t kp_lp_on_x10[KP_CLASSES] = {65, 65, 70, 85};
 static const int16_t kp_lp_floor_x10[KP_CLASSES] = {-999, -999, -999, 15};
 #define KP_LP_HYST_X10   15            /* leave LP 1.5 dB above where it is entered */
@@ -135,17 +164,24 @@ static inline int kp_ladder_class(int dev_x100)
     return KP_CLASS_WIDE;
 }
 
-/* kp (x100) the curve asks for at a C/N, linear between the points. */
-static inline int kp_ladder_curve_x100(int cls, int cn_x10, bool lp, bool narrow)
+/* kp (x100) the curve asks for at a C/N, linear between the points. wide
+ * selects the WIDE profile's rows for the wide class only. */
+static inline int kp_ladder_curve_g(int cls, int cn_x10, bool lp, bool narrow, bool wide)
 {
     const uint8_t *k = narrow && cls <= KP_CLASS_NORMAL ? (lp ? kp_lp_curve_narrow_x100[cls] : kp_curve_narrow_x100[cls])
-                                                        : (lp ? kp_lp_curve_x100[cls] : kp_curve_x100[cls]);
+                     : wide && cls == KP_CLASS_WIDE ? (lp ? kp_lp_curve_wide16_x100 : kp_curve_wide16_x100)
+                                                    : (lp ? kp_lp_curve_x100[cls] : kp_curve_x100[cls]);
     if (cn_x10 <= kp_cn_points_x10[0]) return k[0];
     for (int i = 1; i < 6; ++i)
         if (cn_x10 <= kp_cn_points_x10[i])
             return k[i - 1] + (k[i] - k[i - 1]) * (cn_x10 - kp_cn_points_x10[i - 1]) /
                               (kp_cn_points_x10[i] - kp_cn_points_x10[i - 1]);
     return k[5];
+}
+
+static inline int kp_ladder_curve_x100(int cls, int cn_x10, bool lp, bool narrow)
+{
+    return kp_ladder_curve_g(cls, cn_x10, lp, narrow, false);
 }
 
 /* Ladder level (0 = kp 0.85, 0.05 per level) nearest to a kp. */
@@ -155,9 +191,14 @@ static inline uint8_t kp_ladder_level_for(int kp_x100)
     return (uint8_t)(lv < 0 ? 0 : lv >= KP_LADDER_LEVELS ? KP_LADDER_LEVELS - 1 : lv);
 }
 
+static inline uint8_t kp_ladder_target_g(int cn_x10, int dev_x100, bool lp, bool narrow, bool wide)
+{
+    return kp_ladder_level_for(kp_ladder_curve_g(kp_ladder_class(dev_x100), cn_x10, lp, narrow, wide));
+}
+
 static inline uint8_t kp_ladder_target_f(int cn_x10, int dev_x100, bool lp, bool narrow)
 {
-    return kp_ladder_level_for(kp_ladder_curve_x100(kp_ladder_class(dev_x100), cn_x10, lp, narrow));
+    return kp_ladder_target_g(cn_x10, dev_x100, lp, narrow, false);
 }
 
 static inline uint8_t kp_ladder_target_lp(int cn_x10, int dev_x100, bool lp)
@@ -166,11 +207,16 @@ static inline uint8_t kp_ladder_target_lp(int cn_x10, int dev_x100, bool lp)
 }
 
 /* Program the C/N asks for, with hysteresis around the current one. */
-static inline bool kp_ladder_want_lp(int cls, int cn_x10, bool lp)
+static inline bool kp_ladder_want_lp_g(int cls, int cn_x10, bool lp, bool wide)
 {
-    const int on = kp_lp_on_x10[cls], floor = kp_lp_floor_x10[cls];
+    const int on = wide && cls == KP_CLASS_WIDE ? KP_LP_ON_WIDE16_X10 : kp_lp_on_x10[cls], floor = kp_lp_floor_x10[cls];
     if (lp) return cn_x10 < on + KP_LP_HYST_X10 && cn_x10 >= floor;
     return cn_x10 < on && cn_x10 >= floor + KP_LP_HYST_X10 / 3;
+}
+
+static inline bool kp_ladder_want_lp(int cls, int cn_x10, bool lp)
+{
+    return kp_ladder_want_lp_g(cls, cn_x10, lp, false);
 }
 
 /* One control window. window_ok false = unusable window (hold); a usable
@@ -207,7 +253,7 @@ static inline uint8_t kp_ladder_update_lp(kp_ladder_t *l, int cn_x10, bool windo
         /* Program first: a switch lands on the new program's curve level at
          * this C/N, a quality-matched point (the curves cross near the
          * switch C/N), then kp steps on as usual. */
-        const int8_t want = kp_ladder_want_lp(kp_ladder_class(dev_x100), cn, l->lp) ? 1 : 0;
+        const int8_t want = kp_ladder_want_lp_g(kp_ladder_class(dev_x100), cn, l->lp, l->wide) ? 1 : 0;
         if (want == (int8_t)l->lp) l->lp_pending = -1;
         else if (want != l->lp_pending) { l->lp_pending = want; l->lp_since = now_us; }
         else if (now_us - l->lp_since >= KP_LP_HOLD_US && now_us - l->lp_switch_us >= KP_LP_GAP_US) {
@@ -215,14 +261,14 @@ static inline uint8_t kp_ladder_update_lp(kp_ladder_t *l, int cn_x10, bool windo
             l->lp_pending = -1;
             l->lp_switch_us = now_us;
             ++l->lp_switches;
-            l->level = kp_ladder_target_f(cn, dev_x100, l->lp, l->narrow);
+            l->level = kp_ladder_target_g(cn, dev_x100, l->lp, l->narrow, l->wide);
             l->pending_dir = 0;
             l->last_step_us = now_us;
             ++l->steps;
             return l->level;
         }
     }
-    const uint8_t target = kp_ladder_target_f(cn, dev_x100, l->lp, l->narrow);
+    const uint8_t target = kp_ladder_target_g(cn, dev_x100, l->lp, l->narrow, l->wide);
     const int8_t dir = target > l->level ? 1 : target < l->level ? -1 : 0;
     if (dir != l->pending_dir) {
         l->pending_dir = dir;

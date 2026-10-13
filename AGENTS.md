@@ -594,6 +594,16 @@ not a phase fault). Host model: 0.6-cell intrinsic white noise lifts the clean
 position to ~725 (limit 300), the board's repeated `unsettled` pattern. DC row
 held during scans; final qualification in the live TX context. Board repeats
 pending; no normalized gate (phasefix6 failed board repeat scans).
+Carrier sampling phase (2026-10-13, `sphase_live_*`, research README section
+19, `research/sphase_study.py`): host model, one mixing LSB costs ~0.3-0.6 dB
+and multi-bit mixing 1.4-5 dB. On a carrier (sync, gain >= 6 below max) the
+cleanest of three positions is chosen once per boot, probed every 10 s
+against 150 and repaired after two excursions (no per-boot cap, false alarms
+back off 60 s -> 16 min). A source-synchronous MODEM_DIAG clock would remove
+the cause but is not established. WIDE profile own 16 MHz rows (kp 0.85, LP
+< 9.5 dB; no range gain, sharper picture); MATCHED uses 10 MHz rows only for
+a narrow filter measured <= 11 MHz; FIELD_DIAG logs kp_x100/lp. Simulation
+and host tests; board check pending.
 
 ### Instructions for future pipeline work
 

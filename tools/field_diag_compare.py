@@ -72,6 +72,14 @@ def summary(path):
         "origin_pm_median": median([r.get("origin_pm", 0) for r in seconds]),
         "chain_fault_s": chain,
         "out_of_spec_s": sum(1 for r in seconds if r.get("in_spec", 1) == 0),
+        # The kp + LP ladder at the edge (research README section 18): LP
+        # below ~6.5 dB C/N, a calmer kp at 4-12 dB, kp 0.75-0.85 close in.
+        # Older logs without kp_x100 report nan.
+        "edge_s": len(edge := [r for r in seconds if "kp_x100" in r and -990 < r.get("cn_est_x10", -990) < 60]),
+        "edge_lp_pct": 100.0 * sum(r.get("lp", 0) for r in edge) / len(edge) if edge else float("nan"),
+        "edge_kp_median": median([r["kp_x100"] / 100 for r in edge if r["kp_x100"] >= 0]),
+        "strong_kp_median": median([r["kp_x100"] / 100 for r in seconds
+                                    if r.get("kp_x100", -1) >= 0 and r.get("cn_est_x10", -990) >= 120]),
         "dropouts": len(events),
         "dropout_s_median": median([e["duration"] for e in events]),
         "categories": cats,
@@ -84,7 +92,8 @@ def main(argv):
         return 2
     rows = [summary(p) for p in argv[1:]]
     keys = ["seconds", "sync_evidence_ok_pct", "coverage_pct_median", "legacy_unknown_coverage_s", "gain_median", "at_max_gain_pct", "coherence_median", "coherence_with_sync", "cn_est_median_db", "noise_like_s", "afc_step_s",
-            "p50_median", "origin_pm_median", "chain_fault_s", "out_of_spec_s", "dropouts", "dropout_s_median"]
+            "p50_median", "origin_pm_median", "chain_fault_s", "out_of_spec_s", "edge_s", "edge_lp_pct", "edge_kp_median", "strong_kp_median",
+            "dropouts", "dropout_s_median"]
     cats = sorted({c for r in rows for c in r["categories"]})
     width = max(len(k) for k in keys + ["dropouts " + c for c in cats]) + 2
     col = max(14, *(len(r["log"]) + 2 for r in rows))

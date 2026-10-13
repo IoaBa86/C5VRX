@@ -8,6 +8,7 @@
 #include "afc_ctrl.h"
 #include "kp_ladder.h"
 #include "kp_switch_guard.h"
+#include "profile_logic.h"
 #include "cn_estimate.h"
 #include "analog_video_detect.h"
 #include "driver/gpio.h"
@@ -465,8 +466,10 @@ static void control_task(void *arg)
         } else if (s_kp_auto && !s_menu_active) {
             /* MATCHED profiles (start level below kp 0.85) run the narrow class:
              * decided by the profile, not by filter equality, since the narrow
-             * and normal sweep entries may be the same setting. */
-            s_kp.narrow = profile_base_level(profile) > 0;
+             * and normal sweep entries may be the same setting; its curves
+             * only when the narrow filter measured close to their 10 MHz model. */
+            s_kp.narrow = kp_ladder_narrow_rows(profile_base_level(profile) > 0, calibration_narrow_width_khz());
+            s_kp.wide = profile == PROFILE_WIDE;   /* the 16 MHz rows of a measured wide VTX */
             uint8_t level = kp_ladder_update_lp(&s_kp, cn_x10, ladder_ok,
                                                 profile_live_deviation_x100(), now, s_kp_auto == 2);
             bool usable = ladder_ok && ctx == afc_context();

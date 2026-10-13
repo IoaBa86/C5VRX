@@ -356,3 +356,18 @@ within 0.2 dB of an instant oracle; deviation 1.4 under fades and MATCHED 1.0
 under fades gain 0..0.3 dB. A slow steady fly-out changes -0.2..+0.2 dB, which
 is why a walk-away test can hide it. Simulation only; board check: `kp_steps`
 and `lp_switches` in `T` should follow the C/N at the edge.
+
+## Sampling phase on the carrier, WIDE rows (2026-10-13)
+
+C5VRX by Twotoz and the C5VRX contributors. Host model (research README
+section 19): a mid-transition MODEM_DIAG read costs 0.3-0.6 dB of range
+when one LSB lane mixes and 1.4-5 dB when several bits do. The boot check
+ran on receiver noise when the VTX was off and only reported in-flight
+drift. The firmware now chooses the cleanest of the three positions on the
+carrier once per boot, probes it every 10 s against half the old limit and
+repairs a confirmed excursion with a short scan (no per-boot cap; false
+alarms back off to 16 min). The WIDE profile gets its own 16 MHz kp/LP rows
+(sharper picture; no range gain exists for wide VTXs in this demodulator),
+MATCHED uses the 10 MHz rows only for a filter measured <= 11 MHz, and
+FIELD_DIAG logs kp and LP per second. Host tests and a local ESP-IDF 6.0.2
+build pass; board check pending.

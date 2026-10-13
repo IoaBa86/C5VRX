@@ -171,6 +171,66 @@ int main(void)
     sphase_scan_t w = scan(6.5e6, 2.5, 0.0, false);
     snprintf(name, sizeof(name), "normalized scan: best %d worst %d per mille, contrast", w.best, w.worst);
     check(name, sphase_contrast(&w));
+
+    /* Live drift repair on the carrier (sphase_live_*). */
+    check("carrier gate: table maximum is receiver noise, not carrier evidence",
+          !sphase_live_carrier(true, 83, 83) && !sphase_live_carrier(true, 80, 83));
+    check("carrier gate: sync and gain >= 6 below the maximum",
+          sphase_live_carrier(true, 77, 83) && !sphase_live_carrier(false, 60, 83));
+    stream(s_buf, N, 6.5e6, 4.0, 0.0, false);
+    probe_t carrier_clean = probe(s_buf, N);
+    stream(s_buf, N, 6.5e6, 4.0, 0.0, true);
+    probe_t carrier_mixed = probe(s_buf, N);
+    snprintf(name, sizeof(name), "radius-4 stream: clean %d below, mid-transition %d above the limit",
+             carrier_clean.excess, carrier_mixed.excess);
+    check(name, carrier_clean.excess < SPHASE_LIMIT && carrier_mixed.excess >= SPHASE_LIMIT);
+    snprintf(name, sizeof(name), "radius-4 stream: clean %d below the live limit %d", carrier_clean.excess,
+             SPHASE_LIVE_LIMIT);
+    check(name, carrier_clean.excess < SPHASE_LIVE_LIMIT);
+    sphase_scan_t lsb;
+    sphase_scan_reset(&lsb);
+    sphase_scan_add(&lsb, 40);
+    sphase_scan_add(&lsb, 180);   /* one LSB lane mixing in some reads */
+    sphase_scan_add(&lsb, 45);
+    check("carrier contrast sees one mixing LSB lane the noise rule ignores",
+          sphase_carrier_contrast(&lsb) && !sphase_contrast(&lsb));
+    sphase_live_t live;
+    sphase_live_reset(&live);
+    const int64_t s1 = 1000000LL;
+    check("noise windows never start a scan", !sphase_live_tick(&live, 3000, false, 0) &&
+          live.strikes == 0 && live.carrier_checks == 0);
+    check("the first carrier window of a boot chooses the phase", sphase_live_tick(&live, 20, true, s1));
+    sphase_live_done(&live, true, false, s1);
+    check("proactive choice is no repair and no false alarm", live.qualified && live.moved == 0 &&
+          live.false_alarms == 0);
+    check("a clean carrier read: nothing to do", !sphase_live_tick(&live, carrier_clean.excess, true, 2 * s1));
+    check("one strike only arms the quick recheck",
+          !sphase_live_tick(&live, 200, true, 3 * s1) && live.strikes == 1 &&
+          sphase_live_next_us(&live) == SPHASE_LIVE_RECHECK_US);
+    check("a clean read clears the strike",
+          !sphase_live_tick(&live, 30, true, 5 * s1) && sphase_live_next_us(&live) == SPHASE_LIVE_CHECK_US);
+    (void)sphase_live_tick(&live, 200, true, 70 * s1);
+    check("a noise window between strikes neither counts nor clears",
+          !sphase_live_tick(&live, 0, false, 71 * s1) && live.strikes == 1);
+    check("two carrier strikes after the gap repair", sphase_live_tick(&live, 200, true, 72 * s1));
+    sphase_live_done(&live, true, true, 72 * s1);
+    check("a repair that moved the phase keeps the short gap", live.moved == 1 && live.gap_us == SPHASE_LIVE_GAP_US);
+    (void)sphase_live_tick(&live, 200, true, 80 * s1);
+    check("no repair within the gap", !sphase_live_tick(&live, 200, true, 82 * s1));
+    int64_t t = 72 * s1 + SPHASE_LIVE_GAP_US;
+    check("after the gap: repair again (no per-boot cap)", sphase_live_tick(&live, 200, true, t));
+    unsigned alarms = 0;
+    for (unsigned k = 0; k < 8u; ++k) {   /* repeated false alarms back off, never stop */
+        sphase_live_done(&live, false, true, t);
+        ++alarms;
+        t += live.gap_us;
+        (void)sphase_live_tick(&live, 200, true, t - 1);
+        if (!sphase_live_tick(&live, 200, true, t)) break;
+    }
+    check("false alarms double the gap up to 16 min and still rescan",
+          live.false_alarms == alarms && live.gap_us == SPHASE_LIVE_GAP_MAX_US && alarms == 8u);
+    sphase_live_done(&live, true, true, t);
+    check("a real repair resets the gap", live.gap_us == SPHASE_LIVE_GAP_US);
     printf("%s: %u checks, %u failures\n", s_fail ? "FAIL" : "PASS", s_run, s_fail);
     return s_fail ? 1 : 0;
 }

@@ -195,6 +195,27 @@ int main(void)
               kp_ladder_target_f(40, 140, false, true) == kp_ladder_target_lp(40, 140, false) &&
               kp_ladder_target_f(40, 110, true, true) == kp_ladder_target_lp(40, 110, true));
         check("reset clears the narrow flag", (kp_ladder_reset(&n), !n.narrow));
+        check("WIDE profile rows: U85Q kp 0.85 close in (not 0.80)",
+              kp_level_x100[kp_ladder_target_g(200, 170, false, false, true)] == 85 &&
+              kp_level_x100[kp_ladder_target_g(200, 170, false, false, false)] == 80);
+        check("WIDE profile rows: LP wanted up to 9.5 dB, 12 MHz wide row only below 8.5",
+              kp_ladder_want_lp_g(KP_CLASS_WIDE, 90, false, true) &&
+              !kp_ladder_want_lp_g(KP_CLASS_WIDE, 90, false, false) &&
+              !kp_ladder_want_lp_g(KP_CLASS_WIDE, 96, false, true));
+        check("WIDE profile rows leave the narrow classes alone",
+              kp_ladder_target_g(40, 69, false, false, true) == kp_ladder_target_lp(40, 69, false) &&
+              kp_ladder_want_lp_g(KP_CLASS_LOW, 70, false, true) == kp_ladder_want_lp(KP_CLASS_LOW, 70, false));
+        kp_ladder_t wl;
+        kp_ladder_reset(&wl);
+        wl.wide = true;
+        for (int64_t t = 0; t < 4000000LL; t += 50000) (void)kp_ladder_update_lp(&wl, 90, true, 170, t, true);
+        check("WIDE ladder at 9 dB: LP kp 0.85", wl.lp && kp_level_x100[wl.level] == 85);
+        check("reset clears the wide flag", (kp_ladder_reset(&wl), !wl.wide));
+        check("narrow rows: MATCHED with a ~10 MHz filter or an unknown width",
+              kp_ladder_narrow_rows(true, 10000u) && kp_ladder_narrow_rows(true, 11000u) &&
+              kp_ladder_narrow_rows(true, 0u));
+        check("narrow rows: not for the board's 11.9 MHz narrow entry, nor DEFAULT",
+              !kp_ladder_narrow_rows(true, 11875u) && !kp_ladder_narrow_rows(false, 10000u));
     }
     printf("%s: %u checks, %u failures\n", s_fail ? "FAIL" : "PASS", s_run, s_fail);
     return s_fail ? 1 : 0;

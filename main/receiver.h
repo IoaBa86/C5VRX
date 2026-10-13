@@ -145,6 +145,7 @@ void dco_post_gain(uint8_t gain);
 /* Chain state for the diagnostics (no side effects). */
 const char *calibration_filter_result(void);
 int calibration_filter_class_mhz(void);
+unsigned calibration_narrow_width_khz(void);   /* measured -3 dB width, 0 = none */
 const char *calibration_sphase_state(void);
 bool calibration_sphase_settled(void);
 /* DC correction in place for this gain: held, or not needed (outside the
