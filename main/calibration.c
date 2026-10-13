@@ -538,7 +538,7 @@ void filter_request(void) { s_manual_requested = true; }
  * envelope for 5 s, never on a channel where a carrier was seen this boot)
  * and held right after every gain write by the post-gain hook (board,
  * 2026-10-07: DC median ~134 LSB without the hook, ~11 with it). */
-#define DCO_VERSION      6u   /* 6: context without the filter class */
+#define DCO_VERSION      7u   /* 7: FLOOR rows searched flat (phy_dco_search_flat) */
 typedef struct {
     int16_t code[2];
     int16_t residual_mcells[2];
@@ -779,6 +779,33 @@ static bool dco_carrier_search(bool manual)
     return res.measured;
 }
 
+/* Noise below one quantizer step: the IQ is a fixed code, so a short
+ * window is an exact DC measurement (no averaging needed). */
+static bool dco_measure_flat(int dc[2])
+{
+    window_stats_t w;
+    vTaskDelay(pdMS_TO_TICKS(10));
+    if (!collect(8, &w)) return false;
+    dc[0] = w.dc_i;
+    dc[1] = w.dc_q;
+    return true;
+}
+
+/* Row g with the receiver noise below one step: codes from the flat search.
+ * Before, such a row and all below it were FLOOR (left at the chip's DC). */
+static bool dco_flat_row(uint8_t g)
+{
+    phy_dco_result_t res;
+    (void)phy_dco_search_flat(dco_measure_flat, &res);
+    if (!res.measured) return false;
+    s_dco.e[g] = (dco_entry_t){{(int16_t)res.codes[0], (int16_t)res.codes[1]},
+        {(int16_t)res.residual_mcells[0], (int16_t)res.residual_mcells[1]}, DCO_ROW_OK};
+    dco_row_measured(g);
+    s_dco_found_us[g] = esp_timer_get_time();
+    ++s_dco_searches;
+    return true;
+}
+
 /* One quiet search of gain row g (receiver noise). NOISE_BELOW_STEP when
  * the noise is below one quantizer step there (no codes at or below g),
  * NOISE_PROBE_FAILED when nothing could be measured (rows untouched). */
@@ -789,12 +816,14 @@ static int dco_quiet_search(uint8_t g)
     (void)phy_dco_release();
     receiver_set_gain(g);
     vTaskDelay(pdMS_TO_TICKS(20));
-    const int measurable = noise_measurable();
+    int measurable = noise_measurable();
     if (measurable == NOISE_PROBE_FAILED) {
         printf("DCO row=%u probe_failed (rows kept for the next boot)\n", g);
+    } else if (measurable == NOISE_BELOW_STEP && dco_flat_row(g)) {
+        measurable = NOISE_MEASURABLE;          /* this row has codes now; go on downward */
     } else if (measurable == NOISE_BELOW_STEP) {
-        /* Less gain, even less noise: the rows below cannot be searched on
-         * noise either. Codes measured on a carrier stay. */
+        /* Less gain, even less noise, and no flip found: the rows below
+         * cannot be searched either. Codes measured on a carrier stay. */
         for (int k = g; k >= (int)s_dco.lo; --k) {
             if (s_dco.e[k].valid != DCO_ROW_OK) s_dco.e[k].valid = DCO_ROW_FLOOR;
             dco_row_measured((unsigned)k);   /* measured: nothing to correct here */
