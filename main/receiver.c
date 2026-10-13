@@ -5,6 +5,7 @@
 #include "receiver.h"
 #include <stdio.h>
 #include <string.h>
+#include "cn_estimate.h"
 #include "esp_timer.h"
 #include "gain_map_preset.h"
 #include "phase8_gain_lut.h"
@@ -17,6 +18,7 @@ volatile uint8_t s_current_gain = 62u;
 volatile uint32_t s_gain_epoch, s_control_epoch;
 volatile int64_t s_last_gain_write_us;
 volatile int s_obs_p50, s_obs_p95, s_obs_origin_pm, s_obs_clip_pm, s_obs_coherence;
+volatile bool s_obs_stuck;
 volatile uint32_t s_obs_us_max, s_obs_windows;
 dg_map_blob_t s_gain_map_saved;
 bool s_gain_map_saved_valid;
@@ -80,6 +82,13 @@ static void apply_target(uint8_t target, uint32_t control, uint32_t phy)
     s_last_gain_write_us = esp_timer_get_time();
     ++s_gain_epoch;
     dg_sync_applied(&s_gain, target, (uint64_t)s_last_gain_write_us);
+}
+
+int receiver_obs_cn_x10(void)
+{
+    /* A fixed point reads 99-100 % coherence, which the model maps to
+     * 14-20 dB with no VTX at all (board walk 2026-10-13). */
+    return s_obs_stuck ? CN_UNKNOWN_X10 : cn_estimate_x10(s_obs_coherence, calibration_filter_class_mhz());
 }
 
 static void tick_cb(void *arg)
@@ -177,6 +186,7 @@ static void observer_task(void *arg)
         s_obs_origin_pm = o.origin_pm;
         s_obs_clip_pm = o.clip_pm;
         s_obs_coherence = o.coherence;
+        s_obs_stuck = dg_stuck(&o);
         if (phy != phy_generation() || phy_busy()) continue;
         /* Learn the gain map only from a real VTX: burst-confirmed sync seen
          * by the AFC within the last 500 ms (never from receiver noise). */

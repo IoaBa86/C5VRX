@@ -175,6 +175,31 @@ int main(void)
                g.learn_refused);
         check("no map learning without a confirmed VTX", g.learned == kept && g.learn_refused > 0);
     }
+    {
+        /* VTX off with an uncorrected DC point (DCO FLOOR row, board walk
+         * 2026-10-13): one fixed code, coherence 100, P50 ~15, inside the
+         * healthy band. It must read as no carrier and listen at the maximum. */
+        uint8_t dc_point[256], lut[256];
+        for (unsigned k = 0; k < 256u; ++k) { dc_point[k] = 0xd3; lut[k] = 40; }  /* I=-3, Q=+3: one code */
+        dg_observation_t stuck = dg_measure(dc_point, sizeof(dc_point), lut, 1000);
+        check("fixed DC point: repeat_pm 1000, coherence 100, stuck", stuck.repeat_pm == 1000 && stuck.coherence == 100 &&
+              dg_stuck(&stuck));
+        dg_reset(&g, &table, 59);
+        uint64_t t = 1000000;
+        uint8_t to = 59;
+        for (unsigned k = 0; k < 50u; ++k, t += TICK_US) {
+            stuck.observed_us = t;
+            to = dg_tick(&g, &stuck);
+            if (to != g.current_gain) break;
+            dg_sync_applied(&g, to, t);
+        }
+        printf("fixed DC point at G59: Direct Gain goes to G%u\n", g.current_gain);
+        check("fixed DC point at G59: listen at the table maximum", g.current_gain == table.max_index);
+        /* The same envelope with noise on it (weak carrier at G73-75) is not stuck. */
+        dg_observation_t noisy = stuck;
+        noisy.repeat_pm = 300;
+        check("a weak carrier in noise is not a fixed point", !dg_stuck(&noisy));
+    }
 #ifdef EXPECT_FADE_HOLD
     check("sustained step: at most ~the 10 ms hold more than without it", step_cost[0] <= 25000 && step_cost[1] <= 15000);
     /* With the fade hold a short deep null costs no recovery time. */

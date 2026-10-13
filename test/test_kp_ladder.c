@@ -119,13 +119,36 @@ int main(void)
     uint8_t held = l.level;
     for (int k = 0; k < 200; ++k, t += TICK_US) (void)kp_ladder_update(&l, CN_UNKNOWN_X10, false, 100, t);
     check("unusable windows: level held", l.level == held);
-    /* Window usability: settle, gain write and context only (control.c). */
-    check("usable: settled, no gain write for 100 ms, same context",
-          kp_ladder_window_usable(true, true, true, KP_GAIN_WRITE_GUARD_US));
-    check("unusable: settling, gain write, context change, recent gain write",
-          !kp_ladder_window_usable(false, true, true, 1000000) && !kp_ladder_window_usable(true, false, true, 1000000) &&
-          !kp_ladder_window_usable(true, true, false, 1000000) &&
-          !kp_ladder_window_usable(true, true, true, KP_GAIN_WRITE_GUARD_US - 1));
+    /* Window usability: settle, context and a recent gain write only (control.c). */
+    check("usable: settled, same context, no gain write for 5 ms",
+          kp_ladder_window_usable(true, true, KP_GAIN_WRITE_GUARD_US) && KP_GAIN_WRITE_GUARD_US == 5000);
+    check("unusable: settling, context change, gain write within 5 ms",
+          !kp_ladder_window_usable(false, true, 1000000) && !kp_ladder_window_usable(true, false, 1000000) &&
+          !kp_ladder_window_usable(true, true, KP_GAIN_WRITE_GUARD_US - 1));
+    /* A short unusable gap keeps a pending LP change (board walk 2026-10-13:
+     * one unusable window used to restart the 1 s hold). Wide class, 5 dB:
+     * LP is wanted; every fourth window unusable. */
+    kp_ladder_reset(&l);
+    (void)run(&l, 200, 0, 0, 40, &t, NULL);            /* settle on a strong carrier, U85Q */
+    int64_t lp_at = -1;
+    for (int k = 0; k < 200 && lp_at < 0; ++k, t += TICK_US) {
+        (void)kp_ladder_update_lp(&l, 50, (k & 3) != 3, 0, t, true);
+        if (l.lp) lp_at = t;
+    }
+    check("LP through 25 % unusable windows", lp_at >= 0);
+    /* A long gap drops the pending change: no switch on stale evidence. */
+    /* The smoothed C/N passes 8.5 dB after ~11 windows, so the hold starts
+     * then; without the restart 15 + 12 + 10 windows would reach 1 s. */
+    kp_ladder_reset(&l);
+    (void)run(&l, 200, 0, 0, 80, &t, NULL);
+    for (int k = 0; k < 15; ++k, t += TICK_US) (void)kp_ladder_update_lp(&l, 50, true, 0, t, true);
+    for (int k = 0; k < 12; ++k, t += TICK_US) (void)kp_ladder_update_lp(&l, 50, false, 0, t, true);
+    bool early = l.lp;
+    for (int k = 0; k < 10; ++k, t += TICK_US) {
+        (void)kp_ladder_update_lp(&l, 50, true, 0, t, true);
+        early |= l.lp;
+    }
+    check("a gap over KP_STALE_US restarts the LP hold", !early);
     /* Step spacing: never two steps closer than the gap. */
     kp_ladder_reset(&l);
     int64_t last = -KP_STEP_GAP_US, min_gap = 1LL << 62;

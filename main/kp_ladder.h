@@ -20,7 +20,7 @@
  * - A noise-like window (CN_UNKNOWN_X10: coherence at or below plain noise)
  *   is the floor, not missing evidence: it targets the curve's 0 dB point.
  *   Only an unusable window (retune, gain write, menu) holds the level:
- *   kp_ladder_window_usable(). The AFC's envelope-stationarity test is not
+ *   kp_ladder_window_usable(); a short unusable gap keeps pending changes. The AFC's envelope-stationarity test is not
  *   part of it; receiver noise near the threshold fails it, and with it the
  *   ladder froze at the range edge (research README section 18).
  * The C/N estimate comes from the IQ window coherence, not from the tracker,
@@ -49,21 +49,34 @@ typedef struct {
     int8_t pending_dir;     /* direction of the target seen since pending_since */
     int64_t pending_since;
     int64_t last_step_us;
+    int64_t last_usable_us; /* last usable window (unusable gaps up to KP_STALE_US hold) */
     uint32_t steps;
     bool narrow;            /* narrow (MATCHED, 10 MHz class) filter: own curves; set by the caller */
     bool wide;              /* WIDE profile (16 MHz class) filter: own curves; set by the caller */
 } kp_ladder_t;
 
 /* A control window the ladder may use: settled after a retune or restart,
- * no gain write during or in the 100 ms before it, unchanged context. The
+ * unchanged context, no gain write in the last KP_GAIN_WRITE_GUARD_US. The
  * C/N comes from the gain observer's coherence, so a noisy, non-stationary
- * window is evidence (the floor), never a reason to hold. */
-#define KP_GAIN_WRITE_GUARD_US 100000LL
-static inline bool kp_ladder_window_usable(bool settled, bool gain_unchanged, bool context_unchanged,
-                                           int64_t since_gain_write_us)
+ * window is evidence (the floor), never a reason to hold.
+ *
+ * The coherence is one ~6 us observer probe taken right before the control
+ * window reads it, and Direct Gain settles a write in 0.3-1 ms. A 100 ms
+ * guard plus "no write during the 50 ms window" made every window unusable
+ * while the carrier faded: 50-120 writes a second at the range edge (board
+ * walk 2026-10-13, docs/FINDINGS.md). 5 ms covers the settle. */
+#define KP_GAIN_WRITE_GUARD_US 5000LL
+static inline bool kp_ladder_window_usable(bool settled, bool context_unchanged, int64_t since_gain_write_us)
 {
-    return settled && gain_unchanged && context_unchanged && since_gain_write_us >= KP_GAIN_WRITE_GUARD_US;
+    return settled && context_unchanged && since_gain_write_us >= KP_GAIN_WRITE_GUARD_US;
 }
+
+/* An unusable window holds the ladder; it does not erase a pending step or
+ * program change. A single unusable window used to restart the 1 s LP hold:
+ * with 10-20 % unusable windows the board changed LP internally 6 times and
+ * never held long enough to apply (research/ladder_replay.py). Evidence
+ * older than this gap is dropped. */
+#define KP_STALE_US 500000LL
 
 static inline void kp_ladder_reset(kp_ladder_t *l)
 {
@@ -78,6 +91,7 @@ static inline void kp_ladder_reset(kp_ladder_t *l)
     l->pending_dir = 0;
     l->pending_since = 0;
     l->last_step_us = 0;
+    l->last_usable_us = 0;
 }
 
 /* Best kp (x100) per VTX deviation class at C/N 0, 2, 4, 8, 12, 20 dB:
@@ -241,7 +255,9 @@ static inline uint8_t kp_ladder_update_lp(kp_ladder_t *l, int cn_x10, bool windo
         ++l->steps;
         return l->level;
     }
-    if (!window_ok) { l->pending_dir = 0; l->lp_pending = -1; return l->level; }
+    if (now_us - l->last_usable_us > KP_STALE_US) { l->pending_dir = 0; l->lp_pending = -1; }
+    if (!window_ok) return l->level;
+    l->last_usable_us = now_us;
     /* Per-window estimates jitter by a few dB: decide on a smoothed C/N
      * (first-order, 1/8 per 50 ms window, ~0.4 s). A noise-like window
      * counts as 0 dB. */

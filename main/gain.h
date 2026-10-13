@@ -23,8 +23,23 @@ typedef struct {
     uint8_t p50, p90, p95;
     uint16_t origin_pm, clip_pm;
     uint8_t coherence;
+    uint16_t repeat_pm;     /* samples equal to the one before, per mille */
     uint64_t observed_us;
 } dg_observation_t;
+
+/* A fixed IQ point is not a carrier. Below one quantizer step of receiver
+ * noise (DCO FLOOR rows, G54-69 on the board) the uncorrected DC is a
+ * constant code: coherence 99-100 %, P50 ~15, inside the healthy band, and
+ * Direct Gain held there with no VTX (board walk 2026-10-13, docs/FINDINGS.md).
+ * IQSNAP: VTX off at G59 repeats 476-873 per mille per 64 bytes, a weak
+ * carrier in noise at G73-75 15-301. A real carrier this small rotates or
+ * carries noise; a strong one is far above the band. */
+#define DG_STUCK_PM      400u
+#define DG_STUCK_P50_MAX 32u
+static inline bool dg_stuck(const dg_observation_t *o)
+{
+    return o->repeat_pm >= DG_STUCK_PM && o->p50 <= DG_STUCK_P50_MAX;
+}
 
 typedef struct {
     arc_gain_table_t table;

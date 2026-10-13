@@ -262,7 +262,7 @@ void profile_observe(const afc2_result_t *r)
         ++s_gated;
         return;
     }
-    if (cn_estimate_x10(s_obs_coherence, calibration_filter_class_mhz()) < DEV_MONITOR_MIN_CN_X10) {
+    if (receiver_obs_cn_x10() < DEV_MONITOR_MIN_CN_X10) {
         ++s_gated_cn;
         return;
     }

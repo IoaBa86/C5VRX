@@ -71,8 +71,8 @@ dg_observation_t dg_measure(const uint8_t *samples, size_t bytes,
     if (!samples || !bytes || !phase8_lut) return r;
     prepare_lut();
     uint16_t hist[114] = {0};
-    unsigned origin = 0, clip = 0, coherent = 0;
-    uint8_t prior_phase = 0;
+    unsigned origin = 0, clip = 0, coherent = 0, repeats = 0;
+    uint8_t prior_phase = 0, prior_raw = 0;
     for (size_t n = 0; n < bytes; ++n) {
         uint8_t raw = samples[n], power = s_power[raw];
         ++hist[power];
@@ -83,7 +83,9 @@ dg_observation_t dg_measure(const uint8_t *samples, size_t bytes,
             int delta = (((int)phase - (int)prior_phase + 128) & 255) - 128;
             if (abs_i(delta) <= 32) ++coherent;
         }
+        repeats += n && raw == prior_raw;
         prior_phase = phase;
+        prior_raw = raw;
     }
     unsigned cumulative = 0;
     bool p50 = false, p90 = false;
@@ -99,6 +101,7 @@ dg_observation_t dg_measure(const uint8_t *samples, size_t bytes,
     r.origin_pm = (uint16_t)(origin * 1000u / bytes);
     r.clip_pm = (uint16_t)(clip * 1000u / bytes);
     r.coherence = bytes > 1u ? (uint8_t)(coherent * 100u / (bytes - 1u)) : 0;
+    r.repeat_pm = bytes > 1u ? (uint16_t)(repeats * 1000u / (bytes - 1u)) : 0;
     return r;
 }
 
@@ -112,7 +115,7 @@ static dg_transition_t transition_kind(const direct_gain_t *g, uint8_t from, uin
 
 static bool carrier(const dg_observation_t *o)
 {
-    return o->coherence >= 55 && o->p50 >= 5 && o->origin_pm < 650;
+    return o->coherence >= 55 && o->p50 >= 5 && o->origin_pm < 650 && !dg_stuck(o);
 }
 
 /* Healthy band P50 13..32 (r ~3.5..5.6 cells), the zero-write zone. */
@@ -458,7 +461,7 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
     if (!g || !o) return 0u;
     dg_observation_t prior = g->last_tracking;
     g->last_tracking = *o;
-    bool no_carrier = o->p50 <= 4 && o->origin_pm >= 650 && o->coherence < 20;
+    bool no_carrier = (o->p50 <= 4 && o->origin_pm >= 650 && o->coherence < 20) || dg_stuck(o);
     bool saturated = o->clip_pm >= 100 || o->p95 >= 95;
     if (!saturated) g->saturated_run = false;
     else if (!g->saturated_run) { g->saturated_run = true; g->saturated_since_us = o->observed_us; }

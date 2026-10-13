@@ -5,6 +5,12 @@
 
 #define KP_SWITCH_GAP_US 5000000LL
 #define KP_SWITCH_CONFIRM_US 2000000LL
+/* kp_switch_confirm_toward(): an unusable window holds the candidate; only
+ * a gap without usable windows longer than this drops it. One unusable
+ * window used to clear 2 s of agreement, so 10-20 % unusable windows at the
+ * range edge never let a switch through (board walk 2026-10-13,
+ * research/ladder_replay.py). */
+#define KP_SWITCH_STALE_US 500000LL
 
 typedef struct {
     bool switched, candidate;
@@ -13,6 +19,8 @@ typedef struct {
     bool lp;
     int8_t side;            /* kp_switch_confirm_toward: target side of the running level */
     uint32_t context;
+    int64_t last_valid_us;  /* kp_switch_confirm_toward: last usable window */
+    uint32_t resets;        /* candidates dropped before confirming (diagnostics) */
 } kp_switch_guard_t;
 
 static inline bool kp_switch_ready(const kp_switch_guard_t *g, int64_t now)
@@ -50,14 +58,21 @@ static inline bool kp_switch_confirm(kp_switch_guard_t *g, int level, bool lp,
  * every step, so a fading range-edge carrier rarely got the program and kp
  * it asked for (research/ladder_gate.py, README section 18). A target back
  * on the running pair, or on the other side of it, still restarts the
- * confirmation, so oscillation at a threshold never switches. The caller
- * applies the latest target once this returns true. */
+ * confirmation, so oscillation at a threshold never switches. An unusable
+ * window neither agrees nor disagrees: it holds the candidate up to
+ * KP_SWITCH_STALE_US. The caller applies the latest target once this
+ * returns true. */
 static inline bool kp_switch_confirm_toward(kp_switch_guard_t *g, int level, bool lp, int applied_level,
                                             bool applied_lp, uint32_t context, bool valid, int64_t now)
 {
     const int side = lp != applied_lp ? 2 : (level > applied_level) - (level < applied_level);
-    if (!valid || side == 0) { g->candidate = false; return false; }
+    /* Also when no window was offered at all (failed copies, scan). */
+    if (g->candidate && now - g->last_valid_us > KP_SWITCH_STALE_US) { g->candidate = false; ++g->resets; }
+    if (!valid) return false;
+    g->last_valid_us = now;
+    if (side == 0) { g->candidate = false; return false; }   /* reached or back: not a reset */
     if (!g->candidate || g->side != side || g->lp != lp || g->context != context) {
+        if (g->candidate) ++g->resets;
         g->candidate = true;
         g->side = (int8_t)side;
         g->level = level;
