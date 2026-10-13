@@ -371,3 +371,42 @@ alarms back off to 16 min). The WIDE profile gets its own 16 MHz kp/LP rows
 MATCHED uses the 10 MHz rows only for a filter measured <= 11 MHz, and
 FIELD_DIAG logs kp and LP per second. Host tests and a local ESP-IDF 6.0.2
 build pass; board check pending.
+
+## Board walk: the ladder never switched (2026-10-13)
+
+C5VRX by Twotoz and the C5VRX contributors. Board check of this PR
+(`5.0.0-pr.211`, kp_auto=2, A1 5865 MHz, DEFAULT 12 MHz profile), VTX
+walked through the house to spots where the picture was certainly gone.
+Data: `research/data/walk_2026-10-13/` (`walk_serial.log`: FIELD_DIAG 1/s
+plus `T` every 5 s; VTX on ~57-171 s; `off_*.bin`: IQSNAP with the VTX off).
+Findings only, no fix yet.
+
+- **Nothing was applied.** `prog_switches=0`, `kp_switches=0`, `kp_level=0`,
+  `program=U85Q` the whole run. The internal ladder moved (`kp_steps` 1 -> 8,
+  `lp_switches` 0 -> 6) but `kp_switch_confirm_toward()` never confirmed.
+- **The gain never left G59-60 for a weak carrier.** Table maximum is 83.
+  With the VTX on: 76 of ~114 s at G59, none above 60, `sync_valid_pct=0`
+  in all but 17 s; AFC never locked, deviation never measured.
+- **With no carrier the IQ is a constant DC point, not noise.** VTX off,
+  G59, four snapshots (`research/dc_coherence_check.py`): DC
+  (-1.5, +2.9..3.3) cells, spread 0.06-0.08 (I) / 0.4-0.5 (Q) cells, 3 I
+  and 2 Q codes in 8190 bytes. Receiver noise is below one LSB at G59.
+- **The DC point reads as a strong coherent carrier.** dg_measure counts a
+  phase step <= 45 degrees on power >= 8; a fixed point has no phase step,
+  so coherence 99-100 %. `cn_estimate_x10` turns that into 14-20 dB
+  (FIELD_DIAG `cn_est_x10=200` with the VTX off, before and after the walk).
+  With the window DC removed the same captures read coherence 0 (noise
+  floor). `carrier()` in gain.c (coherence >= 55, P50 >= 5) is also
+  satisfied by the DC point, consistent with the gain parking at G59.
+- **So the ladder steers on the DC, not on the VTX.** With the VTX weak the
+  C/N estimate swung 0-12 dB second to second with `sync_valid_pct=0`; the
+  wanted program crossed the 8.5 dB LP threshold (1.5 dB hysteresis) back
+  and forth, and the 2 s directional confirmation restarted every time.
+- **During the fade itself the ladder was blind.** 57-77 s: 50-120 gain
+  writes per second; `kp_ladder_window_usable()` rejects any window with a
+  write in the previous 100 ms, so the smoothed C/N was not even updated.
+
+Open: why the DCO leaves ~(-1.5, +3) cells of DC at G59, whether G59-83
+would show receiver noise if the gain were allowed there, and an
+IQ capture with the VTX weak (not off) to see the carrier around the DC
+point.
