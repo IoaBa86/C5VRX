@@ -12,6 +12,8 @@
 #include "esp_cache.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "hal/misc.h"
 #include "hal/bitscrambler_ll.h"
 #include "kp_lut_io.h"
@@ -696,22 +698,33 @@ static uint32_t rx_active_addr(void) { return AHB_DMA.channel[s_rx_dma_ch].in.in
 bool copy_control_window(uint8_t *dst, size_t bytes)
 {
     if (s_rx_dma_ch < 0 || s_rx_node_count < 3) return false;
+    /* The control task (priority 3) was preempted mid-copy by the gain
+     * observer (same priority, up to ~0.5 ms per window) and the sentinel
+     * (4) often enough that 30-44 % of control windows failed the overrun
+     * check on the board (T LADDER copy_fail, 2026-10-13). The copy itself
+     * takes tens of microseconds: hold the scheduler for it. Interrupts
+     * (GDMA, timers) still run. */
+    vTaskSuspendAll();
     int64_t start = esp_timer_get_time();
     int active = ring_node_index(rx_active_addr());
-    if (active < 0) return false;
-    int idx = (active - 1 + s_rx_node_count) % s_rx_node_count;
-    uint8_t *src = s_rx_nodes[idx].buffer;
+    int idx = active < 0 ? -1 : (active - 1 + s_rx_node_count) % s_rx_node_count;
+    uint8_t *src = idx < 0 ? NULL : s_rx_nodes[idx].buffer;
     if (!src || s_rx_nodes[idx].length < bytes || src < s_raw_ring ||
-        src + bytes > s_raw_ring + sizeof(s_raw_ring)) return false;
+        src + bytes > s_raw_ring + sizeof(s_raw_ring)) {
+        (void)xTaskResumeAll();
+        return false;
+    }
     sync_dma_m2c(src, bytes);
     memcpy(dst, src, bytes);
     int after = ring_node_index(rx_active_addr());
+    const int64_t took = esp_timer_get_time() - start;
+    (void)xTaskResumeAll();
     uint64_t safe_bytes = 0;
     for (int k = 0; k < s_rx_node_count; ++k)
         if (k != active && k != idx) safe_bytes += s_rx_nodes[k].length;
     int advance = after < 0 ? s_rx_node_count : (after - active + s_rx_node_count) % s_rx_node_count;
     return after >= 0 && after != idx && advance < s_rx_node_count - 1 &&
-           (uint64_t)(esp_timer_get_time() - start) < safe_bytes * 1000000ULL / IQ_RATE_HZ;
+           (uint64_t)took < safe_bytes * 1000000ULL / IQ_RATE_HZ;
 }
 
 /* Four separated 64-byte regions of the newest completed descriptor. */

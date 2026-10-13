@@ -26,6 +26,13 @@
  */
 
 #define AFC2_CTRL_SAMPLES          16u
+/* A window without evidence (failed copy, non-stationary envelope, no
+ * burst) is missing, not contradicting: the estimate window is kept up to
+ * this many such windows in a row (1 s). Clearing it on every one needed 16
+ * clean windows in a row; with 30-44 % failed copies on the board that is
+ * ~1e-4, and the AFC never locked, so the deviation was never measured
+ * (board walks 2026-10-13, docs/FINDINGS.md). */
+#define AFC2_CTRL_MAX_MISSES       20u
 #define AFC2_CTRL_MAX_MAD_KHZ      80
 #define AFC2_CTRL_DEADBAND_KHZ     50
 #define AFC2_CTRL_MAX_STEP_KHZ     250
@@ -74,6 +81,7 @@ typedef struct {
     uint8_t standard;
     uint8_t corrections;
     uint16_t since_correction;   /* observed windows since the last correction */
+    uint8_t misses;              /* windows without evidence in a row (AFC2_CTRL_MAX_MISSES) */
     int8_t sign;                 /* +1 / -1 offset direction; 0 = +1 (unverified) */
     uint8_t sign_state;          /* AFC2_SIGN_* */
     bool sign_check;             /* a judged step awaits the next stable estimate */
@@ -89,6 +97,7 @@ static inline void afc2_ctrl_reset(afc2_ctrl_t *c, uint32_t context, bool new_ac
 {
     c->context = context;
     c->n = 0;
+    c->misses = 0;
     c->polarity = 0;
     c->standard = 0;
     /* Our own retune keeps the pending sign check; anything else (channel,
@@ -113,6 +122,13 @@ static inline void afc2_ctrl_invalidate(afc2_ctrl_t *c)
     c->n = 0;
     c->polarity = 0;
     c->standard = 0;
+    c->misses = 0;
+}
+
+/* One window without evidence: keep the estimates unless too many in a row. */
+static inline void afc2_ctrl_miss(afc2_ctrl_t *c)
+{
+    if (++c->misses > AFC2_CTRL_MAX_MISSES) afc2_ctrl_invalidate(c);
 }
 
 static inline void afc2_ctrl_observe(afc2_ctrl_t *c, const afc2_result_t *r)
@@ -120,9 +136,10 @@ static inline void afc2_ctrl_observe(afc2_ctrl_t *c, const afc2_result_t *r)
     if (c->since_correction < 0xffffu) ++c->since_correction;
     if (!r || !r->lines || !r->standard || !r->polarity ||
         r->burst_x10 < AFC2_BURST_MIN_X10 || !r->sync_pairs || !r->porch_pairs) {
-        afc2_ctrl_invalidate(c);
+        afc2_ctrl_miss(c);
         return;
     }
+    c->misses = 0;
     if (c->n && (r->polarity != c->polarity || r->standard != c->standard)) c->n = 0;
     c->polarity = r->polarity;
     c->standard = r->standard;

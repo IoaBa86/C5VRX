@@ -387,9 +387,8 @@ static void control_task(void *arg)
         if (s_scan_active || !copy_control_window(s_window, sizeof(s_window))) {
             /* A failed copy is a gap, not disagreement: the guard drops its
              * candidate only after KP_SWITCH_STALE_US without evidence. */
-            if (s_scan_active) s_auto_candidate.candidate = false;
-            else ++s_ladder_copy_fail;
-            afc2_ctrl_invalidate(&afc);
+            if (s_scan_active) { s_auto_candidate.candidate = false; afc2_ctrl_invalidate(&afc); }
+            else { ++s_ladder_copy_fail; afc2_ctrl_miss(&afc); }
             diag_window(false, false, false); /* failed copies count as missing evidence */
             continue;
         }
@@ -419,7 +418,7 @@ static void control_task(void *arg)
         if (window_ok) {
             r = afc2_measure(s_window, sizeof(s_window), c5vrx_phase8_gain_lut);
             afc2_ctrl_observe(&afc, &r);
-        } else afc2_ctrl_invalidate(&afc);
+        } else afc2_ctrl_miss(&afc);   /* settle and context changes reset via afc2_ctrl_sync */
         s_cfo_khz = r.porch_pairs ? r.porch_khz : 0;
         bool valid = window_ok && r.lines && r.standard && r.porch_pairs && r.sync_pairs &&
                      r.burst_x10 >= AFC2_BURST_MIN_X10;
