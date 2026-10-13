@@ -37,6 +37,20 @@
 #define KP_HOLD_UP_US      300000LL    /* toward a sharper kp (better lock near the floor) */
 #define KP_STEP_GAP_UP_US  200000LL
 
+/* LP is the rescue: into it fast. Out of it after a hold that adapts to
+ * flapping: 2 s on a calm link (back to the sharper U85Q soon), doubled each
+ * time LP is needed again within 30 s of leaving it, up to 16 s. Replay on
+ * the board walks (research/ladder_replay.py, ADAPTIVE=1): 9 program
+ * switches in 250 s against 13-19 for a fixed 3-5 s hold, and the most LP
+ * time where sync was poor (board walk 2026-10-13: LP on 2-4 s and off
+ * again, 12 switches). */
+#define KP_LP_ENTER_HOLD_US   300000LL    /* C/N must ask for LP this long */
+#define KP_LP_ENTER_GAP_US    500000LL    /* ... and this long after the last program switch */
+#define KP_LP_RELEASE_BASE_US 2000000LL   /* back to U85Q after this long on a calm link */
+#define KP_LP_RELEASE_MAX_US  16000000LL
+#define KP_LP_FLAP_WINDOW_US  30000000LL  /* LP needed again within this: double the hold */
+#define KP_LP_GAP_US          3000000LL   /* leaving: at least this after the last program switch */
+
 typedef struct {
     uint8_t level;          /* current target level, 0 = kp 0.85 */
     bool lp;                /* U85Q-LP program (post-detection low-pass) */
@@ -50,6 +64,8 @@ typedef struct {
     int64_t pending_since;
     int64_t last_step_us;
     int64_t last_usable_us; /* last usable window (unusable gaps up to KP_STALE_US hold) */
+    int64_t release_hold_us; /* current LP release hold (adaptive, see KP_LP_RELEASE_*) */
+    int64_t released_us;     /* last LP -> U85Q */
     uint32_t steps;
     bool narrow;            /* narrow (MATCHED, 10 MHz class) filter: own curves; set by the caller */
     bool wide;              /* WIDE profile (16 MHz class) filter: own curves; set by the caller */
@@ -92,6 +108,8 @@ static inline void kp_ladder_reset(kp_ladder_t *l)
     l->pending_since = 0;
     l->last_step_us = 0;
     l->last_usable_us = 0;
+    l->release_hold_us = KP_LP_RELEASE_BASE_US;
+    l->released_us = -(1LL << 40);
 }
 
 /* Best kp (x100) per VTX deviation class at C/N 0, 2, 4, 8, 12, 20 dB:
@@ -166,8 +184,6 @@ static const uint8_t kp_lp_curve_wide16_x100[6] = {85, 85, 85, 85, 85, 85};
 static const int16_t kp_lp_on_x10[KP_CLASSES] = {65, 65, 70, 85};
 static const int16_t kp_lp_floor_x10[KP_CLASSES] = {-999, -999, -999, 15};
 #define KP_LP_HYST_X10   15            /* leave LP 1.5 dB above where it is entered */
-#define KP_LP_HOLD_US    1000000LL     /* the wanted program must hold this long */
-#define KP_LP_GAP_US     3000000LL     /* at least this between program switches */
 
 static inline int kp_ladder_class(int dev_x100)
 {
@@ -272,7 +288,14 @@ static inline uint8_t kp_ladder_update_lp(kp_ladder_t *l, int cn_x10, bool windo
         const int8_t want = kp_ladder_want_lp_g(kp_ladder_class(dev_x100), cn, l->lp, l->wide) ? 1 : 0;
         if (want == (int8_t)l->lp) l->lp_pending = -1;
         else if (want != l->lp_pending) { l->lp_pending = want; l->lp_since = now_us; }
-        else if (now_us - l->lp_since >= KP_LP_HOLD_US && now_us - l->lp_switch_us >= KP_LP_GAP_US) {
+        else if (now_us - l->lp_since >= (want ? KP_LP_ENTER_HOLD_US : l->release_hold_us) &&
+                 now_us - l->lp_switch_us >= (want ? KP_LP_ENTER_GAP_US : KP_LP_GAP_US)) {
+            if (want) {
+                const int64_t doubled = 2 * l->release_hold_us;
+                l->release_hold_us = now_us - l->released_us < KP_LP_FLAP_WINDOW_US
+                                     ? (doubled > KP_LP_RELEASE_MAX_US ? KP_LP_RELEASE_MAX_US : doubled)
+                                     : KP_LP_RELEASE_BASE_US;
+            } else l->released_us = now_us;
             l->lp = want != 0;
             l->lp_pending = -1;
             l->lp_switch_us = now_us;

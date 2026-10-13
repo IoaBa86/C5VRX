@@ -295,7 +295,9 @@ static bool switch_live(int level, bool lp)
     bool lp_changed = lp != s_prog_lp;
     if (!kp_changed && !lp_changed) return true;
     int64_t began = esp_timer_get_time();
-    if (!kp_switch_ready(&s_switch_guard, began)) return false;
+    /* Into LP is the rescue: short gap; everything else keeps the 5 s. */
+    if (!(lp_changed && lp ? kp_switch_ready_rescue(&s_switch_guard, began) : kp_switch_ready(&s_switch_guard, began)))
+        return false;
     bool previous = s_prog_lp;
     s_prog_lp = lp;
     bool ok = resume_live(lut);

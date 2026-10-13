@@ -5,6 +5,11 @@
 
 #define KP_SWITCH_GAP_US 5000000LL
 #define KP_SWITCH_CONFIRM_US 2000000LL
+/* Entering LP (the rescue) is confirmed and applied fast: the ladder already
+ * held the wish for KP_LP_ENTER_HOLD_US, and a restart costs ~4.4 ms
+ * (prog_restart_us on the board). Leaving LP and kp steps keep 2 s / 5 s. */
+#define KP_SWITCH_RESCUE_CONFIRM_US 200000LL
+#define KP_SWITCH_RESCUE_GAP_US     500000LL
 /* kp_switch_confirm_toward(): an unusable window holds the candidate; only
  * a gap without usable windows longer than this drops it. One unusable
  * window used to clear 2 s of agreement, so 10-20 % unusable windows at the
@@ -26,6 +31,12 @@ typedef struct {
 static inline bool kp_switch_ready(const kp_switch_guard_t *g, int64_t now)
 {
     return !g->switched || now - g->last_switch_us >= KP_SWITCH_GAP_US;
+}
+
+/* Into LP: only the short rescue gap. */
+static inline bool kp_switch_ready_rescue(const kp_switch_guard_t *g, int64_t now)
+{
+    return !g->switched || now - g->last_switch_us >= KP_SWITCH_RESCUE_GAP_US;
 }
 
 static inline void kp_switch_mark(kp_switch_guard_t *g, int64_t now)
@@ -82,5 +93,6 @@ static inline bool kp_switch_confirm_toward(kp_switch_guard_t *g, int level, boo
         return false;
     }
     g->level = level;
-    return now - g->candidate_since_us >= KP_SWITCH_CONFIRM_US;
+    const bool rescue = side == 2 && lp;
+    return now - g->candidate_since_us >= (rescue ? KP_SWITCH_RESCUE_CONFIRM_US : KP_SWITCH_CONFIRM_US);
 }

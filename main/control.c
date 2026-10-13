@@ -546,7 +546,7 @@ void control_print(void)
            "afc_weak_skips=%u afc_sign=%+d(%s) standard=%s detected=%s signal=%d menu=%u deviation_x100=%d mode=%s "
            "kp_auto=%u%s kp_steps=%lu lp_switches=%lu busy=%u\n"
            "LADDER windows=%lu unusable_settle=%lu unusable_gain_write=%lu unusable_context=%lu copy_fail=%lu "
-           "stuck_iq=%lu guard_confirms=%lu guard_resets=%lu level=%u lp=%u cn_smoothed_x10=%ld\n",
+           "stuck_iq=%lu guard_confirms=%lu guard_resets=%lu level=%u lp=%u lp_release_hold_ms=%ld cn_smoothed_x10=%ld\n",
            rf_channel()->name, rf_frequency_mhz(), rf_offset_khz(), s_cfo_khz, s_afc_locked,
            s_afc_corrections, s_afc_weak_skips, s_afc_sign,
            s_afc_sign_state == AFC2_SIGN_FLIPPED ? "flipped" : s_afc_sign_state == AFC2_SIGN_CONFIRMED ? "confirmed" :
@@ -559,6 +559,6 @@ void control_print(void)
            (unsigned long)s_ladder_windows, (unsigned long)s_ladder_settle, (unsigned long)s_ladder_gain,
            (unsigned long)s_ladder_ctx, (unsigned long)s_ladder_copy_fail, (unsigned long)s_ladder_stuck,
            (unsigned long)s_guard_confirms, (unsigned long)s_auto_candidate.resets, s_kp.level, s_kp.lp,
-           (long)(s_kp.cn_q4 / 16));
+           (long)(s_kp.release_hold_us / 1000), (long)(s_kp.cn_q4 / 16));
 }
 

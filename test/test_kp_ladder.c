@@ -138,13 +138,13 @@ int main(void)
     check("LP through 25 % unusable windows", lp_at >= 0);
     /* A long gap drops the pending change: no switch on stale evidence. */
     /* The smoothed C/N passes 8.5 dB after ~11 windows, so the hold starts
-     * then; without the restart 15 + 12 + 10 windows would reach 1 s. */
+     * then; without the restart 4 + 12 + 4 windows would pass the 0.3 s. */
     kp_ladder_reset(&l);
     (void)run(&l, 200, 0, 0, 80, &t, NULL);
     for (int k = 0; k < 15; ++k, t += TICK_US) (void)kp_ladder_update_lp(&l, 50, true, 0, t, true);
     for (int k = 0; k < 12; ++k, t += TICK_US) (void)kp_ladder_update_lp(&l, 50, false, 0, t, true);
     bool early = l.lp;
-    for (int k = 0; k < 10; ++k, t += TICK_US) {
+    for (int k = 0; k < 4; ++k, t += TICK_US) {    /* 0.15 s < KP_LP_ENTER_HOLD_US */
         (void)kp_ladder_update_lp(&l, 50, true, 0, t, true);
         early |= l.lp;
     }
@@ -197,7 +197,40 @@ int main(void)
             (void)kp_ladder_update_lp(&j, (k / 30) % 2 ? 30 : 150, true, 100, tj, true);
             if (j.lp != prev) { if (last >= 0 && tj - last < min_gap) min_gap = tj - last; last = tj; prev = j.lp; }
         }
-        check("program switches at least KP_LP_GAP_US apart", min_gap >= KP_LP_GAP_US);
+        check("program switches at least KP_LP_ENTER_GAP_US apart", min_gap >= KP_LP_ENTER_GAP_US);
+        /* Rescue fast, release slow: into LP within ~1 s of a drop to 4 dB
+         * (smoothing + hold), out only after 5 s of a good carrier, and a
+         * 1.5 s recovery in between does not throw LP out. */
+        kp_ladder_reset(&j);
+        for (int k = 0; k < 200; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, 200, true, 100, tj, true);
+        int64_t drop = tj, in_at = -1;
+        for (int k = 0; k < 60 && in_at < 0; ++k, tj += TICK_US) {
+            (void)kp_ladder_update_lp(&j, 40, true, 100, tj, true);
+            if (j.lp) in_at = tj - drop;
+        }
+        check("rescue: LP within 1 s of a drop to 4 dB", in_at >= 0 && in_at <= 1000000);
+        for (int k = 0; k < 30; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, 200, true, 100, tj, true);
+        check("a 1.5 s recovery keeps LP", j.lp);
+        for (int k = 0; k < 40; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, 40, true, 100, tj, true);
+        int64_t good = tj, out_at = -1;
+        for (int k = 0; k < 200 && out_at < 0; ++k, tj += TICK_US) {
+            (void)kp_ladder_update_lp(&j, 200, true, 100, tj, true);
+            if (!j.lp) out_at = tj - good;
+        }
+        check("release on a calm link: U85Q after ~2 s of a good carrier",
+              out_at >= KP_LP_RELEASE_BASE_US && out_at <= 3000000);
+        /* Flapping: LP needed again soon after leaving doubles the hold. */
+        for (int k = 0; k < 40; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, 40, true, 100, tj, true);
+        check("flap: back in LP, release hold doubled", j.lp && j.release_hold_us == 2 * KP_LP_RELEASE_BASE_US);
+        good = tj; out_at = -1;
+        for (int k = 0; k < 400 && out_at < 0; ++k, tj += TICK_US) {
+            (void)kp_ladder_update_lp(&j, 200, true, 100, tj, true);
+            if (!j.lp) out_at = tj - good;
+        }
+        check("flap: release takes the doubled hold", out_at >= 2 * KP_LP_RELEASE_BASE_US);
+        for (int k = 0; k < 700; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, 200, true, 100, tj, true);
+        for (int k = 0; k < 40; ++k, tj += TICK_US) (void)kp_ladder_update_lp(&j, 40, true, 100, tj, true);
+        check("calm for 30 s: hold back to 2 s", j.lp && j.release_hold_us == KP_LP_RELEASE_BASE_US);
     }
     {   /* Narrow 10 MHz filter (MATCHED profiles): own curves, LP still allowed. */
         kp_ladder_t n;
