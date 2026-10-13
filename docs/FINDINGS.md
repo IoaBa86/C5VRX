@@ -488,3 +488,33 @@ each 1 s FIELD_DIAG C/N held for its 20 windows):
   there; more gain would mainly move the envelope out of the band. The
   G59 park of boot 1 is the gain problem (DC point, above).
 
+
+### First fixes (same PR, 2026-10-13)
+
+- **Fixed IQ point is no carrier** (`gain.h` `dg_stuck`, `gain.c`):
+  `dg_measure` counts samples equal to the one before. VTX off at G59:
+  476-873 per mille per 64 bytes; weak carrier in noise at G73-75: 15-301.
+  At >= 400 per mille with P50 <= 32 the window is no carrier: Direct Gain
+  listens at the table maximum (host test: G59 -> G83 on the board's DC
+  point), and `receiver_obs_cn_x10()` returns CN_UNKNOWN for the ladder,
+  FIELD_DIAG, the profile gate and the AFC strength test. This removes the
+  G59 park and the 14-20 dB reading without a VTX; it does not correct the
+  DC of the FLOOR rows (that needs a DCO search that works without noise
+  dither, still open).
+- **Unusable windows hold, they do not erase** (`kp_ladder.h`,
+  `kp_switch_guard.h`, `control.c`): the pending kp/LP change and the switch
+  candidate survive unusable windows and failed copies; a gap of more than
+  500 ms without a usable window restarts them. Replay on the walk C/N
+  (`ladder_replay.py ... p_bad new`): 10 % unusable 15 applies (old: 2),
+  20-30 % 13 (old: 0).
+- **Gain-write guard 5 ms** instead of 100 ms plus "no write during the
+  window": the C/N is one observer probe taken right before it is read, and
+  Direct Gain settles a write in 0.3-1 ms.
+- **`T` LADDER line**: windows, unusable by reason (settle, gain write,
+  context, copy failure), fixed-point windows, guard confirms and resets,
+  current level, LP and the smoothed C/N.
+
+Not changed yet: the wide-class curve with an unknown deviation (U85Q kp
+0.85 below 2 dB, LP only 2-8.5 dB) and with it the LP flapping at the edge
+(the replay best case still applies 15 program changes in 114 s); the AFC
+never locking, so the deviation is never measured; the FLOOR-row DC itself.

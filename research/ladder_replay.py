@@ -6,15 +6,18 @@ deviation unknown, allow_lp) on the board walk's FIELD_DIAG C/N, each 1 s
 value held for its 20 control windows of 50 ms, every window usable. This
 is the best case for the guard: if it confirms here and the board did not,
 something outside the C/N held it. Integer arithmetic as in C.
-Usage: python research/ladder_replay.py [log] [t0] [t1] [p_bad]
-p_bad: share of windows made unusable at random (seeded); an unusable
-window holds the ladder and clears the guard candidate, as in control.c.
+Usage: python research/ladder_replay.py [log] [t0] [t1] [p_bad] [old|new]
+p_bad: share of windows made unusable at random (seeded). old: an unusable
+window clears the pending change and the guard candidate (PR 211 as walked);
+new: it holds them, gaps over 500 ms restart (KP_STALE_US, KP_SWITCH_STALE_US).
 """
 import re, sys, os, random
 D = os.path.join(os.path.dirname(__file__), "data", "walk_2026-10-13")
 log = sys.argv[1] if len(sys.argv) > 1 else os.path.join(D, "walk_serial.log")
 t0 = float(sys.argv[2]) if len(sys.argv) > 2 else 57; t1 = float(sys.argv[3]) if len(sys.argv) > 3 else 171
 p_bad = float(sys.argv[4]) if len(sys.argv) > 4 else 0.0
+HOLD_GAPS = len(sys.argv) > 5 and sys.argv[5] == 'new'
+STALE = 500000
 rng = random.Random(1)
 CN_UNKNOWN = -990
 CNP = [0, 20, 40, 80, 120, 200]
@@ -43,7 +46,13 @@ now = 0
 for ts, cn_raw in fd:
     for w in range(20):
         now += 50000
-        if rng.random() < p_bad:                     # !ladder_ok: hold, clear pending and candidate
+        bad = rng.random() < p_bad
+        if HOLD_GAPS:
+            if now - L.get("usable", 0) > STALE: L["pdir"] = 0; L["lp_pending"] = -1
+            if G["cand"] and now - G.get("valid", 0) > STALE: G["cand"] = False
+            if bad: continue
+            L["usable"] = G["valid"] = now
+        elif bad:                                    # !ladder_ok: hold, clear pending and candidate
             L["pdir"] = 0; L["lp_pending"] = -1; G["cand"] = False; continue
         raw = 0 if cn_raw <= CN_UNKNOWN else cn_raw
         if not L["init"]: L["cn_q4"] = raw * 16; L["init"] = True
