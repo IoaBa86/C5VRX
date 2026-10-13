@@ -38,6 +38,11 @@ typedef struct {
     int residual_mcells[2];
 } phy_dco_result_t;
 esp_err_t phy_dco_search(bool (*measure)(int dc[2]), phy_dco_result_t *res);
+/* The same codes for a row whose receiver noise is below one quantizer step:
+ * the IQ is one fixed code, so the DC is found per axis by bisection on the
+ * code where that fixed code flips (DC within half a cell). measured=false
+ * when an axis has no flip within the search range. */
+esp_err_t phy_dco_search_flat(bool (*measure)(int dc[2]), phy_dco_result_t *res);
 esp_err_t phy_dco_hold(int code_i, int code_q);
 bool phy_dco_release(void);
 bool phy_dco_held(void);

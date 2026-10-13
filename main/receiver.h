@@ -97,6 +97,8 @@ extern volatile uint32_t s_gain_epoch;      /* bumps on every gain/offset write 
 extern volatile uint32_t s_control_epoch;   /* bumps on retune/scan/calibration */
 extern volatile int64_t s_last_gain_write_us;
 extern volatile int s_obs_p50, s_obs_p95, s_obs_origin_pm, s_obs_clip_pm, s_obs_coherence;
+extern volatile bool s_obs_stuck;   /* fixed IQ point, not a carrier (gain.h dg_stuck) */
+extern volatile int s_obs_env_ratio_x100;   /* gain.h env_ratio_x100 of the latest window */
 extern volatile uint32_t s_obs_us_max, s_obs_windows;
 extern dg_map_blob_t s_gain_map_saved;
 extern bool s_gain_map_saved_valid;
@@ -126,6 +128,7 @@ extern QueueHandle_t s_commands;
 void control_start(void);
 video_standard_t menu_standard(void);
 void control_print(void);
+void control_print_beat(void);   /* STATUS line every 2 s (console.c) */
 
 /* ---- calibration.c ---- */
 void calibration_start(void);
@@ -145,6 +148,9 @@ void dco_post_gain(uint8_t gain);
 /* Chain state for the diagnostics (no side effects). */
 const char *calibration_filter_result(void);
 int calibration_filter_class_mhz(void);
+/* C/N model of the latest observer window; CN_UNKNOWN_X10 on a fixed IQ point. */
+int receiver_obs_cn_x10(void);
+unsigned calibration_narrow_width_khz(void);   /* measured -3 dB width, 0 = none */
 const char *calibration_sphase_state(void);
 bool calibration_sphase_settled(void);
 /* DC correction in place for this gain: held, or not needed (outside the

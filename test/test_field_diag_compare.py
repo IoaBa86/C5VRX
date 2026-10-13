@@ -28,6 +28,20 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(r["legacy_unknown_coverage_s"], 1)
         self.assertNotEqual(r["sync_evidence_ok_pct"], 100)
 
+    def test_ladder_at_the_edge(self):
+        r = self.summary("FIELD_DIAG t=1 cn_est_x10=30 kp_x100=70 lp=1\n"
+                         "FIELD_DIAG t=2 cn_est_x10=40 kp_x100=80 lp=0\n"
+                         "FIELD_DIAG t=3 cn_est_x10=-990 kp_x100=85 lp=0\n"
+                         "FIELD_DIAG t=4 cn_est_x10=150 kp_x100=75 lp=0\n")
+        self.assertEqual(r["edge_s"], 2)
+        self.assertEqual(r["edge_lp_pct"], 50)
+        self.assertAlmostEqual(r["edge_kp_median"], 0.75)
+        self.assertAlmostEqual(r["strong_kp_median"], 0.75)
+
+    def test_old_log_without_ladder(self):
+        r = self.summary("FIELD_DIAG t=1 cn_est_x10=30 gain=80 max=83\n")
+        self.assertEqual(r["edge_s"], 0)
+
     def test_empty(self):
         self.assertEqual(self.summary("")["seconds"], 0)
 

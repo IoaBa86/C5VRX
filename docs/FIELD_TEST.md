@@ -88,7 +88,7 @@ for an A/B that must exclude it.
 Capture goggles or terminated CVBS separately: firmware does not know whether
 recognisable moving image information remains. Read-back verifies code/skirt,
 **not independently BW20/BW40 analog response**. C/N is a simulation-derived
-coherence model, not dBm, measured noise figure or independently validated RF C/N.
+envelope model, not dBm, measured noise figure or independently validated RF C/N.
 
 ## Open-field physics, before blaming the receiver
 

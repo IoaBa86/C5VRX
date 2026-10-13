@@ -8,6 +8,7 @@
 #include "afc_ctrl.h"
 #include "kp_ladder.h"
 #include "kp_switch_guard.h"
+#include "profile_logic.h"
 #include "cn_estimate.h"
 #include "analog_video_detect.h"
 #include "driver/gpio.h"
@@ -47,6 +48,10 @@ static unsigned s_afc_corrections, s_afc_weak_skips;
  * (both set auto off). */
 static kp_ladder_t s_kp;
 static kp_switch_guard_t s_auto_candidate;
+/* Ladder evidence (T CONTROL line): windows offered, and why the unusable
+ * ones were (board walk 2026-10-13: the log could not show it). */
+static uint32_t s_ladder_windows, s_ladder_copy_fail, s_ladder_settle, s_ladder_gain, s_ladder_ctx, s_ladder_stuck,
+    s_guard_confirms;
 static uint8_t s_kp_auto;
 static int s_saved_kp_auto = -1;
 static bool s_mode_reset_pending;
@@ -379,51 +384,62 @@ static void control_task(void *arg)
             settle = own_write ? 2u : RETUNE_SETTLE_TICKS;
         }
         uint32_t gain_epoch = s_gain_epoch, ctx = afc_context();
-        if (s_scan_active || !copy_control_window(s_window, sizeof(s_window))) {
+        if (s_scan_active) {
             s_auto_candidate.candidate = false;
             afc2_ctrl_invalidate(&afc);
-            diag_window(false, false, false); /* failed copies count as missing evidence */
+            diag_window(false, false, false);
             continue;
         }
-        metrics_t m = measure_window(s_window, sizeof(s_window));
-        s_signal_strength = (s_signal_strength * 3 + strength(&m, s_current_gain) + 2) / 4;
+        const bool copied = copy_control_window(s_window, sizeof(s_window));
+        if (!copied) ++s_ladder_copy_fail;
+        metrics_t m = {0};
+        if (copied) {
+            m = measure_window(s_window, sizeof(s_window));
+            s_signal_strength = (s_signal_strength * 3 + strength(&m, s_current_gain) + 2) / 4;
+        }
 
-        /* AFC: burst-confirmed sync/porch levels only (issue #115), never the
+        /* AFC: burst/line-timing-confirmed sync/porch levels, never the
          * scene-biased FM slope; acquisition only, sticky once locked. */
         if (afc2_ctrl_sync(&afc, ctx, own_write)) { s_afc_locked = false; afc_lost = 0; }
         own_write = false;
         int64_t now = esp_timer_get_time();
-        /* The kp/LP ladder only needs a settled receiver (no retune, gain
+        /* The kp estimate only needs a settled receiver (no retune, gain
          * write or context change); the AFC additionally needs a stationary
          * envelope. Near the FM threshold receiver noise alone fails that
          * test (12 MHz class: 46 % of windows pass at 0 dB C/N, 74 % at
          * 2 dB), which froze the ladder exactly at the range edge
-         * (kp_ladder.h, research/ladder_gate.py). */
-        const bool ladder_ok = kp_ladder_window_usable(settle == 0, gain_epoch == s_gain_epoch,
-                                                       ctx == afc_context(), now - s_last_gain_write_us);
+         * (kp_ladder.h, research/ladder_gate.py). Gain-driven LP needs no
+         * successful copy or C/N window; retune/PHY ownership still gates it. */
+        const bool program_ok = settle == 0 && ctx == afc_context() && !phy_busy();
+        const bool ladder_ok = copied && kp_ladder_window_usable(program_ok, ctx == afc_context(), now - s_last_gain_write_us);
+        ++s_ladder_windows;
+        s_ladder_settle += settle != 0;
+        s_ladder_ctx += ctx != afc_context();
+        s_ladder_gain += now - s_last_gain_write_us < KP_GAIN_WRITE_GUARD_US;
+        s_ladder_stuck += s_obs_stuck;
         bool window_ok = ladder_ok && afc2_envelope_stationary(s_window, sizeof(s_window));
         if (settle) --settle;
         afc2_result_t r = {0};
         if (window_ok) {
             r = afc2_measure(s_window, sizeof(s_window), c5vrx_phase8_gain_lut);
             afc2_ctrl_observe(&afc, &r);
-        } else afc2_ctrl_invalidate(&afc);
-        s_cfo_khz = r.porch_pairs ? r.porch_khz : 0;
-        bool valid = window_ok && r.lines && r.standard && r.porch_pairs && r.sync_pairs &&
-                     r.burst_x10 >= AFC2_BURST_MIN_X10;
+        } else afc2_ctrl_miss(&afc);   /* settle and context changes reset via afc2_ctrl_sync */
+        if (copied) s_cfo_khz = r.porch_pairs ? r.porch_khz : 0;
+        /* Burst or line timing confirmed the syncs (afc2_measure). */
+        bool valid = window_ok && r.lines && r.standard && r.porch_pairs && r.sync_pairs;
         if (valid) { s_last_video_us = now; standard_vote(r.standard); profile_observe(&r); }
         bool was = s_afc_locked;
-        s_afc_locked = afc2_native_lock(s_afc_locked, valid, afc2_ctrl_can_lock(&afc, true), afc.n, &afc_lost);
+        if (copied) s_afc_locked = afc2_native_lock(s_afc_locked, valid, afc2_ctrl_can_lock(&afc, true), afc.n, &afc_lost);
         if (was && !s_afc_locked) afc2_ctrl_reset(&afc, ctx, true);
         /* Re-acquisition retunes only on a strong carrier: at the range edge
          * the porch estimate is pulled toward the receiver centre and would
          * walk the offset the wrong way (cn_estimate.h, afc_bias.py). A weak
          * window still feeds the estimate history, it just cannot step. */
-        const int cn_x10 = cn_estimate_x10(s_obs_coherence, calibration_filter_class_mhz());
+        const int cn_x10 = receiver_obs_cn_x10();
         if (!s_afc_locked && window_ok && m.q_phase >= 55 && !s_menu_active &&
             phy_try_actuator(phy_generation())) {
             int32_t step = 0;
-            const bool strong = afc_correction_allowed(s_obs_coherence, calibration_filter_class_mhz());
+            const bool strong = receiver_obs_cn_x10() >= AFC_MIN_CN_X10;   /* envelope C/N model */
             if (afc2_ctrl_decide(&afc, gain_epoch == s_gain_epoch && strong, &step)) {
                 rf_set_offset_khz(rf_offset_khz() + (int)step);
                 s_last_gain_write_us = esp_timer_get_time();   /* restore re-forces gain */
@@ -465,16 +481,22 @@ static void control_task(void *arg)
         } else if (s_kp_auto && !s_menu_active) {
             /* MATCHED profiles (start level below kp 0.85) run the narrow class:
              * decided by the profile, not by filter equality, since the narrow
-             * and normal sweep entries may be the same setting. */
-            s_kp.narrow = profile_base_level(profile) > 0;
-            uint8_t level = kp_ladder_update_lp(&s_kp, cn_x10, ladder_ok,
-                                                profile_live_deviation_x100(), now, s_kp_auto == 2);
-            bool usable = ladder_ok && ctx == afc_context();
+             * and normal sweep entries may be the same setting; its curves
+             * only when the narrow filter measured close to their 10 MHz model. */
+            s_kp.narrow = kp_ladder_narrow_rows(profile_base_level(profile) > 0, calibration_narrow_width_khz());
+            s_kp.wide = profile == PROFILE_WIDE;   /* the 16 MHz rows of a measured wide VTX */
+            s_kp.gain = s_current_gain;            /* LP follows the gain (kp_ladder.h KP_LP_GAIN_*) */
+            const bool program_usable = program_ok && ctx == afc_context();
+            uint8_t level = kp_ladder_update_evidence(&s_kp, cn_x10, ladder_ok, program_usable,
+                                                      profile_live_deviation_x100(), now, s_kp_auto == 2);
+            bool usable = (s_kp.lp != transport_lp() ? program_usable : ladder_ok) && ctx == afc_context();
             /* Confirm the program and the direction, not the exact level the
              * ladder is stepping through (kp_switch_guard.h). */
             if (kp_switch_confirm_toward(&s_auto_candidate, level, s_kp.lp, transport_kp_level(), transport_lp(),
-                                         ctx, usable, now))
+                                         ctx, usable, now)) {
+                ++s_guard_confirms;
                 s_mode_reset_pending = !transport_apply_auto(level, s_kp.lp);  /* kp + LP in one guarded restart */
+            }
         } else {
             s_auto_candidate.candidate = false;
             if (!s_kp_auto) {
@@ -510,11 +532,27 @@ void control_start(void)
     ESP_ERROR_CHECK(xTaskCreate(control_task, "control", 6144, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 }
 
+/* Status beat for the web menu (web/receiver-console.js): one short line
+ * every 2 s from the console task, so the menu follows the receiver
+ * without a status request. Read-only. */
+void control_print_beat(void)
+{
+    printf("STATUS channel=%s freq=%u afc_locked=%u standard=%s detected=%s signal=%d menu=%u mode=%s kp_auto=%u "
+           "output=%s live=%u busy=%u\n",
+           rf_channel()->name, rf_frequency_mhz(), s_afc_locked,
+           s_std_mode == STD_MODE_AUTO ? "AUTO" : s_std_mode == STD_MODE_PAL ? "PAL" : "NTSC",
+           s_detected_std_valid ? (s_detected_std == VIDEO_STD_PAL ? "PAL" : "NTSC") : "none",
+           s_signal_strength, s_menu_active, profile_name(profile_active()), s_kp_auto, transport_output_name(),
+           profile_live_mode(), menu_status_active());
+}
+
 void control_print(void)
 {
     printf("CONTROL channel=%s freq=%u offset_khz=%d cfo_khz=%d afc_locked=%u afc_corrections=%u "
            "afc_weak_skips=%u afc_sign=%+d(%s) standard=%s detected=%s signal=%d menu=%u deviation_x100=%d mode=%s "
-           "kp_auto=%u%s kp_steps=%lu lp_switches=%lu busy=%u\n",
+           "kp_auto=%u%s kp_steps=%lu lp_switches=%lu busy=%u\n"
+           "LADDER windows=%lu unusable_settle=%lu unusable_gain_write=%lu unusable_context=%lu copy_fail=%lu "
+           "stuck_iq=%lu guard_confirms=%lu guard_resets=%lu level=%u lp=%u lp_release_hold_ms=%ld cn_smoothed_x10=%ld\n",
            rf_channel()->name, rf_frequency_mhz(), rf_offset_khz(), s_cfo_khz, s_afc_locked,
            s_afc_corrections, s_afc_weak_skips, s_afc_sign,
            s_afc_sign_state == AFC2_SIGN_FLIPPED ? "flipped" : s_afc_sign_state == AFC2_SIGN_CONFIRMED ? "confirmed" :
@@ -523,6 +561,10 @@ void control_print(void)
            s_signal_strength, s_menu_active, profile_deviation_x100(rf_channel_index()),
            profile_name(profile_active()), s_kp_auto,
            s_kp_auto && transport_kp_level() < 0 ? "(inactive: kp level unverified)" : "", (unsigned long)s_kp.steps,
-           (unsigned long)s_kp.lp_switches, menu_status_active());
+           (unsigned long)s_kp.lp_switches, menu_status_active(),
+           (unsigned long)s_ladder_windows, (unsigned long)s_ladder_settle, (unsigned long)s_ladder_gain,
+           (unsigned long)s_ladder_ctx, (unsigned long)s_ladder_copy_fail, (unsigned long)s_ladder_stuck,
+           (unsigned long)s_guard_confirms, (unsigned long)s_auto_candidate.resets, s_kp.level, s_kp.lp,
+           (long)(s_kp.release_hold_us / 1000), (long)(s_kp.cn_q4 / 16));
 }
 

@@ -71,10 +71,20 @@ dg_observation_t dg_measure(const uint8_t *samples, size_t bytes,
     if (!samples || !bytes || !phase8_lut) return r;
     prepare_lut();
     uint16_t hist[114] = {0};
-    unsigned origin = 0, clip = 0, coherent = 0;
-    uint8_t prior_phase = 0;
+    unsigned origin = 0, clip = 0, coherent = 0, repeats = 0;
+    uint8_t prior_phase = 0, prior_raw = 0;
+    int i_min = 7, i_max = -8, q_min = 7, q_max = -8;
+    int64_t sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sxp = 0, syp = 0;
+    uint64_t spp = 0;
     for (size_t n = 0; n < bytes; ++n) {
         uint8_t raw = samples[n], power = s_power[raw];
+        const int x = 2 * ((int8_t)(raw & 240u) >> 4) + 1;
+        const int y = 2 * ((int8_t)((raw & 15u) << 4) >> 4) + 1;
+        const int p = x * x + y * y;
+        sx += x; sy += y;
+        sxx += x * x; syy += y * y; sxy += x * y;
+        sxp += x * p; syp += y * p;
+        spp += (unsigned)(p * p);
         ++hist[power];
         origin += s_flags[raw] & 1u;
         clip += (s_flags[raw] >> 1) & 1u;
@@ -83,7 +93,14 @@ dg_observation_t dg_measure(const uint8_t *samples, size_t bytes,
             int delta = (((int)phase - (int)prior_phase + 128) & 255) - 128;
             if (abs_i(delta) <= 32) ++coherent;
         }
+        repeats += n && raw == prior_raw;
+        if (raw != prior_raw || !n) {
+            int si = (int8_t)(raw & 240u) >> 4, sq = (int8_t)((raw & 15u) << 4) >> 4;
+            i_min = si < i_min ? si : i_min; i_max = si > i_max ? si : i_max;
+            q_min = sq < q_min ? sq : q_min; q_max = sq > q_max ? sq : q_max;
+        }
         prior_phase = phase;
+        prior_raw = raw;
     }
     unsigned cumulative = 0;
     bool p50 = false, p90 = false;
@@ -99,6 +116,23 @@ dg_observation_t dg_measure(const uint8_t *samples, size_t bytes,
     r.origin_pm = (uint16_t)(origin * 1000u / bytes);
     r.clip_pm = (uint16_t)(clip * 1000u / bytes);
     r.coherence = bytes > 1u ? (uint8_t)(coherent * 100u / (bytes - 1u)) : 0;
+    r.repeat_pm = bytes > 1u ? (uint16_t)(repeats * 1000u / (bytes - 1u)) : 0;
+    /* Envelope C/N: integer raw moments in the existing sample loop, then
+     * translate the moments to the window's DC centre once per probe.
+     * No per-sample floating point or extra passes in the fast observer. */
+    const double inv = 1.0 / (double)bytes;
+    const double mx = (double)sx * inv, my = (double)sy * inv;
+    const double dc2 = mx * mx + my * my;
+    const double mp_raw = (double)(sxx + syy) * inv;
+    const double mp = mp_raw - dc2;
+    const double mp2 = (double)spp * inv - 4.0 * (mx * (double)sxp + my * (double)syp) * inv
+                    + 4.0 * (mx * mx * (double)sxx + 2.0 * mx * my * (double)sxy + my * my * (double)syy) * inv
+                    + 2.0 * dc2 * mp_raw - 3.0 * dc2 * dc2;
+    const double var = mp2 - mp * mp;
+    const double ratio = mp <= 0.0 ? 0.0 : var > 0.0 ? 100.0 * mp * mp / var : 65535.0;
+    r.env_ratio_x100 = (uint16_t)(ratio > 65535.0 ? 65535.0 : ratio + .5);
+    int span = i_max - i_min > q_max - q_min ? i_max - i_min : q_max - q_min;
+    r.span = (uint8_t)(span < 0 ? 0 : span);
     return r;
 }
 

@@ -111,6 +111,27 @@ int main(void)
         check(name, abs(res) <= AFC2_CTRL_DEADBAND_KHZ + 20 && locked, detail);
     }
     s_plant_sign = 1;
+    {   /* Missing windows (failed copy, no burst) keep the estimate window up
+         * to AFC2_CTRL_MAX_MISSES in a row; more clear it. */
+        afc2_ctrl_t c;
+        memset(&c, 0, sizeof(c));
+        afc2_ctrl_reset(&c, 1, true);
+        afc2_result_t good, none;
+        memset(&good, 0, sizeof(good));
+        memset(&none, 0, sizeof(none));
+        good.lines = 8; good.standard = 2; good.polarity = -1; good.burst_x10 = 40; good.sync_pairs = 200;
+        good.porch_pairs = 300; good.porch_khz = 120; good.sync_khz = -2880;
+        for (unsigned w = 0; w < 40u; ++w) {
+            if (w % 3u == 2u) afc2_ctrl_miss(&c);                  /* a third of the copies fail */
+            else if (w % 3u == 1u) afc2_ctrl_observe(&c, &none);   /* no burst */
+            else afc2_ctrl_observe(&c, &good);
+        }
+        snprintf(detail, sizeof(detail), "n=%u", c.n);
+        check("2/3 missing windows: estimates kept", c.n >= 13u, detail);
+        for (unsigned w = 0; w <= AFC2_CTRL_MAX_MISSES; ++w) afc2_ctrl_miss(&c);
+        snprintf(detail, sizeof(detail), "n=%u", c.n);
+        check("more than 1 s without evidence: cleared", c.n == 0u, detail);
+    }
     printf("%s: %u checks, %u failures\n", s_fail ? "FAIL" : "PASS", s_run, s_fail);
     return s_fail ? 1 : 0;
 }

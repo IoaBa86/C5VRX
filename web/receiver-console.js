@@ -30,6 +30,7 @@ export class ReceiverConsole {
     this.profile = {};
     this.scan = { active: false, candidates: 0, result: '', channel: '' };
     this.statusAt = 0;
+    this.beatAt = 0;     // last STATUS beat: the firmware reports by itself
     this.busy = false;
     this.busyReported = false;
     this.refused = '';
@@ -64,7 +65,18 @@ export class ReceiverConsole {
     if (/^\s+v video standard AUTO\/NTSC\/PAL, e close menu/.test(line)) this.directMenu = true;
     if (!this.current) return;
 
-    if (line.startsWith('CONTROL ')) {
+    if (line.startsWith('STATUS ')) {
+      // Status beat (control.c control_print_beat, every 2 s).
+      const beat = fields(line);
+      if (beat.output) this.output.level = beat.output;
+      if (beat.live !== undefined) this.profile.live = beat.live === '1';
+      delete beat.output;
+      delete beat.live;
+      Object.assign(this.control, beat);
+      if (beat.busy !== undefined) this.setBusy(beat.busy === '1', events);
+      this.statusAt = this.beatAt = now;
+      events.add('status');
+    } else if (line.startsWith('CONTROL ')) {
       fields(line, this.control);
       if (this.control.busy !== undefined) this.setBusy(this.control.busy === '1', events);
       this.statusAt = now;
@@ -129,6 +141,11 @@ export class ReceiverConsole {
     } else if (line.startsWith('SCAN refused')) {
       this.scan = { active: false, candidates: 0, result: 'refused', channel: '' };
     }
+  }
+
+  // Firmware with the STATUS beat keeps the menu current by itself.
+  reportsByItself(now = Date.now()) {
+    return this.beatAt !== 0 && now - this.beatAt < 6000;
   }
 
   // The web menu sent s: SCAN candidate lines only name channels with video.

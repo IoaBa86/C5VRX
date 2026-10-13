@@ -282,6 +282,84 @@ esp_err_t phy_dco_search(bool (*measure)(int dc[2]), phy_dco_result_t *res)
 #endif
 }
 
+/* FLOOR rows (receiver noise below one quantizer step) used to keep the
+ * chip's own DC: (-1.5, +3) cells at G59 on the board, a fixed IQ point that
+ * Direct Gain read as a healthy carrier and parked on (board walk
+ * 2026-10-13, docs/FINDINGS.md). Without noise dither the mean only moves in
+ * whole cells, so the Jacobian search above sees no slope. Bisection on the
+ * sign of each axis' mean finds the code where the fixed code flips from
+ * cell -0.5 to +0.5, i.e. DC 0 within half a cell. Two rounds absorb the
+ * small I/Q cross-coupling. */
+static int dco_flat_axis(bool (*measure)(int dc[2]), int cur[2], int axis, int base, bool *ok)
+{
+    int lo = dco_clamp(base - DCO_RANGE, base), hi = dco_clamp(base + DCO_RANGE, base), m[2];
+    cur[axis] = lo; dco_apply(cur[0], cur[1]);
+    if (!measure(m)) { *ok = false; return base; }
+    const bool lo_pos = m[axis] > 0;
+    const int lo_abs = m[axis] < 0 ? -m[axis] : m[axis];
+    cur[axis] = hi; dco_apply(cur[0], cur[1]);
+    if (!measure(m)) { *ok = false; return base; }
+    if ((m[axis] > 0) == lo_pos) {          /* no flip in range: keep the nearer end */
+        const int hi_abs = m[axis] < 0 ? -m[axis] : m[axis];
+        *ok = false;
+        return hi_abs < lo_abs ? hi : lo;
+    }
+    while (hi - lo > 1) {
+        const int mid = (lo + hi) / 2;
+        cur[axis] = mid; dco_apply(cur[0], cur[1]);
+        if (!measure(m)) { *ok = false; return mid; }
+        if ((m[axis] > 0) == lo_pos) lo = mid; else hi = mid;
+    }
+    return lo;
+}
+
+esp_err_t phy_dco_search_flat(bool (*measure)(int dc[2]), phy_dco_result_t *res)
+{
+    memset(res, 0, sizeof(*res));
+#ifndef C5VRX_PHY_PINNED
+    (void)measure;
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!measure) return ESP_ERR_INVALID_ARG;
+    phy_begin();
+    uint16_t live[PBUS_BLOCKS][2];
+    read_live(live);
+    esp_err_t result = ESP_ERR_INVALID_RESPONSE;
+    int before[2] = {0, 0};
+    bool debug = false;
+    if (measure(before)) {
+        debug = true;
+        enter_debug(live);
+        const int base[2] = {live[2][1], live[3][1]};
+        int cur[2] = {base[0], base[1]}, err[2] = {before[0], before[1]};
+        bool ok = true;
+        for (unsigned round = 0; round < 2u && ok; ++round)
+            for (int axis = 0; axis < 2 && ok; ++axis) {
+                bool axis_ok = true;
+                cur[axis] = dco_flat_axis(measure, cur, axis, base[axis], &axis_ok);
+                if (!axis_ok) ok = false;
+            }
+        dco_apply(cur[0], cur[1]);
+        if (ok && measure(err) && err[0] >= -1000 && err[0] <= 1000 && err[1] >= -1000 && err[1] <= 1000) {
+            res->measured = true;
+            res->codes[0] = cur[0]; res->codes[1] = cur[1];
+            res->residual_mcells[0] = err[0]; res->residual_mcells[1] = err[1];
+            result = ESP_OK;
+        }
+        printf("DCO flat before=%d/%d codes=%d/%d residual=%d/%d %s\n", before[0], before[1], cur[0], cur[1],
+               err[0], err[1], result == ESP_OK ? "ok" : "no_flip");
+        dco_apply(base[0], base[1]);
+    }
+    if (debug) {
+        for (unsigned b = 0; b < PBUS_BLOCKS; ++b) if (pbus_owned(b))
+            for (unsigned k = 0; k < 2; ++k) phy_pbus_force_test(b, k + 1, live[b][k]);
+        pbus_workmode_keep_gain();
+    }
+    phy_end();
+    return result;
+#endif
+}
+
 esp_err_t phy_dco_hold(int code_i, int code_q)
 {
 #ifndef C5VRX_PHY_PINNED

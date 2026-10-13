@@ -23,8 +23,37 @@ typedef struct {
     uint8_t p50, p90, p95;
     uint16_t origin_pm, clip_pm;
     uint8_t coherence;
+    uint16_t repeat_pm;     /* samples equal to the one before, per mille */
+    uint8_t span;           /* code range of the wider IQ axis over the window */
+    uint16_t env_ratio_x100; /* DC-removed envelope mean^2/var of |z|^2, x100 (noise 100) */
     uint64_t observed_us;
 } dg_observation_t;
+
+/* A fixed IQ point is not a carrier. Below one quantizer step of receiver
+ * noise (DCO FLOOR rows, G54-69 on the board) the uncorrected DC is a
+ * constant code: coherence 99-100 %, P50 ~15, inside the healthy band, and
+ * Direct Gain held there with no VTX (board walk 2026-10-13, docs/FINDINGS.md).
+ * IQSNAP: VTX off at G59 repeats 476-873 per mille per 64 bytes and spans
+ * 1-2 codes per 256-byte probe; a weak carrier in noise at G73-75 repeats
+ * 15-301 and spans 7-12. Repeats alone are not enough: a strong clean
+ * carrier at 40 MS/s repeats often too (half the windows at G27, 1 m from
+ * the VTX, read as a fixed point and sent the ladder into LP; board
+ * 2026-10-13). A carrier draws a circle around the DC, so it spans many
+ * codes even when neighbouring samples repeat.
+ *
+ * Measurement only: the C/N model reads it as no carrier (receiver.c
+ * receiver_obs_cn_x10). Direct Gain does not act on it. Treating it as
+ * no carrier sent the gain to the table maximum, where the first window
+ * after the write still carried the row's uncorrected DC, clipped, dropped
+ * back into the FLOOR rows and looped: ~1400 writes and hundreds of
+ * overloads a second with the VTX off (board walk 3, 2026-10-13). The DC
+ * of the FLOOR rows has to be corrected in the DCO path instead. */
+#define DG_STUCK_PM      400u
+#define DG_STUCK_SPAN    2u
+static inline bool dg_stuck(const dg_observation_t *o)
+{
+    return o->repeat_pm >= DG_STUCK_PM && o->span <= DG_STUCK_SPAN;
+}
 
 typedef struct {
     arc_gain_table_t table;

@@ -19,11 +19,9 @@ const paneLocal = $('paneLocal');
 
 const selectAlphaBuild = $('selectAlphaBuild');
 const selectAlphaPackageType = $('selectAlphaPackageType');
-const btnRefreshAlphaBuilds = $('btnRefreshAlphaBuilds');
 const alphaBuildDetails = $('alphaBuildDetails');
 
 const selectRelease = $('selectRelease');
-const btnRefreshReleases = $('btnRefreshReleases');
 const selectPackageType = $('selectPackageType');
 const releaseDetails = $('releaseDetails');
 
@@ -106,8 +104,6 @@ function activateSource(source) {
 tabGithub.addEventListener('click', () => activateSource('github'));
 tabAlpha.addEventListener('click', () => activateSource('alpha'));
 tabLocal.addEventListener('click', () => activateSource('local'));
-btnRefreshAlphaBuilds.addEventListener('click', () => fetchReleases());
-btnRefreshReleases.addEventListener('click', () => fetchReleases());
 selectAlphaBuild.addEventListener('change', () => onAlphaBuildSelected());
 selectRelease.addEventListener('change', () => onReleaseSelected(parseInt(selectRelease.value, 10)));
 
@@ -165,9 +161,15 @@ function parseFlashOffset(text) {
 // Fetch the firmware index mirrored into the GitHub Pages artifact.
 // Production flashing must stay same-origin: browsers cannot reliably fetch
 // GitHub Release storage redirects due to CORS.
-async function fetchReleases() {
-  selectRelease.innerHTML = '<option value="">Fetching firmware index…</option>';
-  selectAlphaBuild.innerHTML = '<option value="">Fetching C5VRX-5 builds…</option>';
+// quiet: background refresh. No placeholders or log lines, and the lists
+// are only rebuilt (keeping the selected build) when a build was added or
+// removed.
+async function fetchReleases({ quiet = false } = {}) {
+  if (!quiet) {
+    selectRelease.innerHTML = '<option value="">Fetching firmware index…</option>';
+    selectAlphaBuild.innerHTML = '<option value="">Fetching C5VRX-5 builds…</option>';
+  }
+  const say = quiet ? () => {} : log;
 
   let data = null;
   try {
@@ -177,11 +179,12 @@ async function fetchReleases() {
     if (!mirrorRes.ok) throw new Error(`Pages firmware index HTTP ${mirrorRes.status}`);
     data = await mirrorRes.json();
     if (!Array.isArray(data)) throw new Error('Pages firmware index is not an array');
-    log(`Loaded the firmware index (${data.length} build(s)).`);
+    say(`Loaded the firmware index (${data.length} build(s)).`);
   } catch (mirrorError) {
+    if (quiet) return;   // a background refresh keeps what is shown
     // Metadata fallback only. Binary flashing still prefers same-origin assets;
     // this path mainly keeps local development usable for release browsing.
-    log(`Pages firmware index unavailable (${mirrorError.message}); using GitHub release metadata.`);
+    say(`Pages firmware index unavailable (${mirrorError.message}); using GitHub release metadata.`);
     try {
       const res = await fetch('https://api.github.com/repos/Twotoz/C5VRX/releases?per_page=100', {
         headers: { Accept: 'application/vnd.github.v3+json' },
@@ -191,26 +194,43 @@ async function fetchReleases() {
       data = await res.json();
       if (!Array.isArray(data)) throw new Error('GitHub releases response is not an array');
     } catch (apiError) {
-      log(`Could not fetch release metadata (${apiError.message}). Showing the cached legacy release only.`);
+      say(`Could not fetch release metadata (${apiError.message}). Showing the cached legacy release only.`);
       data = FALLBACK_RELEASES;
     }
   }
 
   const byDate = (a, b) => new Date(b.published_at || 0) - new Date(a.published_at || 0);
-  githubReleases = data.filter(rel => VERSION_TAG_PATTERN.test(rel.tag_name || '')).sort(byDate);
-  if (githubReleases.length === 0) githubReleases = FALLBACK_RELEASES;
+  let releases = data.filter(rel => VERSION_TAG_PATTERN.test(rel.tag_name || '')).sort(byDate);
+  if (releases.length === 0) releases = FALLBACK_RELEASES;
   // C5VRX-5: versioned main builds first (newest first), then unmerged PR builds.
   const isPr = rel => Number(rel.tag_name.startsWith('c5vrx5-pr-'));
-  githubAlphaBuilds = data.filter(rel => ALPHA_TAG_PATTERN.test(rel.tag_name || ''))
+  const alpha = data.filter(rel => ALPHA_TAG_PATTERN.test(rel.tag_name || ''))
     .sort((a, b) => (isPr(a) - isPr(b)) || byDate(a, b));
-  log(`Available: ${githubAlphaBuilds.length} C5VRX-5 build(s), ${githubReleases.length} legacy release(s).`);
+  if (isFlashing) return;   // never swap the lists under a running flash
+  const signature = list => list.map(rel => `${rel.tag_name}@${rel.published_at || ''}`).join(',');
+  const releasesChanged = signature(releases) !== signature(githubReleases);
+  const alphaChanged = signature(alpha) !== signature(githubAlphaBuilds);
+  if (quiet && !releasesChanged && !alphaChanged) return;
+  const keepRelease = githubReleases[Number(selectRelease.value)]?.tag_name;
+  const keepAlpha = githubAlphaBuilds[Number(selectAlphaBuild.value)]?.tag_name;
+  githubReleases = releases;
+  githubAlphaBuilds = alpha;
+  say(`Available: ${githubAlphaBuilds.length} C5VRX-5 build(s), ${githubReleases.length} legacy release(s).`);
 
-  populateReleaseDropdown();
-  populateAlphaBuildDropdown();
+  if (!quiet || releasesChanged) populateReleaseDropdown(quiet ? keepRelease : undefined);
+  if (!quiet || alphaChanged) populateAlphaBuildDropdown(quiet ? keepAlpha : undefined);
+  if (quiet) log(`Firmware list updated: ${githubAlphaBuilds.length} C5VRX-5 build(s).`);
   updateFlashButtonState();
 }
 
-function populateAlphaBuildDropdown() {
+// The firmware lists follow new and removed builds by themselves.
+const RELEASE_REFRESH_MS = 60000;
+setInterval(() => { if (document.visibilityState !== 'hidden') fetchReleases({ quiet: true }); }, RELEASE_REFRESH_MS);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') fetchReleases({ quiet: true });
+});
+
+function populateAlphaBuildDropdown(keepTag) {
   selectAlphaBuild.replaceChildren();
   githubAlphaBuilds.forEach((rel, index) => {
     const opt = document.createElement('option');
@@ -221,7 +241,8 @@ function populateAlphaBuildDropdown() {
     selectAlphaBuild.appendChild(opt);
   });
   if (githubAlphaBuilds.length) {
-    selectAlphaBuild.value = '0';
+    const kept = githubAlphaBuilds.findIndex(rel => rel.tag_name === keepTag);
+    selectAlphaBuild.value = String(kept >= 0 ? kept : 0);
     onAlphaBuildSelected();
   } else {
     selectAlphaBuild.innerHTML = '<option value="">No C5VRX-5 builds published yet</option>';
@@ -247,7 +268,7 @@ function onAlphaBuildSelected() {
   updateFlashButtonState();
 }
 
-function populateReleaseDropdown() {
+function populateReleaseDropdown(keepTag) {
   selectRelease.replaceChildren();
   githubReleases.forEach((rel, index) => {
     const opt = document.createElement('option');
@@ -256,8 +277,9 @@ function populateReleaseDropdown() {
     opt.textContent = `${tag}${rel.prerelease ? ' [Pre-release]' : ''}${index === 0 ? ' (Latest)' : ''}`;
     selectRelease.appendChild(opt);
   });
-  selectRelease.value = '0';
-  onReleaseSelected(0);
+  const kept = Math.max(0, githubReleases.findIndex(rel => (rel.tag_name || rel.name) === keepTag));
+  selectRelease.value = String(kept);
+  onReleaseSelected(kept);
 }
 
 function onReleaseSelected(index) {
@@ -527,6 +549,7 @@ let commandBusy = false;
 let refreshTimer = null;
 let logPending = '';
 let logTimer = null;
+let logLinePartial = '';   // unfinished line, held until STATUS lines can be told apart
 
 function setText(element, text) {
   if (element.textContent !== text) element.textContent = text;
@@ -559,7 +582,7 @@ function renderReceiver() {
     ? 'Connect a C5VRX-5 receiver over USB to use its menu.'
     : v
       ? `C5VRX-5 ${receiverConsole.version} · ${v.statusAt ? `status from ${new Date(v.statusAt).toLocaleTimeString()}` : 'waiting for a status report'}`
-      : 'Firmware not identified yet. Press Refresh status or Firmware help; the menu needs C5VRX-5 firmware.');
+      : 'Identifying the firmware… the menu needs C5VRX-5 firmware.');
 
   const notice = $('receiverNotice');
   notice.hidden = !v?.busy;
@@ -589,13 +612,29 @@ function flushLog() {
   if ($('autoScroll').checked) serialOutput.scrollTop = serialOutput.scrollHeight;
 }
 
+// The 2-s STATUS beat feeds the menu, not the log. A line that may still
+// become a STATUS line is held until it does or cannot.
+function visibleLog(text) {
+  const parts = (logLinePartial + text).split('\n');
+  const tail = parts.pop();
+  const isStatus = line => line.replace(/\r$/, '').startsWith('STATUS ');
+  let out = parts.filter(line => !isStatus(line)).map(line => `${line}\n`).join('');
+  if (tail.length <= 4096 && (tail.startsWith('STATUS ') || 'STATUS '.startsWith(tail))) {
+    logLinePartial = tail;
+  } else {
+    out += tail;
+    logLinePartial = '';
+  }
+  return out;
+}
+
 function appendSerial(text) {
   // Batch the log text: FIELD_DIAG and IQ dumps arrive in many small reads.
-  logPending = (logPending + text).slice(-MAX_LOG_CHARS);
+  logPending = (logPending + visibleLog(text)).slice(-MAX_LOG_CHARS);
   if (!logTimer) logTimer = setTimeout(flushLog, 50);
   for (const event of receiverConsole.push(text)) {
     if (event === 'ready') scheduleRefresh(1500);
-    else if (event === 'scan-done' || event === 'calibration-done') scheduleRefresh(400);
+    else if ((event === 'scan-done' || event === 'calibration-done') && !receiverConsole.reportsByItself()) scheduleRefresh(400);
   }
   renderReceiver();
   syncDeviceControls();
@@ -621,6 +660,7 @@ const serialConsole = new SerialTerminal({
     terminalStatus.setAttribute('data-state', state);
     if (state === 'connecting') {
       flushLog();
+      logLinePartial = '';
       serialOutput.textContent = '';
       receiverConsole.reset();
     }
@@ -635,9 +675,17 @@ const serialConsole = new SerialTerminal({
   onError: (error) => appendSerial(`\n[Web terminal] ${error.message || error}\n`)
 });
 
+// Older firmware has no STATUS beat: ask for a report every 10 s while the
+// terminal is idle, so the menu never needs a refresh button.
+const LEGACY_POLL_MS = 10000;
+setInterval(() => {
+  if (serialConsole.state !== 'connected' || !receiverConsole.current || receiverConsole.reportsByItself()) return;
+  if (!refreshTimer && Date.now() - receiverConsole.statusAt >= LEGACY_POLL_MS) scheduleRefresh(0);
+}, 1000);
+
 function syncDeviceControls() {
   const supported = 'serial' in navigator;
-  for (const control of [tabGithub, tabAlpha, tabLocal, selectAlphaBuild, selectAlphaPackageType, btnRefreshAlphaBuilds, selectRelease, selectPackageType, selectBaud, chkEraseAll, inputLocalFile, inputFlashOffset, btnRefreshReleases, $('btnBrowseFile')]) {
+  for (const control of [tabGithub, tabAlpha, tabLocal, selectAlphaBuild, selectAlphaPackageType, selectRelease, selectPackageType, selectBaud, chkEraseAll, inputLocalFile, inputFlashOffset, $('btnBrowseFile')]) {
     control.disabled = isFlashing;
   }
   const terminalConnected = serialConsole.state === 'connected';
@@ -655,7 +703,8 @@ function syncDeviceControls() {
   for (const button of shortcutButtons) {
     const key = button.dataset.command;
     button.disabled = !terminalConnected || commandBusy || !receiverConsole.supports(key) || (receiverBusy && MENU_COMMAND_KEYS.has(key));
-    button.title = receiverBusy && MENU_COMMAND_KEYS.has(key) ? 'The receiver ignores this until its calibration finishes' : '';
+    button.title = receiverBusy && MENU_COMMAND_KEYS.has(key) ? 'The receiver ignores this until its calibration finishes'
+      : button.dataset.hint || '';
   }
 }
 
@@ -685,7 +734,6 @@ async function sendTerminalCommand(command) {
     appendSerial('\n[Web terminal] Unsupported key. Use h for help; the menu needs C5VRX-5 firmware.\n');
     return false;
   }
-  if (button?.dataset.confirm && !window.confirm(button.dataset.confirm)) return false;
   commandBusy = true;
   syncDeviceControls();
   let sent = false;
@@ -696,7 +744,8 @@ async function sendTerminalCommand(command) {
     syncDeviceControls();
   }
   if (sent && command === 's') receiverConsole.startScan();
-  if (sent && REFRESH_AFTER.has(command)) scheduleRefresh();
+  // Firmware with the STATUS beat shows the effect within 2 s by itself.
+  if (sent && REFRESH_AFTER.has(command) && !receiverConsole.reportsByItself()) scheduleRefresh();
   if (sent) renderReceiver();
   return sent;
 }

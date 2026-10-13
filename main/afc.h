@@ -298,9 +298,22 @@ static inline afc2_result_t afc2_measure(const uint8_t *s, size_t n,
         size_t p0 = end + AFC2_PORCH_START, p1 = p0 + AFC2_PORCH_LEN;
         int std_id, amp;
         (void)afc2_run_score(s, n, end, lut, &std_id, &amp);
-        if (amp < AFC2_BURST_MIN_X10 || p1 >= n) continue;
-        burst_sum += amp;
-        ++burst_n;
+        if (p1 >= n) continue;
+        /* A line without a colour burst (B/W camera, a camera gone B/W in the
+         * dark, or a burst lost in noise first) is still a real sync when
+         * the previous run started exactly one line earlier: noise does not
+         * keep 63.3-64.2 us timing. The burst is extra evidence, not a gate
+         * (operator, 2026-10-13: AFC on colour is odd). */
+        const bool burst = amp >= AFC2_BURST_MIN_X10;
+        if (!burst) {
+            size_t period = a ? start - (acc_end[best][a - 1] - acc_len[best][a - 1]) : 0;
+            if (period >= 2554u && period <= 2568u) std_id = 2;
+            else if (period >= 2532u && period <= 2550u) std_id = 1;
+            else continue;
+        } else {
+            burst_sum += amp;
+            ++burst_n;
+        }
         std_votes += std_id == 2 ? 1 : -1;
         uint32_t old_sync_pairs = r.sync_pairs, old_porch_pairs = r.porch_pairs;
         int64_t old_sync_sum = sync_sum, old_porch_sum = porch_sum;
@@ -316,7 +329,8 @@ static inline afc2_result_t afc2_measure(const uint8_t *s, size_t n,
             (r.porch_pairs - old_porch_pairs) * 4u < AFC2_PORCH_LEN * 3u) {
             r.sync_pairs = old_sync_pairs; r.porch_pairs = old_porch_pairs;
             sync_sum = old_sync_sum; porch_sum = old_porch_sum;
-            --burst_n; burst_sum -= amp; std_votes -= std_id == 2 ? 1 : -1;
+            if (burst) { --burst_n; burst_sum -= amp; }
+            std_votes -= std_id == 2 ? 1 : -1;
             continue;
         }
         width_sum += (unsigned)(end - start);
@@ -332,10 +346,8 @@ static inline afc2_result_t afc2_measure(const uint8_t *s, size_t n,
     }
     r.width_40m = r.lines ? (uint16_t)(width_sum / r.lines) : 0;
     r.period_40m = periods ? (uint16_t)(period_sum / periods) : 0;
-    if (burst_n) {
-        r.burst_x10 = (uint16_t)(burst_sum / burst_n);
-        r.standard = std_votes > 0 ? 2u : std_votes < 0 ? 1u : 0u;
-    }
+    if (burst_n) r.burst_x10 = (uint16_t)(burst_sum / burst_n);
+    if (r.lines) r.standard = std_votes > 0 ? 2u : std_votes < 0 ? 1u : 0u;
     r.sync_khz = afc2_codes_to_khz(sync_sum, r.sync_pairs);
     r.porch_khz = afc2_codes_to_khz(porch_sum, r.porch_pairs);
     return r;

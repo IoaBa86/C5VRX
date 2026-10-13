@@ -631,6 +631,84 @@ FIELD_DIAG records at the edge show whether the ladder now follows the C/N.
 Gain writes (100 ms each) still hold the ladder; how often Direct Gain writes
 at the edge is not modelled here.
 
+## 19. Sampling phase, wide-VTX rows and narrow-row selection (2026-10-13)
+
+C5VRX by Twotoz and the C5VRX contributors.
+
+**What a mid-transition read costs** (`sphase_study.py`). PARLIO RX samples
+the ~80 MS/s MODEM_DIAG bus at 40 MS/s with a phase fixed at reset (three
+positions per bus word). On a bad position some bits of a read come from
+the next word. The model runs sim.py's chain at 80 MS/s, quantises both
+words with one gain and mixes their bits. Range limit (worse of lock 0.9
+and luma SINAD 0 dB), bit-exact U85Q kp 0.85, 12 MHz, 4 seeds:
+
+| bits from the next word | deviation 0.69 | 1.0 | 1.4 | SINAD at 20 dB (dev 1.0) |
+| --- | ---: | ---: | ---: | ---: |
+| none (clean) | 4.50 dB | 2.33 dB | 2.07 dB | 12.9 dB |
+| Q nibble (12.5 ns I/Q skew) | 4.60 | 2.50 | 2.44 | 11.0 |
+| I LSB only | | 2.62 | | 10.8 |
+| I and Q LSB | | 2.94 | | 9.2 |
+| I sign only | | 3.43 | | 7.4 |
+| two low bits of I and Q | 6.39 | 3.81 | 4.29 | 6.8 |
+| every bit at random | 6.26 | 3.72 | 4.27 | 6.4 |
+| half of the bits | 7.19 | 4.65 | 7.09 | 4.7 |
+
+The clean row reproduces section 14's kp 0.85 baseline (4.50 / 2.36 /
+2.08 dB), which checks the model. One mixing LSB costs ~0.3-0.6 dB, several
+bits 1.4-5 dB and a grainy strong picture. On the probe (dsp.h) a clean
+carrier reads 2-60 milli-cell^2 in the model (board: -70..+42), a mixing
+LSB lane ~500 and multi-bit mixing 2400-7500.
+
+**Why the boot check was not enough.** The startup scan repairs a boot that
+lands on the transition. But with the VTX off it runs on receiver noise at
+the table maximum, where a clean position already reads ~725 (board,
+intrinsic broadband noise), and a phase that drifts there in flight was
+only reported until the next boot.
+
+**Firmware (`main/sphase_logic.h`, `calibration.c`, `test/test_sphase.c`).**
+On the carrier (burst-confirmed sync, Direct Gain >= 6 steps below the
+table maximum):
+- *Choose:* the first carrier window of a boot (or the final startup step
+  when the VTX is on) scans the three positions and settles within 30
+  milli-cell^2 of the cleanest one, so every boot ends on the position
+  farthest from the transition, not just one below the limit.
+- *Watch:* a passive probe every 10 s against 150 (half the absolute
+  limit), so one LSB lane that mixes in a third of the reads is caught
+  before the multi-bit cliff. Contrast on the carrier uses the carrier
+  margin (2 x 30) instead of the noise floor of 200.
+- *Repair:* two consecutive excursions (2 s apart) run the same scan. No
+  per-boot cap: a scan without contrast (false alarm) doubles the gap from
+  60 s up to 16 min, a scan that moved the phase resets it.
+- A slip moves the RX write point by a few samples once, much less than the
+  verified kp/program restart, and the control loop pauses ~0.4 s.
+
+What this does not do: remove the cause. A source-synchronous MODEM_DIAG
+clock would, but its existence is not established (legacy C5VRX-3 PR #15).
+Board check: `F`/`T` SPHASE lines (`carrier_qualified`, `carrier_scans`,
+`moved`, `false_alarms`) and `SPHASE ... carrier_scan` logs.
+
+**Wide VTX rows** (`best_combo.py`, FILTER_MHZ=16, deviation 1.4 / 1.7 /
+2.0, `data/best_combo_16mhz.json`). The existing LP rule already reaches
+the best range limit in that data (2.75 / 2.86 / 3.96 dB vs U85Q kp 0.85
+2.73 / 3.26 / 5.27 dB); no candidate does better, so a wide VTX gets no more
+range from this demodulator. The 12 MHz wide row's kp 0.80 is wrong on the
+16 MHz filter: kp 0.85 is 0.5 dB SINAD sharper at 12 dB C/N for deviation
+1.7 and 2.2-2.8 dB at 12-30 dB for deviation 2.0, and LP still wins up to
+~9.5-13 dB. The WIDE profile now has its own rows (`kp_ladder.h`
+`kp_curve_wide16_x100`, LP below 9.5 dB). Simulation only.
+
+**Narrow rows by measured width.** The narrow curves come from a 10 MHz
+model; the board's narrow entry measured 11.9 MHz. On the 12 MHz data the
+12 MHz rows are 0.13 dB better at deviation 0.69 (equal at 1.0) and
+0.3-0.4 dB sharper close in, so a MATCHED profile uses the narrow rows only
+when its filter measured <= 11 MHz (`kp_ladder_narrow_rows`). The narrow
+filter itself not reaching 10 MHz costs the ladder ~0.65 dB at deviation
+0.69 and ~0.2 dB at 1.0 against the 10 MHz model.
+
+**Ladder evidence on the board.** FIELD_DIAG records carry `kp_x100` and
+`lp`; `tools/field_diag_compare.py` reports `edge_s`, `edge_lp_pct`,
+`edge_kp_median` (C/N below 6 dB) and `strong_kp_median` (>= 12 dB).
+
 ## Not firmware levers
 
 - The second IQ40 sample of every span (+0.5..1.1 dB in the C5VRX-4 ledger)
@@ -651,6 +729,8 @@ FILTER_MHZ=10 DEVS=0.69,1.0 python best_combo.py data/best_combo_10mhz.json   # 
 IDF_PATH=<esp-idf> python u85q_lp.py check     # emulator: U85Q and U85Q-LP bit-exact
 python ladder_gate.py rates data/ladder_gate_rates.json                      # section 18: window gate pass rates
 python ladder_gate.py study data/ladder_gate_rates.json data/ladder_gate.json # section 18: ladder at the edge
+python sphase_study.py data/sphase_study.json                                # section 19: mid-transition reads
+FILTER_MHZ=16 DEVS=1.4,1.7,2.0 python best_combo.py data/best_combo_16mhz.json  # section 19: WIDE rows
 ```
 
 Needs numpy, scipy and numba. `data/tracker_luts.json` holds the kp variant

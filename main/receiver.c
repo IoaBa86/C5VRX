@@ -5,6 +5,7 @@
 #include "receiver.h"
 #include <stdio.h>
 #include <string.h>
+#include "cn_estimate.h"
 #include "esp_timer.h"
 #include "gain_map_preset.h"
 #include "phase8_gain_lut.h"
@@ -17,6 +18,8 @@ volatile uint8_t s_current_gain = 62u;
 volatile uint32_t s_gain_epoch, s_control_epoch;
 volatile int64_t s_last_gain_write_us;
 volatile int s_obs_p50, s_obs_p95, s_obs_origin_pm, s_obs_clip_pm, s_obs_coherence;
+volatile bool s_obs_stuck;
+volatile int s_obs_env_ratio_x100;
 volatile uint32_t s_obs_us_max, s_obs_windows;
 dg_map_blob_t s_gain_map_saved;
 bool s_gain_map_saved_valid;
@@ -80,6 +83,13 @@ static void apply_target(uint8_t target, uint32_t control, uint32_t phy)
     s_last_gain_write_us = esp_timer_get_time();
     ++s_gain_epoch;
     dg_sync_applied(&s_gain, target, (uint64_t)s_last_gain_write_us);
+}
+
+int receiver_obs_cn_x10(void)
+{
+    /* Envelope model (cn_estimate.h); a fixed IQ point has no envelope to
+     * judge and read 14-20 dB in the coherence model with no VTX at all. */
+    return s_obs_stuck ? CN_UNKNOWN_X10 : cn_estimate_env_x10(s_obs_env_ratio_x100, calibration_filter_class_mhz());
 }
 
 static void tick_cb(void *arg)
@@ -177,6 +187,8 @@ static void observer_task(void *arg)
         s_obs_origin_pm = o.origin_pm;
         s_obs_clip_pm = o.clip_pm;
         s_obs_coherence = o.coherence;
+        s_obs_stuck = dg_stuck(&o);
+        s_obs_env_ratio_x100 = o.env_ratio_x100;
         if (phy != phy_generation() || phy_busy()) continue;
         /* Learn the gain map only from a real VTX: burst-confirmed sync seen
          * by the AFC within the last 500 ms (never from receiver noise). */
@@ -206,11 +218,12 @@ void receiver_start(void)
 
 void receiver_print(void)
 {
-    printf("GAIN owner=direct_gain_v5 gain=%u state=%u p50=%d p95=%d coherence=%d origin_pm=%d clip_pm=%d "
+    printf("GAIN owner=direct_gain_v5 gain=%u state=%u p50=%d p95=%d coherence=%d env_x100=%d stuck=%u cn_x10=%d origin_pm=%d clip_pm=%d "
            "writes=%lu holds=%lu overloads=%lu bursts=%lu fade_holds=%lu damp=%lu map_learned=%lu learn_refused=%lu "
            "map_imports=%lu preset_imports=%lu "
            "obs_windows=%lu obs_us_max=%lu\n",
-           s_current_gain, (unsigned)s_gain.state, s_obs_p50, s_obs_p95, s_obs_coherence,
+           s_current_gain, (unsigned)s_gain.state, s_obs_p50, s_obs_p95, s_obs_coherence, s_obs_env_ratio_x100,
+           (unsigned)s_obs_stuck, receiver_obs_cn_x10(),
            s_obs_origin_pm, s_obs_clip_pm, (unsigned long)s_gain.writes, (unsigned long)s_gain.holds,
            (unsigned long)s_gain.overloads, (unsigned long)s_gain.bursts_ignored, (unsigned long)s_gain.fade_holds,
            (unsigned long)s_gain.damp_events, (unsigned long)s_gain.learned, (unsigned long)s_gain.learn_refused,

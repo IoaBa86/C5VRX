@@ -356,3 +356,287 @@ within 0.2 dB of an instant oracle; deviation 1.4 under fades and MATCHED 1.0
 under fades gain 0..0.3 dB. A slow steady fly-out changes -0.2..+0.2 dB, which
 is why a walk-away test can hide it. Simulation only; board check: `kp_steps`
 and `lp_switches` in `T` should follow the C/N at the edge.
+
+## Sampling phase on the carrier, WIDE rows (2026-10-13)
+
+C5VRX by Twotoz and the C5VRX contributors. Host model (research README
+section 19): a mid-transition MODEM_DIAG read costs 0.3-0.6 dB of range
+when one LSB lane mixes and 1.4-5 dB when several bits do. The boot check
+ran on receiver noise when the VTX was off and only reported in-flight
+drift. The firmware now chooses the cleanest of the three positions on the
+carrier once per boot, probes it every 10 s against half the old limit and
+repairs a confirmed excursion with a short scan (no per-boot cap; false
+alarms back off to 16 min). The WIDE profile gets its own 16 MHz kp/LP rows
+(sharper picture; no range gain exists for wide VTXs in this demodulator),
+MATCHED uses the 10 MHz rows only for a filter measured <= 11 MHz, and
+FIELD_DIAG logs kp and LP per second. Host tests and a local ESP-IDF 6.0.2
+build pass; board check pending.
+
+## Board walk: the ladder never switched (2026-10-13)
+
+C5VRX by Twotoz and the C5VRX contributors. Board check of this PR
+(`5.0.0-pr.211`, kp_auto=2, A1 5865 MHz, DEFAULT 12 MHz profile), VTX
+walked through the house to spots where the picture was certainly gone.
+Data: `research/data/walk_2026-10-13/` (`walk_serial.log`: FIELD_DIAG 1/s
+plus `T` every 5 s; VTX on ~57-171 s; `off_*.bin`: IQSNAP with the VTX off).
+Findings only, no fix yet.
+
+- **Nothing was applied.** `prog_switches=0`, `kp_switches=0`, `kp_level=0`,
+  `program=U85Q` the whole run. The internal ladder moved (`kp_steps` 1 -> 8,
+  `lp_switches` 0 -> 6) but `kp_switch_confirm_toward()` never confirmed.
+- **The gain never left G59-60 for a weak carrier.** Table maximum is 83.
+  With the VTX on: 76 of ~114 s at G59, none above 60, `sync_valid_pct=0`
+  in all but 17 s; AFC never locked, deviation never measured.
+- **With no carrier the IQ is a constant DC point, not noise.** VTX off,
+  G59, four snapshots (`research/dc_coherence_check.py`): DC
+  (-1.5, +2.9..3.3) cells, spread 0.06-0.08 (I) / 0.4-0.5 (Q) cells, 3 I
+  and 2 Q codes in 8190 bytes. Receiver noise is below one LSB at G59.
+- **The DC point reads as a strong coherent carrier.** dg_measure counts a
+  phase step <= 45 degrees on power >= 8; a fixed point has no phase step,
+  so coherence 99-100 %. `cn_estimate_x10` turns that into 14-20 dB
+  (FIELD_DIAG `cn_est_x10=200` with the VTX off, before and after the walk).
+  With the window DC removed the same captures read coherence 0 (noise
+  floor). `carrier()` in gain.c (coherence >= 55, P50 >= 5) is also
+  satisfied by the DC point, consistent with the gain parking at G59.
+- **So the ladder steers on the DC, not on the VTX.** With the VTX weak the
+  C/N estimate swung 0-12 dB second to second with `sync_valid_pct=0`; the
+  wanted program crossed the 8.5 dB LP threshold (1.5 dB hysteresis) back
+  and forth, and the 2 s directional confirmation restarted every time.
+- **During the fade itself the ladder was blind.** 57-77 s: 50-120 gain
+  writes per second; `kp_ladder_window_usable()` rejects any window with a
+  write in the previous 100 ms, so the smoothed C/N was not even updated.
+
+Where the DC comes from and why the gain stops at G59
+(`range_diag_vtx_off.txt`, `T` DCO line; gain.c, calibration.c):
+
+- **G59-60 are DCO FLOOR rows, so their DC is never corrected.** The DCO
+  table covers the top RF stage, G54-83 (`top_rf_stage_from=54`): 14 rows
+  OK, 16 FLOOR. `dco_quiet_search()` marks a row and every row below it
+  FLOOR when the receiver noise there is below one quantizer step ("nothing
+  to correct"), so FLOOR is G54-69. Below the noise step the DC is still
+  there: (-1.5, +3) cells at G59, `dc_ok=1`, `dc_held=0`. The noise being
+  below one step is exactly what makes the DC a clean constant.
+- **That DC point sits inside the Direct Gain healthy band.** `healthy()`
+  wants `carrier()` (coherence >= 55, P50 >= 5, origin < 650) and P50
+  13..32; the DC point gives coherence 99-100, P50 ~15, origin 0. The gain
+  climbs while the DC is below the band and holds as soon as the DC alone
+  reaches it: G59-60, about 23 steps below the maximum. `no_carrier`
+  (P50 <= 4, origin >= 650, coherence < 20) can never fire on it, so the
+  "listen at the table maximum" path is never taken.
+- **A weak VTX is therefore invisible.** At G59 even receiver noise is
+  below one LSB, so a carrier near the sensitivity limit is too; noise
+  only dithers the quantizer from ~G70 (first OK row). The range edge is
+  set by where the DC point parks the gain, not by the demodulator.
+- `RANGE_DIAG verdict=OK strong carrier with gain headroom` with the VTX
+  off, for the same reason.
+
+This is not PR 211 code: gain.c and the DCO FLOOR rule are unchanged by
+it. PR 211's ladder only made it visible, because its C/N input is the same
+coherence.
+
+At the sync edge, after a reboot (`edge_serial.log`, `weak_*.bin`; VTX
+placed where the picture is between desync and just video):
+
+- The gain now sits at G70-76 (OK rows, `DCO held=1`) and receiver noise
+  is visible (spread 1.8-2.5 cells, 11-13 codes per axis), DC still
+  (+1.4..2.2, -0.8..-1.3) cells. Coherence 54-68 %, `cn_est_x10` mostly
+  CN_UNKNOWN or -2..+3 dB, briefly 3-6 dB when sync returns.
+  `dc_coherence_check.py` reads 3-17 points lower without the DC (50-68
+  vs 33-65 %): the DC still lifts it, but no longer dominates.
+- Still no switch in 40 s (`prog_switches=0`, `kp_switches=0`), internal
+  `lp_switches` 4 -> 6. Here this is the curve, not a gate: the deviation
+  is unknown (`deviation_x100=0`), so the ladder uses the wide class, whose
+  LP window is 2.0-8.5 dB (`kp_lp_floor_x10` 1.5 dB + hysteresis/3) and
+  whose kp row is 0.85 up to 2 dB. A noise-like window counts as 0 dB, so
+  at the edge the wanted pair is U85Q kp 0.85, the pair already running.
+- The deviation is never measured because `profile_observe()` needs
+  `s_afc_locked`, and the AFC never locked in either boot, even close in
+  (sync 52-62 %, `afc_corrections=0`). With no deviation the ladder can
+  only ever use the wide class.
+
+Open: whether the G59 park returns in this boot with the VTX off; why the
+AFC never locks (burst gate `AFC2_BURST_MIN_X10`, CFO -476 kHz seen once);
+an IQ capture of the weak carrier at G59 for comparison.
+
+Hard check of the steering (`research/field_walk_analysis.py`,
+`research/ladder_replay.py`: the C ladder and guard in Python, wide class,
+each 1 s FIELD_DIAG C/N held for its 20 windows):
+
+- **The C/N alone would have switched LP 15 times in the walk.** Best case
+  (every window usable): first apply at 60.8 s, 15 internal LP changes, 15
+  applies. Board: 6 internal changes (from 85 s), 0 applies. So a gate
+  outside the C/N held the ladder.
+- **One unusable window resets everything.** The guard wants 40 unbroken
+  usable windows (2 s), the LP hold 20 (1 s). Random unusable windows in
+  the replay: 1 % -> 13 applies, 5 % -> 3, 10 % -> 2, 20 % -> 0 (6 internal
+  changes at 10 %, as on the board). `measurement_coverage_pct` while the
+  C/N was in the LP band was 50 % (walk) and 49-62 % (edge); that counts
+  the AFC envelope test and failed window copies too, so it bounds the
+  ladder's share from below only. 57-77 s add the gain writes (50-120/s).
+  Which gate fails the other windows is not visible in the log: `T` has no
+  counter for unusable ladder windows or guard resets.
+- **Even the best case flaps.** 15 program restarts in 114 s in the walk;
+  at the edge LP is on for 2-4 s and off again, because a noise-like window
+  counts as 0 dB, which is below the wide class's 1.5 dB LP floor.
+- **The deviation decides most of the range and is never known.** The
+  wide class (unknown deviation) keeps U85Q kp 0.85 below 2 dB and gains
+  0.36 dB from the ladder in simulation; for deviation 1.0 the kp + LP
+  ladder is worth 1.6 dB and for 0.69 3.35 dB (research README section
+  16). The board never measures it because the AFC never locks.
+- **Max gain is not the issue in boot 2.** At G70-78 receiver noise spans
+  1.8-2.5 cells per axis, so the 4-bit quantizer is not what limits C/N
+  there; more gain would mainly move the envelope out of the band. The
+  G59 park of boot 1 is the gain problem (DC point, above).
+
+
+### First fixes (same PR, 2026-10-13)
+
+- **Fixed IQ point is no carrier** (`gain.h` `dg_stuck`, `gain.c`):
+  `dg_measure` counts samples equal to the one before. VTX off at G59:
+  476-873 per mille per 64 bytes; weak carrier in noise at G73-75: 15-301.
+  At >= 400 per mille with P50 <= 32 the window is no carrier: Direct Gain
+  listens at the table maximum (host test: G59 -> G83 on the board's DC
+  point), and `receiver_obs_cn_x10()` returns CN_UNKNOWN for the ladder,
+  FIELD_DIAG, the profile gate and the AFC strength test. This removes the
+  G59 park and the 14-20 dB reading without a VTX; it does not correct the
+  DC of the FLOOR rows (that needs a DCO search that works without noise
+  dither, still open).
+- **Unusable windows hold, they do not erase** (`kp_ladder.h`,
+  `kp_switch_guard.h`, `control.c`): the pending kp/LP change and the switch
+  candidate survive unusable windows and failed copies; a gap of more than
+  500 ms without a usable window restarts them. Replay on the walk C/N
+  (`ladder_replay.py ... p_bad new`): 10 % unusable 15 applies (old: 2),
+  20-30 % 13 (old: 0).
+- **Gain-write guard 5 ms** instead of 100 ms plus "no write during the
+  window": the C/N is one observer probe taken right before it is read, and
+  Direct Gain settles a write in 0.3-1 ms.
+- **`T` LADDER line**: windows, unusable by reason (settle, gain write,
+  context, copy failure), fixed-point windows, guard confirms and resets,
+  current level, LP and the smoothed C/N.
+
+Not changed yet: the wide-class curve with an unknown deviation (U85Q kp
+0.85 below 2 dB, LP only 2-8.5 dB) and with it the LP flapping at the edge
+(the replay best case still applies 15 program changes in 114 s); the AFC
+never locking, so the deviation is never measured; the FLOOR-row DC itself.
+
+### Walk 3 on 2d0088f, and a revert (2026-10-13)
+
+`walk3_close_check.log`, `walk3_gain_loop.log`:
+
+- **Close in (G25-36, 0-120 s):** no fixed-point windows (`stuck_iq=0`),
+  but the C/N model still dipped below 8.5 dB in 19 of 115 s with a perfect
+  picture, and LP was applied twice (46-51 s, 124-130 s). Next to the VTX
+  the smoothed C/N sits at 9-13 dB, only just above the LP threshold: the
+  coherence model reads too low on a strong real carrier (sim tables:
+  deviation 1.0 PAL; a 45-degree step test also fails on fast FM swings).
+- **Direct Gain looped** after the fixed-point change: with the VTX off
+  ~1400 writes and hundreds of overloads a second, at the weak spots
+  75-600/s. The fixed point sent the gain to G83; the first window after
+  the write still carried the row's uncorrected DC and clipped, the
+  overload dropped the gain into the FLOOR rows (18 this boot, G54-71, DC
+  up to (-4.3, +3.8) cells, P50 51-87 with clipping) and round again.
+  **Reverted for Direct Gain**: `dg_stuck` now only feeds the C/N model.
+  The G59 park with the VTX off is back; the fix belongs in the DCO path
+  (correct the FLOOR rows' DC), not in the gain controller.
+- **Weak spot 147-195 s:** sync 0 at G60-67 (FLOOR rows) with coherence
+  85-98 and C/N 4-12 dB: the DC point with a little carrier on it (span > 2)
+  still inflates the coherence. Another reason to fix the DC itself.
+- 12 program and 11 kp switches in 250 s; `copy_fail` 44 % of control
+  windows (1812 of 4132).
+
+### Second round of fixes (2026-10-13, not yet board-tested)
+
+- **FLOOR-row DC** (`phy_dco_search_flat`, `calibration.c`, DCO_VERSION 7):
+  rows whose noise is below one quantizer step get DCO codes by bisecting,
+  per axis, the code where the fixed output code flips (DC within half a
+  cell). Only rows without a flip in +-96 codes stay FLOOR. This targets the
+  root of the G59-67 park ("black screen, gain stuck at 65"). Board check:
+  boot log `DCO flat ... ok` lines, `T` DCO `floor_rows` near 0, gain
+  reaching G75-83 with the VTX off.
+- **LP follows the gain** (`kp_ladder.h` KP_LP_GAIN_ON/OFF): LP from G70,
+  back below G65, with the fast entry and adaptive release above. kp within
+  a program still follows the C/N curve.
+- **AFC through missing windows** (`afc2_ctrl_miss`): failed copies,
+  non-stationary windows and windows without a burst no longer clear the 16
+  estimates; more than 20 in a row (1 s) do. Host test: two thirds missing
+  keeps 14 of 16.
+- **Control-window copy** holds the scheduler for the copy. Board check:
+  `T` LADDER `copy_fail` near 0.
+- `ladder_gate.py check` passes with the new timing (after 0.48-0.82 dB vs
+  oracle 0.50-0.90).
+
+Follow-up: AFC now also accepts syncs confirmed by the preceding line's
+PAL/NTSC period, so a B/W camera can supply measurements without a colour
+burst (`d199d02`). The short control window may contain only one sync;
+such windows remain missing evidence. Host tests/build passed; board test
+pending.
+
+### Envelope C/N instead of phase coherence (2026-10-13, board test pending)
+
+The phase-step coherence model read 9-13 dB next to the VTX and could select
+weak-signal kp levels on a strong carrier. A fast FM swing also fails its
+45-degree phase-step test, so the model depends on picture/deviation.
+
+- `dg_measure` now computes the DC-removed envelope statistic
+  `100 * mean(|z|^2)^2 / var(|z|^2)` on the existing observer probe.
+  A fixed IQ point has no residual power and remains unknown. This extends
+  the envelope statistic already used by calibration, outside the hardware
+  sample path.
+- `cn_estimate_env_x10` uses four filter-class tables. All runtime C/N
+  consumers (kp, AFC correction, profile gates, diagnostic traces and
+  per-second records) use the envelope estimate. Fixed-point windows are
+  excluded from the per-second envelope average; a majority makes C/N
+  unknown. `T` GAIN adds `env_x100`, `stuck` and `cn_x10`.
+- Reproduction: `python research/cn_envelope.py`; full results in
+  `research/data/cn_envelope.txt`. PAL, two seeds, deviations 0.69/1.0/1.4,
+  256-byte probes matching `copy_probe_window`. Deviation 1.0 medians exactly
+  reproduce the tables. Noise-only medians are 114-116; the unknown cutoff
+  is 130. Deviations 0.69/1.4 differ by up to ~1.1 dB through 12 dB C/N
+  (the earlier ~0.5 dB claim was too optimistic). Above ~15 dB, filter AM
+  and quantisation limit accuracy; values saturate at 20 dB.
+- Host checks cover analytic envelope moments, DC translations on both
+  axes, fixed and rotating IQ, monotonicity over the full uint16 range,
+  and the 6 dB AFC boundary for every filter class.
+- Log audit: normal and narrow sometimes share the same setting at
+  13.125 MHz, but the old class lookup matched narrow first and reported
+  10 MHz. Normal now wins a shared setting; a distinct narrow setting
+  measured wider than 11 MHz also uses the 12 MHz C/N model, matching the
+  kp ladder's existing width boundary.
+- `range_diag_vtx_off.txt` said `OK strong carrier with gain headroom`
+  while `video_recent=0` and the last 60 s had no sync. The strong-estimate
+  verdict now requires recent video evidence and is labelled
+  `VIDEO_EVIDENCE`; it is not a claim about displayed picture quality.
+
+Validation: all 13 C host executables pass (including 68 kp-ladder and 24
+gain-fade checks), diagnostic-log tests pass, the full envelope sweep
+reproduces the tables, and `ladder_gate.py check` passes. ESP-IDF v6.0.2
+build passes without warnings.
+
+### Gain-driven LP independent of IQ windows (2026-10-13)
+
+Operator: from G70 the receiver should stay on LP. The gain thresholds were
+already present, but failed copies exited the control loop before the policy
+and gain-write guards held its confirmation. A decision based on gain still
+depended on C/N window availability.
+
+- Separate evidence for LP and kp: in AUTO kp+LP, G70 enters LP, G65-69
+  retains it, and below G65 releases after the adaptive hold. The existing
+  rescue confirmation/restart gap remains. Copy failures, unknown C/N and
+  gain writes do not block the program policy; missing C/N holds kp.
+- Retune settle, scan/calibration/menu ownership, unknown verified transport
+  state and manual modes still block automatic switching. Pending program
+  and kp evidence have independent stale timers. Failed copies remain
+  missing AFC evidence and never read the stale sample buffer.
+- Host regression follows G70 with no usable IQ through the actual switch
+  confirmation: LP is confirmed within 1 s, without creating C/N or moving
+  kp. It also covers G65-83 staying on LP, G64 release, ownership and manual
+  mode. No hardware/range claim; board test pending.
+- The envelope calculation uses integer raw moments in the existing sample
+  loop and translates them to the DC centre once per probe. This removes
+  the unfinished implementation's two extra passes and per-sample floating
+  point. A direct centred oracle agrees within one ratio unit on 64
+  asymmetric/correlated probes. Actual C5 observer timing remains to be checked.
+
+These are simulation-derived decision estimates, not independently measured
+RF C/N. After flashing, compare VTX-off and close-VTX logs, kp selection,
+`afc_locked`, and `obs_us_max` to check the added observer cost on the C5.
