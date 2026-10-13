@@ -73,6 +73,7 @@ dg_observation_t dg_measure(const uint8_t *samples, size_t bytes,
     uint16_t hist[114] = {0};
     unsigned origin = 0, clip = 0, coherent = 0, repeats = 0;
     uint8_t prior_phase = 0, prior_raw = 0;
+    int i_min = 7, i_max = -8, q_min = 7, q_max = -8;
     for (size_t n = 0; n < bytes; ++n) {
         uint8_t raw = samples[n], power = s_power[raw];
         ++hist[power];
@@ -84,6 +85,11 @@ dg_observation_t dg_measure(const uint8_t *samples, size_t bytes,
             if (abs_i(delta) <= 32) ++coherent;
         }
         repeats += n && raw == prior_raw;
+        if (raw != prior_raw || !n) {
+            int si = (int8_t)(raw & 240u) >> 4, sq = (int8_t)((raw & 15u) << 4) >> 4;
+            i_min = si < i_min ? si : i_min; i_max = si > i_max ? si : i_max;
+            q_min = sq < q_min ? sq : q_min; q_max = sq > q_max ? sq : q_max;
+        }
         prior_phase = phase;
         prior_raw = raw;
     }
@@ -102,6 +108,8 @@ dg_observation_t dg_measure(const uint8_t *samples, size_t bytes,
     r.clip_pm = (uint16_t)(clip * 1000u / bytes);
     r.coherence = bytes > 1u ? (uint8_t)(coherent * 100u / (bytes - 1u)) : 0;
     r.repeat_pm = bytes > 1u ? (uint16_t)(repeats * 1000u / (bytes - 1u)) : 0;
+    int span = i_max - i_min > q_max - q_min ? i_max - i_min : q_max - q_min;
+    r.span = (uint8_t)(span < 0 ? 0 : span);
     return r;
 }
 

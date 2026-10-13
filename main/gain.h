@@ -24,6 +24,7 @@ typedef struct {
     uint16_t origin_pm, clip_pm;
     uint8_t coherence;
     uint16_t repeat_pm;     /* samples equal to the one before, per mille */
+    uint8_t span;           /* code range of the wider IQ axis over the window */
     uint64_t observed_us;
 } dg_observation_t;
 
@@ -31,14 +32,18 @@ typedef struct {
  * noise (DCO FLOOR rows, G54-69 on the board) the uncorrected DC is a
  * constant code: coherence 99-100 %, P50 ~15, inside the healthy band, and
  * Direct Gain held there with no VTX (board walk 2026-10-13, docs/FINDINGS.md).
- * IQSNAP: VTX off at G59 repeats 476-873 per mille per 64 bytes, a weak
- * carrier in noise at G73-75 15-301. A real carrier this small rotates or
- * carries noise; a strong one is far above the band. */
+ * IQSNAP: VTX off at G59 repeats 476-873 per mille per 64 bytes and spans
+ * 1-2 codes per 256-byte probe; a weak carrier in noise at G73-75 repeats
+ * 15-301 and spans 7-12. Repeats alone are not enough: a strong clean
+ * carrier at 40 MS/s repeats often too (half the windows at G27, 1 m from
+ * the VTX, read as a fixed point and sent the ladder into LP; board
+ * 2026-10-13). A carrier draws a circle around the DC, so it spans many
+ * codes even when neighbouring samples repeat. */
 #define DG_STUCK_PM      400u
-#define DG_STUCK_P50_MAX 32u
+#define DG_STUCK_SPAN    2u
 static inline bool dg_stuck(const dg_observation_t *o)
 {
-    return o->repeat_pm >= DG_STUCK_PM && o->p50 <= DG_STUCK_P50_MAX;
+    return o->repeat_pm >= DG_STUCK_PM && o->span <= DG_STUCK_SPAN;
 }
 
 typedef struct {

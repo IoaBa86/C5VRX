@@ -182,8 +182,19 @@ int main(void)
         uint8_t dc_point[256], lut[256];
         for (unsigned k = 0; k < 256u; ++k) { dc_point[k] = 0xd3; lut[k] = 40; }  /* I=-3, Q=+3: one code */
         dg_observation_t stuck = dg_measure(dc_point, sizeof(dc_point), lut, 1000);
-        check("fixed DC point: repeat_pm 1000, coherence 100, stuck", stuck.repeat_pm == 1000 && stuck.coherence == 100 &&
-              dg_stuck(&stuck));
+        check("fixed DC point: repeat_pm 1000, span 0, coherence 100, stuck",
+              stuck.repeat_pm == 1000 && stuck.span == 0 && stuck.coherence == 100 && dg_stuck(&stuck));
+        /* A strong clean carrier: radius 4 cells, slow rotation, so most
+         * neighbours repeat, but the circle spans many codes (board, G27). */
+        uint8_t circle[256];
+        for (unsigned k = 0; k < 256u; ++k) {
+            double a = 6.2831853 * k / 128.0;
+            int ci = (int)lround(4.0 * cos(a) - 0.5), cq = (int)lround(4.0 * sin(a) - 0.5);
+            circle[k] = (uint8_t)(((unsigned)ci & 15u) << 4 | ((unsigned)cq & 15u));
+        }
+        dg_observation_t strong = dg_measure(circle, sizeof(circle), lut, 1000);
+        printf("strong slow carrier: repeat_pm %u span %u\n", strong.repeat_pm, strong.span);
+        check("a strong slowly rotating carrier is not a fixed point", strong.repeat_pm >= 400 && !dg_stuck(&strong));
         dg_reset(&g, &table, 59);
         uint64_t t = 1000000;
         uint8_t to = 59;
@@ -198,6 +209,7 @@ int main(void)
         /* The same envelope with noise on it (weak carrier at G73-75) is not stuck. */
         dg_observation_t noisy = stuck;
         noisy.repeat_pm = 300;
+        noisy.span = 9;
         check("a weak carrier in noise is not a fixed point", !dg_stuck(&noisy));
     }
 #ifdef EXPECT_FADE_HOLD
