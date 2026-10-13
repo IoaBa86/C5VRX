@@ -441,8 +441,8 @@ placed where the picture is between desync and just video):
   is visible (spread 1.8-2.5 cells, 11-13 codes per axis), DC still
   (+1.4..2.2, -0.8..-1.3) cells. Coherence 54-68 %, `cn_est_x10` mostly
   CN_UNKNOWN or -2..+3 dB, briefly 3-6 dB when sync returns.
-  `dc_coherence_check.py` agrees within a few points with and without DC
-  removal here: with real noise the DC no longer dominates.
+  `dc_coherence_check.py` reads 3-17 points lower without the DC (63-68
+  vs 33-65 %): the DC still lifts it, but no longer dominates.
 - Still no switch in 40 s (`prog_switches=0`, `kp_switches=0`), internal
   `lp_switches` 4 -> 6. Here this is the curve, not a gate: the deviation
   is unknown (`deviation_x100=0`), so the ladder uses the wide class, whose
