@@ -67,8 +67,8 @@ it is not a demonstrated video or range improvement.
   reception has no uncorrected DC.
 - **Automatic receive-chain care**: per-gain DC correction, verified live
   DC trials, passive sampling-phase monitoring and AFC carrier centring.
-- **Optional sync flywheel**: saved ON/OFF, default OFF. Camera/monitor
-  acceptance remains experimental; enable and compare on the ground.
+- **Sync flywheel**: saved ON/OFF, default ON (a saved OFF is kept).
+  Camera/monitor acceptance remains experimental; compare OFF on the ground.
 - **Simple menu**: band, channel, scan, video standard, calibrate, output
   level, gain, flywheel, exit.
 
@@ -142,7 +142,7 @@ Menu items: **BAND** (next band), **CHANNEL** (next channel), **SCAN**
 (AUTO / NTSC / PAL for the menu picture; AUTO follows the camera),
 **CALIBRATE** (on the ground: measure again), **OUTPUT** (0.5-5.0x DAC
 level, saved), **GAIN** (AUTO / MAX / fixed G78..G24, saved), **FLYWHEEL**
-(ON/OFF, saved, default OFF), **EXIT**.
+(ON/OFF, saved, default ON), **EXIT**.
 The menu closes by itself after 30 s without a press. It releases the
 flywheel before allocating its DMA chain and retries a smaller progressive
 raster if the interlaced chain does not fit. Menu entry/exit includes a
@@ -209,9 +209,9 @@ gain through same-context tracking resets, holds brief fades for 10 ms and
 then climbs gradually. This is host-tested behavior; extra range is unmeasured.
 
 `U` and menu **FLYWHEEL** toggle the saved sync flywheel. Without a valid
-saved setting it is OFF; a saved ON restores at boot. Check ON/OFF, menu
+saved setting it is ON; a saved ON or OFF restores at boot. Check ON/OFF, menu
 return and the actual camera/monitor picture on the ground. Pulse counters
-do not prove monitor lock. Leave it OFF for a baseline RF comparison.
+do not prove monitor lock. Switch it OFF for a baseline RF comparison.
 
 A failed restart cleans up before one attempt at the last verified program
 and LUT, including its OUTPUT setting. Failed rollback latches live OFF;
