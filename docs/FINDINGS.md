@@ -746,3 +746,74 @@ Before claiming the board issue fixed, compare this PR build OFF/ON on the same
 camera: boot/menu/restart, native return, witness age/gaps, RMT rearm/overflow,
 IRQ delay and missed tips, plus operator-visible rolling. The board remains
 on the stable OFF setting while this software change is prepared.
+
+## Deviation measured without the AFC lock (2026-10-18)
+
+C5VRX by Twotoz and the C5VRX contributors; extends the PR #196 VTX
+matching and the PR #211 ladder. The kp + LP ladder is worth 1.6 dB
+(deviation 1.0) to 3.35 dB (0.69) in simulation only when the deviation is
+known; unknown, it runs the wide class (~0.4 dB). The board never knew it.
+
+- **The lock gate kept every window out.** `profile_observe()` returned
+  before measuring while the AFC was unlocked. Walks of 2026-10-13: the
+  PROFILE line reads `observed=0` in every log, also `walk3_close_check.log`
+  close in (254 FIELD_TRACE windows with sync 100 %). Board `5.0.0-pr.218`
+  (2026-10-18, 2.5 h uptime): `PROFILE_GATES unlocked=1499` against
+  `observed=537`; `deviation_x100` for the session stayed -1.
+- **The span does not need the lock.** A carrier offset moves sync tip and
+  porch together. The real `afc2_measure()` on `research/sim.py` video
+  (4092-byte windows, 12 and 10 MHz filter, PAL/NTSC, deviation
+  0.69/1.0/1.4/1.7, C/N 8 and 12 dB, offset -1..+1 MHz): median span within
+  19 kHz (1.4 %) of the centred carrier, inside the estimator's 8 % batch
+  spread and 5 % agreement; no wide VTX reads narrow. Host test
+  `test_afc_measure.c` checks the span over -1..+1 MHz in 250 kHz steps.
+- **Change:** the measurement no longer waits for the lock, so the session
+  deviation (the ladder's class) is set as soon as the other gates pass
+  (confirmed sync, C/N >= 8 dB, healthy band, no clipping, held gain).
+  Narrowing the filter still needs the lock (`profile_narrowing`,
+  `profile_live_switch_wanted`; README section 3: a -0.5 MHz residual costs
+  the narrow settings at the edge). A startup result that asks for a narrow
+  profile while unlocked keeps DEFAULT (`narrow_awaits_afc_lock`); the live
+  switch narrows after the lock and two agreeing results. Widening never
+  waits. `T` PROFILE_GATES now reports `observed_unlocked`.
+
+Why the AFC does not lock (board IQ 2026-10-18, cause still open):
+
+- Lock needs 16 window estimates with a median absolute deviation <= 80 kHz.
+  Close in (`walk3_close_check.log`, 254 FIELD_TRACE windows with sync
+  100 %) the porch estimate has MAD 211 kHz; the 16-window gate passes 2 of
+  238 times.
+- It is not estimator noise. One control window holds 1-2 lines (4092
+  samples; `afc_bias.py` models 8), yet the same model with 1-2 lines and
+  `afc2_measure()` on sim.py video both stay at MAD <= 30 kHz at >= 10 dB.
+- **The whole signal moves.** 14 IQ snapshots with the VTX close in on A1
+  (`research/data/afc_2026-10-18/`, gain G27-42, AFC offset +500 kHz,
+  `research/afc_snapshot_levels.c`): within one 205 us snapshot the levels
+  agree within ~90 kHz, between snapshots the porch reads -903..-1472 kHz
+  and the sync tip moves with it (-2225..-2739 kHz); the span stays
+  1237-1345 kHz (deviation ~0.68). Sync and blanking shift together, so
+  this is a frequency shift of the received signal, not a misplaced porch
+  window.
+- **Timing** (`field_trace_20s.log`, 50 ms FIELD_TRACE windows, 20 s): the
+  porch sits near -1000 kHz, then every 0.4-0.8 s ramps down to
+  -1300..-1650 kHz over 0.1-0.3 s and snaps back. Gain (G35-37), gain
+  writes, kp and LP do not change with it.
+- Two candidates fit and these data cannot separate them: the VTX carrier
+  itself (supply/VCO pull) or an AC-coupled VTX modulator moving the
+  blanking level with picture brightness; the C5 LO moving by ~85 ppm is
+  less likely. Next test: the same 20 s with the camera lens covered (flat
+  black picture). If the excursions stay, the carrier moves; if they go,
+  picture content moves the blanking level.
+- Consequence for this PR: a carrier that swings ~0.5 MHz is exactly the
+  case in which a narrow filter hurts, so keeping narrowing behind the lock
+  is right for this VTX. The deviation itself is unaffected (span constant).
+  No AFC threshold is changed before the cause is known.
+
+The same stream also showed one task-watchdog report on `5.0.0-pr.218`
+(IDLE on CPU 0 starved, `gain_obs` running, MEPC 0x4202b688) in ~26 s of
+log; not investigated here.
+
+Same board, same status: the second-round fixes hold where they can be read
+passively: `DCO floor_rows=0` (30 rows valid), `LADDER copy_fail=0` in
+180,562 windows. Host tests and an ESP-IDF 6.0.2 build pass; the change is
+not board-tested and no range gain is measured.
