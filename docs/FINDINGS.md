@@ -653,3 +653,94 @@ descriptor chunks: about 18/22 KiB for interlaced NTSC/PAL, with a 9/11-KiB
 progressive fallback. Earlier board tests exposed heap fragmentation and
 camera/flywheel drift; boot/menu and flywheel ON/OFF must be checked on the
 cleaned build. [PR212](PR212.md) records the current scope and evidence limits.
+
+
+
+## Bounded background work during sync loss (2026-10-18)
+
+Extends C5VRX by Twotoz and the contributors' existing hardware dataplane
+and native-pulse flywheel on main `275606a64508`; see the legacy
+`pr-derived-findings.md` CPU-plane boundary and PR212's ownership rules.
+
+The output alarm used to spin from its early admission time to every tip,
+even without camera authority, while yielding to a returning camera, or
+without the H/V evidence needed to repair that tip. Those early alarms now
+advance the same clock and apply pending publications immediately. Allowed
+repairs keep their timing checks, original end time and native suppression.
+Already late alarms retain their miss/phase accounting. This avoids spending
+the admission lead in an ISR when no DAC write is permitted.
+
+RMT draining snapshots the producer head. Batches arriving during parsing
+remain queued for a subsequent drain instead of extending the current PHY
+lease. The existing overflow, source invalidation and rearm paths remain in
+force. The gain timer also coalesces overdue callbacks: a notification asks
+for the current completed IQ window; it cannot recover historical samples.
+
+Evidence: production-source host fixtures check early return in all three
+non-repair states, camera acquisition, wrong-standard recovery, noisy PLL
+holdover, delayed interrupt/backlog handling, and an RMT callback publishing
+a batch during parsing. These are software regressions, not measured CPU
+occupancy, physical H/V lock or RF sensitivity. No demod LUT, filter, gain
+policy, or acquired sample rate changes. Board checks still needed: compare
+IDLE availability, gain response, RMT overflow/rearms, output late/miss
+counters and goggle rolling on the same weak-signal setup, with flywheel
+both OFF and ON. Absolute RF/demod sensitivity remains unchanged.
+
+
+## Flywheel witness freshness and delayed observations (PR #218, 2026-10-18)
+
+C5VRX-5 version 5.0.229 reported NTSC/AFC lock and zero transport faults,
+but flywheel ON rolled the operator's picture. Two snapshots showed
+`camera_present=0`, `h_trusted=1`, `v_trusted=1`; repairs rose by 53,960
+and missed tips by 978 between host requests approximately six seconds apart.
+Maximum IRQ delay was 32,600 ticks at 20 MHz (1.63 ms). Turning flywheel OFF
+cleanly restored ordinary live output; the operator confirmed a stable picture.
+Selected original lines and full-log hashes are in
+[`flywheel_desync_2026-10-18.json`](../research/data/flywheel_desync_2026-10-18.json).
+The strict model's `valid=0` alone is not proof of a bad grid: that diagnostic
+model is deliberately separate from the camera-phase guard.
+
+The reproducible software defect was a mismatch between camera presence and
+repair authority. Instantaneous GPIO2 sync levels only suppressed clamps while
+the 20-ms presence flag was fresh, although H/V authority survives five seconds.
+An unreadable source also returned the same negative edge result as a missing
+pulse. Production-source host fixtures reproduce a clamp over an asserted sync
+level (or unavailable source) after presence expires with authority still set.
+
+Live sync levels now always win, including during a partially emitted repair.
+Unreadable source ownership and raw observer coverage older than 9 ms refuse
+repairs before any clamp. The existing observer model already uses this 9-ms
+age bound. Completed non-sync runs count as coverage: real noise with no camera
+H can still use qualified holdover; observer blindness cannot. Coverage gaps
+revoke old H/V authority and require fresh acquisition. Old, overflowing or
+implausibly future runs cannot renew authority or steer the grid. Runs from
+before a pending grid change was applied cannot adjust the replacement grid.
+PLL baselines use the observed halfline, not the later ISR tip at delivery.
+`SYNC_FLYWHEEL_WITNESS` exposes freshness, sample age and yield/gap/rejection
+counters separately from the existing status format.
+
+The actual-source runtime fixture covers fresh native priority, stale/unreadable
+witnesses, reacquisition, PAL/NTSC switching, and completed observations in 6-ms
+batches with three noise pulses per line. Its 10-second noisy scenarios retain
+zero H reanchors and less than 9 ticks of late-run phase error after settling;
+one-second camera holdover stays within the existing 40-tick drift limit.
+These are software checks. They do not prove physical goggle lock or recovery
+of the measured 1.63-ms interrupt stalls. The bounded background work from
+PR #217 is included with its original authorship; pulse deadlines and native
+priority remain strict. No demod LUT, RF gain policy or sample path changes.
+
+Review follow-up (PR #218 comments): `SYNC_FLYWHEEL_LOAD` reports measured
+`output_alarm` occupancy since the previous print: ISR calls, worst single ISR
+(us) and per-mille CPU for the whole ISR, the early-alarm spin, the spin before
+tips a native pulse then suppressed, and clamp holds. The ~19 % figure in the
+review is a ceiling estimate; these counters replace it with a measurement per
+scenario (strong camera, weak, none, flywheel OFF). Board numbers are pending;
+hardware-timed OE gating is not attempted before them. Separately, gain-driven
+LP (G70 on / G65 off) now applies only under Direct Gain AUTO: a manual MAX or
+fixed G70+ forced U85Q-LP on a strong carrier; manual gain falls back to the
+C/N rule (`kp_ladder_gain_evidence`, `test/test_kp_ladder.c`). Host tests only.
+
+Before claiming the board issue fixed, compare this PR build OFF/ON on the same
+camera: boot/menu/restart, native return, witness age/gaps, RMT rearm/overflow,
+IRQ delay and missed tips, plus operator-visible rolling. The board remains
+on the stable OFF setting while this software change is prepared.

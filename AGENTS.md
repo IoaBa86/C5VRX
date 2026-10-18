@@ -874,3 +874,27 @@ before allocating internal DMA descriptors in 384-byte chunks. Interlaced
 NTSC/PAL needs about 18/22 KiB; progressive fallback about 9/11 KiB.
 Keep the 6144-byte control stack reserved before RF/driver allocations.
 See [PR212](docs/PR212.md) for current behavior, evidence and board checks.
+Gain-driven LP (G70/G65) follows the gain only in AUTO; manual MAX/fixed
+gain uses the C/N rule (PR #218 follow-up). `SYNC_FLYWHEEL_LOAD` measures
+flywheel ISR occupancy; board numbers pending (`docs/FINDINGS.md`).
+
+
+
+### Bounded sync-loss background work (2026-10-18)
+
+See `docs/FINDINGS.md`, "Bounded background work during sync loss". Early
+output alarms without repair authority must advance/publish without waiting
+for the tip; already-late alarms keep miss accounting. RMT drains consume a
+snapshot of the producer head, and overdue gain timer callbacks coalesce.
+Host-tested scheduling changes only; RF sensitivity and physical sync/range
+gains are unmeasured. Preserve the native suppression and repair deadline.
+
+
+### Flywheel witness ownership (PR #218)
+
+An asserted native sync level or unreadable source must never be interpreted as
+permission to clamp, even after camera presence expires. H/V holdover requires
+fresh raw observer coverage; a coverage gap revokes authority until reacquired.
+Use completed sample timestamps and their grid/halfline for guard/PLL decisions,
+not task delivery time. Keep IRQ deadlines strict and hardware claims bounded.
+See `docs/FINDINGS.md`, "Flywheel witness freshness and delayed observations".
