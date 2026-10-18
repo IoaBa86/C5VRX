@@ -859,3 +859,18 @@ Exact adjacent-FM waveform fusion remains gated by issue #23. Every 40 MS/s IQ
 sample must participate before 2:1 reduction, and a live implementation must
 prove sustained hardware throughput plus state continuity before replacing the
 current gapless BitScrambler path.
+
+## PR #212 current receiver settings
+
+This section supersedes older C5VRX-5 default/feature notes above.
+Direct Gain V6 extends V5 with same-context carrier memory: hold 10 ms,
+then climb eight indices per 3 ms; overload above the remembered healthy gain
+returns to it in one write. Learned maps still require exact provenance.
+GAIN (console `G`) saves AUTO (default, V6), MAX or fixed G78..G24.
+FLYWHEEL (console `U`) is saved and defaults OFF without a valid setting;
+a saved ON is restored. Do not enable it implicitly or claim monitor lock.
+Menu entry must hold flywheel restarts and verify observer/output release
+before allocating internal DMA descriptors in 384-byte chunks. Interlaced
+NTSC/PAL needs about 18/22 KiB; progressive fallback about 9/11 KiB.
+Keep the 6144-byte control stack reserved before RF/driver allocations.
+See [PR212](docs/PR212.md) for current behavior, evidence and board checks.

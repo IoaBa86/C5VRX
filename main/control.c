@@ -7,8 +7,10 @@
 #include <string.h>
 #include "afc_ctrl.h"
 #include "kp_ladder.h"
+#include "output_level.h"
 #include "kp_switch_guard.h"
 #include "profile_logic.h"
+#include "menu_entry.h"
 #include "cn_estimate.h"
 #include "analog_video_detect.h"
 #include "driver/gpio.h"
@@ -24,8 +26,34 @@
 #define MENU_IDLE_TICKS  600            /* 30 s without a press closes the menu */
 #define RETUNE_SETTLE_TICKS 10          /* 500 ms after a PHY transaction */
 #define SCAN_PAIRS       4092u
+#define CONTROL_STACK_BYTES 6144u
+
+typedef struct {
+    StaticTask_t task;
+    StackType_t stack[CONTROL_STACK_BYTES/sizeof(StackType_t)] __attribute__((aligned(portBYTE_ALIGNMENT)));
+} control_memory_t;
+static control_memory_t *s_control_memory;
+
+bool control_prepare(void)
+{
+    if(!s_control_memory) {
+        s_control_memory=heap_caps_aligned_alloc(portBYTE_ALIGNMENT,sizeof(*s_control_memory),
+            MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+        if(s_control_memory)memset(s_control_memory,0,sizeof(*s_control_memory));
+    }
+    return s_control_memory!=NULL;
+}
 
 volatile bool s_menu_active;
+/* A long press/'o' while the PHY is busy: retry from this owner, bounded. */
+static menu_retry_t s_menu_retry;
+static bool menu_open_checked(void)
+{
+    if (menu_open()) { menu_retry_done(&s_menu_retry); s_menu_cursor = 0; return true; }
+    if (menu_open_busy()) menu_retry_busy(&s_menu_retry, esp_timer_get_time());
+    else menu_retry_done(&s_menu_retry);
+    return false;
+}
 volatile int s_signal_strength;
 volatile bool s_scan_active;
 volatile unsigned s_scan_progress;
@@ -38,10 +66,25 @@ volatile video_standard_t s_detected_std = VIDEO_STD_NTSC;
 volatile int64_t s_last_video_us;
 QueueHandle_t s_commands;
 
-static uint8_t s_window[CONTROL_BYTES];
+/* One control-task scratch buffer: the control window (gain/kp/AFC) and,
+ * during a scan (receiver paused), a separate endpoint area. Saves the
+ * scan's malloc. */
+#define SCAN_BUF_OFFSET 4096u
+static uint8_t s_control_scratch[SCAN_BUF_OFFSET + SCAN_PAIRS];
+static uint8_t *const s_window = s_control_scratch;
 static uint8_t s_pal_votes, s_ntsc_votes;
 static uint8_t s_last_std = 0xFF;      /* last stable standard (NVS) */
 static unsigned s_afc_corrections, s_afc_weak_skips;
+typedef struct {
+    afc2_evidence_t history;
+    uint64_t sampled_us, qualified_us;
+    uint32_t context, qualified_gain_epoch;
+    int32_t raw_porch_khz, residual_khz;
+    int cn_x10;
+    bool latest_valid, sticky_lock;
+    const char *window, *held;
+} afc_evidence_snapshot_t;
+static afc_evidence_snapshot_t s_afc_evidence = {.window="boot", .held="boot", .cn_x10=CN_UNKNOWN_X10};
 /* Verified kp ladder (kp_ladder.h), NVS "kp_auto": 0 off, 1 kp only,
  * 2 kp plus the live U85Q <-> U85Q-LP switch. K cycles 0 -> 1 -> 2 -> 0;
  * k steps one kp level and P toggles the program by hand for the bench test
@@ -71,6 +114,7 @@ static void manual_auto_off(void)
 /* Learned offset sign (afc_ctrl.h sign check), persisted once observed. */
 static volatile int8_t s_afc_sign = 1;
 static volatile uint8_t s_afc_sign_state;
+static bool s_afc_sign_saved;
 
 static void standard_reset(void)
 {
@@ -134,7 +178,8 @@ static void after_retune(void)
  * carrier must sit within 3 MHz of the channel centre (a VTX also shows on
  * neighbouring channels through the filter, and the 50 ns offset estimate
  * wraps every 20 MHz). Among centred candidates the strongest wins. */
-static uint8_t *s_scan_buf;
+_Static_assert(SCAN_BUF_OFFSET >= CONTROL_BYTES, "scan endpoints must not overlap the control window");
+static uint8_t *const s_scan_buf = s_control_scratch + SCAN_BUF_OFFSET;
 
 static analog_video_t scan_confidence(void)
 {
@@ -155,7 +200,7 @@ static analog_video_t channel_confidence(uint8_t scan_gain, uint8_t max_gain, in
 {
     vTaskDelay(pdMS_TO_TICKS(90));
     metrics_t m = {0};
-    if (copy_control_window(s_window, sizeof(s_window))) m = measure_window(s_window, sizeof(s_window));
+    if (copy_control_window(s_window, CONTROL_BYTES)) m = measure_window(s_window, CONTROL_BYTES);
     if (quality) *quality = strength(&m, scan_gain);
     analog_video_t video = scan_confidence();
     /* A far VTX is starved at the scan gain: look again at maximum. */
@@ -172,8 +217,6 @@ static analog_video_t channel_confidence(uint8_t scan_gain, uint8_t max_gain, in
 static void scan(void)
 {
     if (!receiver_pause("SCAN")) return;
-    s_scan_buf = heap_caps_malloc(SCAN_PAIRS, MALLOC_CAP_INTERNAL);
-    if (!s_scan_buf) { printf("SCAN refused=no_memory\n"); receiver_resume(); return; }
     const size_t original = rf_channel_index();
     const uint8_t max_gain = rf_gain_table()->max_index, scan_gain = 52u;
     size_t best = original;
@@ -212,8 +255,6 @@ static void scan(void)
     }
     if (best_video < 0) best = original;
     (void)rf_set_channel(best);
-    heap_caps_free(s_scan_buf);
-    s_scan_buf = NULL;
     s_scan_active = false;
     receiver_set_gain(max_gain);
     receiver_resume();
@@ -236,7 +277,9 @@ static void menu_action(void)
     case MENU_CHANNEL: rf_next_channel(); after_retune(); break;
     case MENU_SCAN: scan(); break;
     case MENU_CALIBRATE: menu_close(); filter_request(); return;   /* runs once the menu is closed */
-    case MENU_OUTPUT: (void)transport_set_output((transport_output() + 1u) % 4u); break;
+    case MENU_OUTPUT: (void)transport_set_output((transport_output() + 1u) % OUTPUT_LEVELS); break;
+    case MENU_GAIN: receiver_set_gain_mode(receiver_gain_mode_next(receiver_gain_mode()), true); break;
+    case MENU_FLYWHEEL: transport_sync_flywheel_set(!transport_sync_flywheel_enabled(), true); break;
     case MENU_VIDEO:
         cycle_video_standard();
         break;
@@ -253,7 +296,9 @@ static void command(int c, unsigned *menu_idle)
         return;
     }
     switch (c) {
-    case 'o': if (s_menu_active) menu_close(); else if (menu_open()) s_menu_cursor = 0; break;
+    case 'G': receiver_set_gain_mode(receiver_gain_mode_next(receiver_gain_mode()), true); break;
+    case 'U': transport_sync_flywheel_toggle(); break;
+    case 'o': if (s_menu_active) menu_close(); else (void)menu_open_checked(); break;
     case 'e': menu_close(); break;  /* idempotent web-menu EXIT */
     case 'v': cycle_video_standard(); break;
     case 'n': if (s_menu_active) { s_menu_cursor = (s_menu_cursor + 1) % MENU_ITEMS; menu_render(); } break;
@@ -300,11 +345,12 @@ static void command(int c, unsigned *menu_idle)
         break;
     }
     case 'g': {
-        unsigned next = (transport_output() + 1u) % 4u;
+        unsigned next = (transport_output() + 1u) % OUTPUT_LEVELS;
         bool ok = transport_set_output(next);
         printf("OUTPUT manual %s result=%s wait_ms=%lu%s\n", transport_output_name(),
                ok ? "applied" : "refused", (unsigned long)transport_switch_wait_ms(),
-               transport_output() ? " WARNING: may clip wide VTX; verify sync/white into 75 ohm" : "");
+               transport_output() == 9 ? " (low swing: halves noise & clipping; requires sensitive sync)" :
+               (transport_output() ? " WARNING: may clip wide VTX; verify sync/white into 75 ohm" : ""));
         if (s_menu_active) menu_render();
         break;
     }
@@ -324,17 +370,24 @@ static uint32_t afc_context(void)
 static void control_task(void *arg)
 {
     (void)arg;
-    afc2_ctrl_t afc = {.target_khz = AFC_PORCH_TARGET_KHZ, .sign = s_afc_sign};
+    afc2_ctrl_t afc = {.target_khz = AFC_PORCH_TARGET_KHZ, .sign = s_afc_sign, .sign_state = s_afc_sign_state};
     uint8_t seen_sign_state = afc.sign_state;
     bool own_write = false;
     uint8_t afc_lost = 0;
     unsigned settle = RETUNE_SETTLE_TICKS, btn = 0, boot_grace = 20, menu_idle = 0, menu_refresh = 0;
     bool long_fired = false, was_locked = false, ladder_was_active = true;
+    int64_t next_control_us = esp_timer_get_time();
     int seen_profile = profile_active();
     uint32_t seen_phy = phy_generation(), seen_control = s_control_epoch;
     uint32_t seen_restart_errors = transport_restart_errors();
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(TICK_MS));
+        vTaskDelay(pdMS_TO_TICKS(2));
+        transport_sync_live_tick();
+        /* The flywheel owner ticks every 2 ms; gain/AFC/ladder/button/menu
+         * timing stays at its original 50 ms. */
+        int64_t control_now = esp_timer_get_time();
+        if (control_now < next_control_us) continue;
+        next_control_us = control_now + TICK_MS * 1000;
         int c;
         for (unsigned k = 0; k < 8 && xQueueReceive(s_commands, &c, 0) == pdTRUE; ++k) command(c, &menu_idle);
 
@@ -351,7 +404,7 @@ static void control_task(void *arg)
             menu_idle = 0;
             if (btn >= LONG_TICKS && !long_fired) {
                 long_fired = true;
-                if (!s_menu_active) { if (menu_open()) s_menu_cursor = 0; }
+                if (!s_menu_active) (void)menu_open_checked();
                 else menu_action();
             }
         } else if (btn) {
@@ -361,6 +414,12 @@ static void control_task(void *arg)
             }
             btn = 0;
             long_fired = false;
+        }
+        if (!s_menu_active && s_menu_retry.pending) {
+            uint32_t refused = s_menu_retry.refused;
+            if (menu_retry_due(&s_menu_retry, esp_timer_get_time())) (void)menu_open_checked();
+            else if (s_menu_retry.refused != refused)
+                printf("[MENU] refused: sync release still waiting for the PHY after 1 s; live video kept\n");
         }
         if (s_menu_active) {
             if (++menu_idle >= MENU_IDLE_TICKS) { menu_close(); printf("[MENU] closed after 30 s idle\n"); }
@@ -387,14 +446,17 @@ static void control_task(void *arg)
         if (s_scan_active) {
             s_auto_candidate.candidate = false;
             afc2_ctrl_invalidate(&afc);
+            memset(&s_afc_evidence, 0, sizeof(s_afc_evidence));
+            s_afc_evidence.window="scan"; s_afc_evidence.held="scan";
+            s_afc_evidence.cn_x10=CN_UNKNOWN_X10;
             diag_window(false, false, false);
             continue;
         }
-        const bool copied = copy_control_window(s_window, sizeof(s_window));
+        const bool copied = copy_control_window(s_window, CONTROL_BYTES);
         if (!copied) ++s_ladder_copy_fail;
         metrics_t m = {0};
         if (copied) {
-            m = measure_window(s_window, sizeof(s_window));
+            m = measure_window(s_window, CONTROL_BYTES);
             s_signal_strength = (s_signal_strength * 3 + strength(&m, s_current_gain) + 2) / 4;
         }
 
@@ -417,26 +479,38 @@ static void control_task(void *arg)
         s_ladder_ctx += ctx != afc_context();
         s_ladder_gain += now - s_last_gain_write_us < KP_GAIN_WRITE_GUARD_US;
         s_ladder_stuck += s_obs_stuck;
-        bool window_ok = ladder_ok && afc2_envelope_stationary(s_window, sizeof(s_window));
+        bool window_ok = ladder_ok && afc2_envelope_stationary(s_window, CONTROL_BYTES);
+        const char *afc_window_reason = !copied ? "copy_missing" : settle ? "settle" :
+            ctx != afc_context() ? "context" : phy_busy() ? "phy_busy" : !ladder_ok ? "gain_settle" :
+            !window_ok ? "nonstationary" : "measured";
         if (settle) --settle;
         afc2_result_t r = {0};
         if (window_ok) {
-            r = afc2_measure(s_window, sizeof(s_window), c5vrx_phase8_gain_lut);
-            afc2_ctrl_observe(&afc, &r);
+            r = afc2_measure(s_window, CONTROL_BYTES, c5vrx_phase8_gain_lut);
+            afc2_ctrl_observe_at(&afc, &r, (uint64_t)now);
         } else afc2_ctrl_miss(&afc);   /* settle and context changes reset via afc2_ctrl_sync */
         if (copied) s_cfo_khz = r.porch_pairs ? r.porch_khz : 0;
         /* Burst or line timing confirmed the syncs (afc2_measure). */
         bool valid = window_ok && r.lines && r.standard && r.porch_pairs && r.sync_pairs;
+        const bool qualified=valid && r.polarity && gain_epoch==s_gain_epoch && ctx==afc_context();
+        if (s_afc_evidence.context != ctx) s_afc_evidence.qualified_us=0;
+        if (qualified) {
+            s_afc_evidence.qualified_us=(uint64_t)now;
+            s_afc_evidence.qualified_gain_epoch=gain_epoch;
+            s_afc_evidence.raw_porch_khz=r.porch_khz;
+            s_afc_evidence.residual_khz=r.porch_khz-afc.target_khz;
+        }
         if (valid) { s_last_video_us = now; standard_vote(r.standard); profile_observe(&r); }
         bool was = s_afc_locked;
         if (copied) s_afc_locked = afc2_native_lock(s_afc_locked, valid, afc2_ctrl_can_lock(&afc, true), afc.n, &afc_lost);
-        if (was && !s_afc_locked) afc2_ctrl_reset(&afc, ctx, true);
+        if (was && !s_afc_locked) afc2_ctrl_reacquire(&afc);
         /* Re-acquisition retunes only on a strong carrier: at the range edge
          * the porch estimate is pulled toward the receiver centre and would
          * walk the offset the wrong way (cn_estimate.h, afc_bias.py). A weak
          * window still feeds the estimate history, it just cannot step. */
         const int cn_x10 = receiver_obs_cn_x10();
-        if (!s_afc_locked && window_ok && m.q_phase >= 55 && !s_menu_active &&
+        const char *afc_held = s_afc_locked ? "sticky_lock" : !valid ? "window" : s_menu_active ? "menu" : "actuator";
+        if (!s_afc_locked && valid && !s_menu_active &&
             phy_try_actuator(phy_generation())) {
             int32_t step = 0;
             const bool strong = receiver_obs_cn_x10() >= AFC_MIN_CN_X10;   /* envelope C/N model */
@@ -446,21 +520,39 @@ static void control_task(void *arg)
                 ++s_gain_epoch;
                 ++s_afc_corrections;
                 own_write = true;
+                afc_held="stepped";
                 printf("[AFC] step_khz=%ld offset_khz=%d cn_est_x10=%d coherence=%d gain=%u\n", (long)step,
                        rf_offset_khz(), cn_x10, s_obs_coherence, s_current_gain);
             } else if (!strong && afc2_ctrl_stable(&afc, &step) &&
                        (step > AFC2_CTRL_DEADBAND_KHZ || step < -AFC2_CTRL_DEADBAND_KHZ)) {
                 ++s_afc_weak_skips;    /* would have stepped on a weak carrier */
             }
+            if (!own_write) {
+                int32_t median=0;
+                afc_held=gain_epoch != s_gain_epoch ? "gain_changed" : !strong ? "weak_or_unknown_cn" :
+                    afc.n<AFC2_CTRL_SAMPLES ? "collecting" : !afc2_ctrl_stable(&afc,&median) ? "unstable" :
+                    (median>=-AFC2_CTRL_DEADBAND_KHZ && median<=AFC2_CTRL_DEADBAND_KHZ) ? "deadband" : "correction_budget";
+            }
             phy_end_actuator();
         }
+        s_afc_evidence.history=afc2_ctrl_evidence(&afc,(uint64_t)now);
+        s_afc_evidence.sampled_us=(uint64_t)now;
+        s_afc_evidence.context=ctx;
+        s_afc_evidence.cn_x10=cn_x10;
+        s_afc_evidence.latest_valid=qualified;
+        s_afc_evidence.sticky_lock=s_afc_locked;
+        s_afc_evidence.window=qualified ? "valid" : valid ? "stale_gain_or_context" : window_ok ? "no_confirmed_sync" : afc_window_reason;
+        s_afc_evidence.held=afc_held;
         if (afc.sign_state != seen_sign_state) {
             seen_sign_state = afc.sign_state;
             s_afc_sign_state = afc.sign_state;
             printf("[AFC] offset sign %s: %+d\n", afc.sign_state == AFC2_SIGN_FLIPPED ? "FLIPPED" : "confirmed",
                    afc.sign < 0 ? -1 : 1);
             int8_t sign = afc.sign < 0 ? -1 : 1;
-            if (sign != s_afc_sign) { s_afc_sign = sign; (void)blob_store("afc_sign", &sign, 1); }
+            if (!s_afc_sign_saved || sign != s_afc_sign) {
+                s_afc_sign = sign;
+                s_afc_sign_saved = blob_store("afc_sign", &sign, 1);
+            }
         }
         /* The ladder owns kp/LP on every profile (one U85Q topology; a
          * profile only sets the filter and the start level). It is inactive
@@ -524,12 +616,27 @@ void control_start(void)
     gpio_config(&cfg);
     if (!blob_load("last_std", &s_last_std, 1)) s_last_std = 0xFF;
     int8_t sign;
-    if (blob_load("afc_sign", &sign, 1) && (sign == 1 || sign == -1)) s_afc_sign = sign;
+    if (blob_load("afc_sign", &sign, 1) && (sign == 1 || sign == -1)) {
+        s_afc_sign = sign;
+        s_afc_sign_state = AFC2_SIGN_CONFIRMED;
+        s_afc_sign_saved = true;
+    }
     if (!blob_load("kp_auto", &s_kp_auto, 1) || s_kp_auto > 2) s_kp_auto = 2;
     else s_saved_kp_auto = s_kp_auto; /* an explicitly saved OFF wins */
     s_commands = xQueueCreate(16, sizeof(int));
     ESP_ERROR_CHECK(s_commands ? ESP_OK : ESP_ERR_NO_MEM);
-    ESP_ERROR_CHECK(xTaskCreate(control_task, "control", 6144, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+    /* The static zero-initialized ladder skipped its first reset because
+     * the transport was already active. That left the adaptive LP hold at
+     * zero on a normal boot (board log after PR 211). */
+    kp_ladder_reset(&s_kp);
+    const int actual = transport_kp_level();
+    if (actual >= 0) s_kp.level = (uint8_t)actual;
+    s_kp.lp = transport_lp();
+    /* IDF task stack depths are bytes. Reserve before driver allocations,
+     * then supply that same 6144-byte stack and TCB without another malloc. */
+    ESP_ERROR_CHECK(control_prepare() &&
+        xTaskCreateStatic(control_task,"control",CONTROL_STACK_BYTES,NULL,3,
+            s_control_memory->stack,&s_control_memory->task)!=NULL ? ESP_OK:ESP_ERR_NO_MEM);
 }
 
 /* Status beat for the web menu (web/receiver-console.js): one short line
@@ -548,6 +655,25 @@ void control_print_beat(void)
 
 void control_print(void)
 {
+    vTaskSuspendAll();
+    const afc_evidence_snapshot_t afc_snapshot=s_afc_evidence;
+    const uint64_t afc_now=(uint64_t)esp_timer_get_time();
+    const bool afc_context_current=afc_snapshot.context==afc_context();
+    const bool afc_gain_current=afc_snapshot.qualified_us && afc_snapshot.qualified_gain_epoch==s_gain_epoch;
+    (void)xTaskResumeAll();
+    const afc2_evidence_t evidence=afc_snapshot.history;
+    printf("AFC_EVIDENCE latest_valid=%u context_current=%u qualified_gain_current=%u sticky_lock=%u target_khz=%d "
+           "last_qualified_raw_porch_khz=%ld last_qualified_residual_khz=%ld qualified_age_ms=%lld sample_age_ms=%lld "
+           "n=%u timestamped=%u stable=%u median_residual_khz=%ld mad_khz=%ld oldest_age_ms=%lld newest_age_ms=%lld "
+           "cn_x10=%d window=%s held=%s reference=porch_not_rf_truth\n",
+           afc_snapshot.latest_valid, afc_context_current, afc_gain_current, afc_snapshot.sticky_lock, AFC_PORCH_TARGET_KHZ,
+           (long)afc_snapshot.raw_porch_khz, (long)afc_snapshot.residual_khz,
+           (long long)afc2_evidence_age_ms(afc_context_current && afc_gain_current ? afc_snapshot.qualified_us : 0,afc_now),
+           (long long)afc2_evidence_age_ms(afc_snapshot.sampled_us,afc_now),
+           evidence.n, evidence.timestamped, evidence.stable, (long)evidence.median_khz, (long)evidence.mad_khz,
+           (long long)afc2_evidence_age_ms(evidence.oldest_us,afc_now),
+           (long long)afc2_evidence_age_ms(evidence.newest_us,afc_now),
+           afc_snapshot.cn_x10, afc_snapshot.window, afc_snapshot.held);
     printf("CONTROL channel=%s freq=%u offset_khz=%d cfo_khz=%d afc_locked=%u afc_corrections=%u "
            "afc_weak_skips=%u afc_sign=%+d(%s) standard=%s detected=%s signal=%d menu=%u deviation_x100=%d mode=%s "
            "kp_auto=%u%s kp_steps=%lu lp_switches=%lu busy=%u\n"

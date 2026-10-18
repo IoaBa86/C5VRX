@@ -20,6 +20,7 @@
 
 #define IQ_RATE_HZ          40000000u
 #define RAW_RING_BYTES      32768u
+#define LIVE_PIPELINE_LAG_BYTES (3u * RAW_RING_BYTES / 4u)
 #define DAC_IDLE_CODE       20u          /* blanking level; sync is 0 */
 #define CONTROL_BYTES       4092u        /* one completed GDMA descriptor */
 #define PROBE_REGIONS       4u
@@ -58,6 +59,7 @@ extern int s_rx_node_count;
 esp_err_t transport_start(void);
 void transport_stop_tx(void);
 void transport_resume_live(void);
+bool transport_resume_raster(int level, bool lp); /* confirmed ladder target at raster exit */
 void transport_start_chain(dma_descriptor_t *first);
 /* One tracker topology (U85Q / U85Q-LP); a profile only picks the filter
  * and the kp level the pipeline starts from (kp_tables.h). */
@@ -80,12 +82,31 @@ void transport_stop_chain(void);
 void transport_poll_faults(void);
 uint32_t transport_fault_count(void);
 void transport_print(void);
+void transport_sync_flywheel_toggle(void); /* U / menu FLYWHEEL: toggle and save */
+void transport_sync_flywheel_set(bool on, bool save);
+bool transport_sync_flywheel_enabled(void);
+void transport_sync_flywheel_set_boot(bool on); /* settings_load: saved choice */
+void transport_sync_live_tick(void);   /* control loop; never holds a lifetime PHY lease */
+bool transport_sync_live_cancel(void); /* stop/restore before transport ownership changes */
+/* Menu open: stop the flywheel output (not eligible under the menu anyway)
+ * so its heap is free before the menu reserves descriptors. */
+/* true once the flywheel observer and output are released (or none ran);
+ * false while the PHY is owned elsewhere: nothing may allocate then. */
+bool transport_sync_live_release(void);
+/* Hold the control owner from (re)starting the flywheel, e.g. while the menu
+ * builds its chain from another task. */
+void transport_sync_live_hold(bool on);
+void transport_sync_live_print(void);
 void sync_dma_c2m(const void *addr, size_t size);
 void sync_dma_m2c(const void *addr, size_t size);
 int ring_node_index(uint32_t addr);
-/* Copies that RX cannot have overwritten (false = stale, retry). */
+/* Task-reader token + RX-overwrite/context guards. Nonnull private dst;
+ * control 1..4092 B, probe 256 B, sentinel 64 B, snapshot 8190 B, endpoints
+ * 1..4092 pairs (8184 B raw envelope). False=invalid/unavailable/stale; retry safely.
+ * These bounds alone do not prove DMA publication or original provenance. */
 bool copy_control_window(uint8_t *dst, size_t bytes);
 bool copy_probe_window(uint8_t dst[PROBE_BYTES], int *node);
+bool copy_sentinel_window(uint8_t dst[64]);
 bool copy_snapshot(uint8_t *dst);
 bool copy_recent_endpoints(uint8_t *dst, size_t n);
 void rx_clock_slip(uint32_t us);
@@ -102,6 +123,8 @@ extern volatile int s_obs_env_ratio_x100;   /* gain.h env_ratio_x100 of the late
 extern volatile uint32_t s_obs_us_max, s_obs_windows;
 extern dg_map_blob_t s_gain_map_saved;
 extern bool s_gain_map_saved_valid;
+/* Observer-owned context snapshot; refuses unsettled/changed model state. */
+unsigned receiver_export_gain_map(dg_map_blob_t *blob);
 void receiver_start(void);
 bool receiver_active(void);
 bool receiver_paused(void);
@@ -111,6 +134,15 @@ void receiver_resume(void);
 void receiver_set_gain(uint8_t gain);
 void receiver_print(void);
 void receiver_print_map(void);   /* console M: GAINMAP line */
+/* Gain mode: GAIN_MODE_AUTO (Direct Gain V6), GAIN_MODE_MAX (table maximum)
+ * or a fixed gain index 20..max. Fixed modes skip the controller entirely;
+ * paused owners (calibration, scan) still write and the mode returns after. */
+#define GAIN_MODE_AUTO 0u
+#define GAIN_MODE_MAX  255u
+uint8_t receiver_gain_mode(void);
+void receiver_set_gain_mode(uint8_t mode, bool save);
+uint8_t receiver_gain_mode_next(uint8_t mode);
+const char *receiver_gain_mode_name(uint8_t mode, char *buf, unsigned size);
 
 /* ---- control.c ---- */
 extern volatile bool s_menu_active;
@@ -126,6 +158,7 @@ extern volatile video_standard_t s_detected_std;
 extern volatile int64_t s_last_video_us;           /* last burst-confirmed sync */
 extern QueueHandle_t s_commands;
 void control_start(void);
+bool control_prepare(void); /* reserve unchanged control stack before driver heap fragmentation */
 video_standard_t menu_standard(void);
 void control_print(void);
 void control_print_beat(void);   /* STATUS line every 2 s (console.c) */
@@ -160,9 +193,11 @@ bool calibration_dc_ok(uint8_t gain);
 void lane_compare_request(void);
 
 /* ---- menu.c ---- */
-enum { MENU_BAND, MENU_CHANNEL, MENU_SCAN, MENU_VIDEO, MENU_CALIBRATE, MENU_OUTPUT, MENU_EXIT, MENU_ITEMS };
+enum { MENU_BAND, MENU_CHANNEL, MENU_SCAN, MENU_VIDEO, MENU_CALIBRATE, MENU_OUTPUT, MENU_GAIN, MENU_FLYWHEEL, MENU_EXIT, MENU_ITEMS };
 extern volatile int s_menu_cursor;
 bool menu_open(void);
+/* The last menu_open() was deferred by a busy PHY (retry, don't allocate). */
+bool menu_open_busy(void);
 void menu_close(void);
 void menu_render(void);
 void menu_set_standard_mode(std_mode_t mode);
@@ -204,6 +239,9 @@ void diag_toggle_stream(void);          /* console R */
 /* ---- settings.c ---- */
 void settings_load(void);
 void settings_save(void);
+void settings_save_output(unsigned level); /* only after verified output application */
+void settings_save_gain_mode(uint8_t mode);
+void settings_save_flywheel(bool on);
 bool blob_load(const char *key, void *data, size_t size);
 bool blob_store(const char *key, const void *data, size_t size);
 

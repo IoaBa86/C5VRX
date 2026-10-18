@@ -1,5 +1,12 @@
 # Where can C5VRX-5 firmware still gain range?
 
+Current receiver behavior and validation are summarized in
+[PR #212](../docs/PR212.md): AFC/copy/observer fixes, Direct Gain V6,
+saved GAIN/FLYWHEEL settings and default-OFF experimental sync output.
+Earlier working documents remain in Git history; the studies below keep their
+original model assumptions and results. No measured RF range improvement
+or affected-monitor cure is established.
+
 Simulation study, 2026-10-11. `sim.py` models the whole C5VRX-5 chain with
 the **bit-exact U85Q LUT** (two LUT16 lookups per 50 ns, `u85q.bsasm`), the
 C5 analog channel (5th-order, ~20 MHz), unfiltered 80 -> 40 MS/s decimation,

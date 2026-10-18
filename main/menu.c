@@ -1,7 +1,7 @@
 /* C5VRX-5 by Twotoz and the C5VRX contributors: on-screen menu.
  * A standalone PAL/NTSC raster (menu_raster.c) owns TX while the menu is
  * open; live video resumes with the exact boot topology on exit. The GDMA
- * scatter chain is allocated in 1.5 KiB chunks only while the menu is open
+ * scatter chain is allocated in 384-byte chunks only while the menu is open
  * (NTSC ~18 KiB, PAL ~22 KiB of internal SRAM). */
 #include "receiver.h"
 #include <stdio.h>
@@ -10,11 +10,17 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "rf.h"
+#include "menu_entry.h"
 
 void transport_start_chain(dma_descriptor_t *first);
 void transport_stop_chain(void);
 
-#define NODE_CHUNK  128u     /* 128 x 12 B = 1536 B */
+/* 32 x 12 B = 384 B, word aligned. With live tasks and the flywheel running
+ * the internal heap has >20 KiB free but in pieces: 64-byte-aligned 1.5-KiB
+ * and 768-B chunks failed after ~14 KiB (board 2026-10-18, NO_MEM at 7-8 KiB
+ * free). NTSC needs 1499 nodes, PAL 1811. Internal SRAM is not cached on the
+ * C5 and sync_dma_c2m rounds itself, so cache-line alignment buys nothing. */
+#define NODE_CHUNK  32u
 #define NODE_CHUNKS ((MENU_MAX_NODES + NODE_CHUNK - 1u) / NODE_CHUNK)
 
 enum {
@@ -39,9 +45,11 @@ static const uint8_t s_icons[MENU_ITEMS][8] = {
     {0x7e, 0x42, 0x42, 0x42, 0x7e, 0x18, 0x3c, 0x00},   /* video */
     {0x08, 0x08, 0x1c, 0x7f, 0x1c, 0x08, 0x08, 0x00},   /* calibrate */
     {0x00, 0x08, 0x18, 0x38, 0x78, 0x38, 0x18, 0x08},   /* output */
+    {0x00, 0x02, 0x06, 0x0e, 0x1e, 0x3e, 0x7e, 0x00},   /* gain */
+    {0x3c, 0x42, 0x81, 0x99, 0x99, 0x81, 0x42, 0x3c},   /* flywheel */
     {0x7c, 0x44, 0x04, 0x1f, 0x04, 0x44, 0x7c, 0x00},   /* exit */
 };
-static const char *const s_items[MENU_ITEMS] = {"BAND", "CHANNEL", "SCAN", "VIDEO", "CALIBRATE", "OUTPUT", "EXIT"};
+static const char *const s_items[MENU_ITEMS] = {"BAND", "CHANNEL", "SCAN", "VIDEO", "CALIBRATE", "OUTPUT", "GAIN", "FLYWHEEL", "EXIT"};
 
 static void rect(int x, int y, int w, int h, uint8_t code)
 {
@@ -220,8 +228,26 @@ void menu_render(void)
     case MENU_OUTPUT:
         title("OUTPUT LEVEL", "HOLD: CHANGE");
         value_box(100, 22, 276, "LEVEL", transport_output_name());
-        text("BOOT: 1.0X   LOAD: 75 OHM", 100, 38, UI_MUTED, 1);
-        text(transport_output() ? "HIGH LEVEL MAY CLIP VIDEO" : "INCREASE FOR WEAK SYNC", 100, 47, UI_WHITE, 1);
+        text("SAVED ON EXIT   LOAD: 75 OHM", 100, 38, UI_MUTED, 1);
+        text(transport_output() == 9 ? "LOW SWING REDUCES CLIPPING" :
+             (transport_output() ? "HIGH LEVEL MAY CLIP VIDEO" : "INCREASE FOR WEAK SYNC"), 100, 47, UI_WHITE, 1);
+        break;
+    case MENU_GAIN: {
+        char mode[16];
+        title("RX GAIN", "HOLD: CHANGE");
+        value_box(100, 22, 276, "MODE", receiver_gain_mode_name(receiver_gain_mode(), mode, sizeof(mode)));
+        snprintf(buf, sizeof(buf), "G%u", s_current_gain);
+        value_box(100, 34, 276, "ACTIVE GAIN", buf);
+        text(receiver_gain_mode() == GAIN_MODE_AUTO ? "AUTO FOLLOWS THE SIGNAL (V6)" : "FIXED GAIN, SAVED",
+             100, 47, UI_WHITE, 1);
+        break;
+    }
+    case MENU_FLYWHEEL:
+        title("SYNC FLYWHEEL", "HOLD: ON/OFF");
+        value_box(100, 22, 276, "FLYWHEEL", transport_sync_flywheel_enabled() ? "ON" : "OFF");
+        text("SAVED, APPLIES ON EXIT", 100, 36, UI_MUTED, 1);
+        text(transport_sync_flywheel_enabled() ? "FILLS SYNC WHEN THE CAMERA DROPS" :
+             "CAMERA SYNC ONLY", 100, 47, UI_WHITE, 1);
         break;
     case MENU_CALIBRATE:
         title("CALIBRATE", "HOLD: CALIBRATE NOW");
@@ -270,22 +296,42 @@ static void free_nodes(void)
     s_chunk_count = s_node_capacity = s_node_count = 0;
 }
 
-/* Count the raster, reserve exactly that (grow only), link a cycle. */
-static esp_err_t build_chain(video_standard_t standard)
+static bool s_interlaced = true;
+
+/* Count the raster, reserve exactly that (grow only), link a cycle.
+ * Interlaced first; the progressive field only when its chain cannot be
+ * reserved (half the descriptors, but not every display keeps it). */
+static esp_err_t reserve_chain(video_standard_t standard, bool interlaced, unsigned *required)
 {
-    menu_raster_init(&s_raster, standard);
-    unsigned required = 0;
-    if (!menu_raster_emit(&s_raster, standard, count_segment, &required) || !required) return ESP_ERR_INVALID_SIZE;
-    unsigned chunks = (required + NODE_CHUNK - 1u) / NODE_CHUNK;
+    menu_raster_init(&s_raster, standard, interlaced);
+    *required = 0;
+    if (!menu_raster_emit(&s_raster, standard, interlaced, count_segment, required) || !*required)
+        return ESP_ERR_INVALID_SIZE;
+    unsigned chunks = (*required + NODE_CHUNK - 1u) / NODE_CHUNK;
     while (s_chunk_count < chunks) {
-        dma_descriptor_t *c = heap_caps_aligned_alloc(64u, NODE_CHUNK * sizeof(dma_descriptor_t),
+        dma_descriptor_t *c = heap_caps_aligned_alloc(4u, NODE_CHUNK * sizeof(dma_descriptor_t),
                                                       MALLOC_CAP_DMA_DESC_AHB | MALLOC_CAP_INTERNAL);
         if (!c) return ESP_ERR_NO_MEM;
         s_chunks[s_chunk_count++] = c;
         s_node_capacity += NODE_CHUNK;
     }
+    return ESP_OK;
+}
+
+static esp_err_t build_chain(video_standard_t standard)
+{
+    unsigned required = 0;
+    bool interlaced = true;
+    esp_err_t err = reserve_chain(standard, true, &required);
+    if (err == ESP_ERR_NO_MEM) {
+        interlaced = false;
+        err = reserve_chain(standard, false, &required);
+        if (err == ESP_OK) printf("[MENU] progressive fallback: interlaced chain did not fit\n");
+    }
+    if (err != ESP_OK) return err;
+    s_interlaced = interlaced;
     s_node_count = 0;
-    if (!menu_raster_emit(&s_raster, standard, append_segment, NULL) || s_node_count != required)
+    if (!menu_raster_emit(&s_raster, standard, interlaced, append_segment, NULL) || s_node_count != required)
         return ESP_ERR_INVALID_SIZE;
     for (unsigned k = 0; k < s_node_count; ++k) node(k)->next = node((k + 1u) % s_node_count);
     s_video_std = standard;
@@ -295,28 +341,56 @@ static esp_err_t build_chain(video_standard_t standard)
     return ESP_OK;
 }
 
+static esp_err_t s_entry_err;
+static unsigned s_entry_before;
+static bool entry_build(void)
+{
+    s_entry_err = build_chain(menu_standard());
+    if (s_entry_err == ESP_OK) return true;
+    ESP_LOGE("menu", "unavailable: %s (internal free=%u dma_before_release=%u dma_free=%u dma_largest=%u chunks=%u)",
+             esp_err_to_name(s_entry_err), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             s_entry_before, (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA_DESC_AHB | MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA_DESC_AHB | MALLOC_CAP_INTERNAL),
+             s_chunk_count);
+    return false;
+}
+/* A short flat DAC level without sync between live video and the menu
+ * raster (both ways): the goggle drops its lock on the camera timing and
+ * locks fresh, instead of showing the menu briefly, inverting and going
+ * black (operator, 2026-10-18). Not in flight: only menu/status entry. */
+#define MENU_RELOCK_GAP_MS 150u
+
+static void entry_start(void)
+{
+    s_menu_active = true;
+    transport_stop_tx();
+    vTaskDelay(pdMS_TO_TICKS(MENU_RELOCK_GAP_MS));
+    transport_start_chain(node(0));
+}
+static const menu_entry_ops_t s_entry_ops = {
+    transport_sync_live_hold, transport_sync_live_release, entry_build, free_nodes, entry_start,
+};
+static menu_entry_t s_last_entry = MENU_ENTRY_OPENED;
+bool menu_open_busy(void) { return s_last_entry == MENU_ENTRY_BUSY; }
+
 bool menu_open(void)
 {
     if (s_menu_active) return true;
     /* Allocate and render before touching live video: if memory is short,
-     * flight video keeps running. */
-    esp_err_t err = build_chain(menu_standard());
-    if (err != ESP_OK) {
-        ESP_LOGE("menu", "unavailable: %s (internal free=%u)", esp_err_to_name(err),
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-        free_nodes();
-        return false;
-    }
-    s_menu_active = true;
-    transport_stop_tx();
-    transport_start_chain(node(0));
-    return true;
+     * flight video keeps running. The flywheel observer/output must be
+     * released first and checked (menu_entry.h): a busy PHY refuses the
+     * menu for now instead of allocating next to a live output owner. */
+    s_entry_before = (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA_DESC_AHB | MALLOC_CAP_INTERNAL);
+    s_last_entry = menu_entry_open(&s_entry_ops);
+    if (s_last_entry == MENU_ENTRY_BUSY) printf("[MENU] deferred: sync release waits for the PHY; live video kept\n");
+    return s_last_entry == MENU_ENTRY_OPENED;
 }
 
 void menu_close(void)
 {
     if (!s_menu_active) return;
     transport_stop_chain();
+    vTaskDelay(pdMS_TO_TICKS(MENU_RELOCK_GAP_MS));
     transport_resume_live();
     free_nodes();       /* GDMA no longer references the chain */
     s_menu_active = false;
@@ -335,3 +409,4 @@ void menu_set_standard_mode(std_mode_t mode)
     if (build_chain(want) != ESP_OK) ESP_ERROR_CHECK(build_chain(previous));
     transport_start_chain(node(0));
 }
+

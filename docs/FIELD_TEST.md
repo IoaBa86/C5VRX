@@ -202,3 +202,18 @@ replacement is the optional live profile switch (`A`, default on): set it
 OFF for an A/B that must keep one profile. There are no physical measurements
 attached to this diagnostic fix; the underlying RF/FM/DSP/output cause remains
 unresolved until those captures exist.
+
+## PR #212 boot, menu and flywheel checks
+
+Record the exact flashed commit/artifact and its checksum. Start with GAIN
+AUTO (Direct Gain V6 carrier memory) and FLYWHEEL OFF; these are the defaults
+without valid saved settings. Check boot, USB/status responsiveness and zero
+transport faults. Cycle GAIN (`G`) through AUTO/MAX/fixed and verify reboot
+persistence, then restore AUTO. Toggle FLYWHEEL (`U`) ON/OFF and check saved
+state, clean teardown and ordinary live output after OFF.
+Open and exit NTSC/PAL menus with flywheel OFF and ON: entry must release the
+observer/output before allocating 384-byte internal DMA chunks. Interlaced
+needs about 18/22 KiB, progressive fallback about 9/11 KiB; log heap/free
+block sizes and any deferred/refused entry. Verify the actual monitor picture.
+Board logs and host tests alone do not establish camera lock or range gain.
+See [PR212](PR212.md); final cleaned-build hardware validation is still pending.

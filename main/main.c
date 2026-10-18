@@ -20,11 +20,16 @@ void app_main(void)
     /* The console first: flashing (download key) and diagnostics must stay
      * reachable whatever a later boot step does. */
     console_start();
+    if(!control_prepare()) {
+        s_boot_stage="control_memory";
+        printf("CONTROL stack reservation failed; USB status/download remain available\n");
+        return;
+    }
     s_boot_stage = "rf";
     ESP_ERROR_CHECK(rf_start());
     s_boot_stage = "settings";
     settings_load();
-    /* Start at the first index of the highest RF stage; Direct Gain V5 takes
+    /* Start at the first index of the highest RF stage; Direct Gain V6 takes
      * over at once (table maximum without a carrier). */
     receiver_set_gain(arc_gain_highest_rf_stage_start(rf_gain_table()));
     s_boot_stage = "calibration";
@@ -43,6 +48,6 @@ void app_main(void)
     receiver_start();
     control_start();
     s_boot_stage = "ready";
-    printf("C5VRX5 %s ready: %s %u MHz, U85Q, ultrafine IQ, Direct Gain V5 ('h' for keys)\n",
+    printf("C5VRX5 %s ready: %s %u MHz, U85Q, ultrafine IQ, Direct Gain V6 ('h' for keys)\n",
            esp_app_get_description()->version, rf_channel()->name, rf_frequency_mhz());
 }

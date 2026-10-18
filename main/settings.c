@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include "nvs.h"
 #include "rf.h"
+#include "output_level.h"
 
 #define NAMESPACE "c5vrx5"
 #define SETTINGS_VERSION 1u
@@ -46,8 +47,41 @@ void settings_save(void)
 
 void settings_load(void)
 {
+    /* Independent key preserves the existing channel/standard blob format. */
+    uint8_t output;
+    if (blob_load("output", &output, sizeof(output)) && output < OUTPUT_LEVELS)
+        (void)transport_set_output(output);
+    uint8_t gain_mode;
+    if (blob_load("gain_mode", &gain_mode, sizeof(gain_mode))) receiver_set_gain_mode(gain_mode, false);
+    uint8_t flywheel;
+    if (blob_load("flywheel", &flywheel, sizeof(flywheel)) && flywheel <= 1u)
+        transport_sync_flywheel_set_boot(flywheel != 0u);
     settings_t s;
     if (!blob_load("settings", &s, sizeof(s)) || s.version != SETTINGS_VERSION) return;
     if (s.channel < FPV_CHANNELS) (void)rf_set_channel(s.channel);
     if (s.std_mode <= STD_MODE_PAL) s_std_mode = (std_mode_t)s.std_mode;
+}
+
+void settings_save_output(unsigned level)
+{
+    if (level >= OUTPUT_LEVELS) return;
+    const uint8_t output = (uint8_t)level;
+    uint8_t old;
+    if (blob_load("output", &old, sizeof(old)) && old == output) return;
+    (void)blob_store("output", &output, sizeof(output));
+}
+
+void settings_save_gain_mode(uint8_t mode)
+{
+    uint8_t old;
+    if (blob_load("gain_mode", &old, sizeof(old)) && old == mode) return;
+    (void)blob_store("gain_mode", &mode, sizeof(mode));
+}
+
+void settings_save_flywheel(bool on)
+{
+    const uint8_t value = on ? 1u : 0u;
+    uint8_t old;
+    if (blob_load("flywheel", &old, sizeof(old)) && old == value) return;
+    (void)blob_store("flywheel", &value, sizeof(value));
 }

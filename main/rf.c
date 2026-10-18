@@ -7,10 +7,11 @@
 #include <string.h>
 #include "driver/gpio.h"
 #include "esp_event.h"
+#include "esp_attr.h"
 #include "esp_log.h"
-#include "esp_netif.h"
 #include "esp_rom_gpio.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -108,7 +109,10 @@ static esp_err_t route_modem_iq(unsigned lane)
 esp_err_t rf_set_lane(unsigned lane)
 {
     if (lane >= RF_LANES) return ESP_ERR_INVALID_ARG;
-    return route_modem_iq(lane);
+    phy_begin();
+    esp_err_t result=route_modem_iq(lane);
+    phy_end();
+    return result;
 }
 
 unsigned rf_lane(void) { return s_lane; }
@@ -182,8 +186,8 @@ esp_err_t rf_start(void)
         if (err == ESP_OK) err = nvs_flash_init();
     }
     if (err != ESP_OK) return err;
-    err = esp_netif_init();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
+    /* No esp_netif_init: no network interface exists, and its TCP/IP task
+     * (3 KiB stack plus queues) took heap the menu needs. */
     err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
     /* sta_disconnected_pm must be off: Wi-Fi power management would gate
@@ -242,6 +246,7 @@ bool rf_set_gain(uint8_t gain, uint32_t expected_generation)
      * nothing but would leave debug mode for ~2 us: skip it (V5 used to
      * re-write the same gain 50-100 times a second; seen as rolling). */
     if (gain == s_gain && phy_dco_held()) { phy_end_actuator(); return true; }
+    phy_observation_changed();
     (void)phy_dco_release();          /* a held hold keeps PBUS in debug mode */
     phy_force_rx_gain(true, gain);
     s_gain = gain;
