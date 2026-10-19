@@ -1067,3 +1067,31 @@ snapshot into a range limit (required C/N, 20.7 MHz chip channel).
   - A fixed release level under the receiver-noise peaks (P95 15-19 at G83)
     held the gain a step below the maximum.
   - P95 alone as an attack trigger stepped down at the edge on noise.
+
+## The whole chain against an absolute reference (2026-10-19, PR #226)
+
+The question: the C5VRX loses range against an RX5808, so where between
+antenna pin and goggle are dB lost? Every step was measured against the Wi-Fi
+PHY's own calibrated per-packet RSSI and noise floor (research/nfprobe,
+research/wifi_reference_snr.py).
+
+| step | measurement | loss |
+| --- | --- | --- |
+| chip front end (Wi-Fi mode) | noise floor -94..-96 dBm per 20 MHz from 5180 to 5845 MHz; packets decoded to -97 dBm | none: NF ~6 dB |
+| our receive state (forced G83, AGC off, dump, clocks, IQ and DAC pins) | C5VRX tuned to 5180 MHz; RSSI histogram (vendor AGC, 3 s) interleaved with IQ snapshots at G83 | none within ~1-2 dB |
+| self-desense (each ingredient alone) | weak packets still decoded to -93..-96 dBm with IQ pins, all clocks, dump, DAC pins | none visible (traffic limits it to a few dB) |
+| 4-bit IQ, U85Q, DAC | bit-exact model against an analog limiter-discriminator, same signals | none: the goggle holds ~1 dB lower, the picture is 4-7 dB cleaner |
+| field edge captures | the picture went at -1..+4 dB C/N, where the model loses it | as modelled |
+
+How the receive-state check works:
+- The vendor AGC's RSSI histogram had its bulk at -94..-85 dBm (mode -91).
+- In our IQ at G83 those packets form a cluster 6-7 dB over our noise
+  (4.93 cells^2, NBW 13.6 MHz).
+- The expected value from the PHY's -168 dBm/Hz is +6.3 dB.
+
+**Result:** the chain from antenna pin to video reaches about -93 dBm (NF 6 dB,
+~1.5 dB C/N in 20.7 MHz), RX5808 class or better. With this calibration,
+4.93 cells^2 at G83 is -96.7 dBm, so the receiver can report the absolute
+carrier power at its pin. Range lost against an RX5808 at equal distance is
+signal that never reaches the pin: that is the next measurement (VTX at a
+known distance and power against free space; FPV channel by channel).
