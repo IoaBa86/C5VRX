@@ -17,7 +17,7 @@ const MAGIC_BLOCK = 0x424c3543;
 const MAGIC_SNAP = 0x534c3543;
 
 export const EVENTS = { 1: 'channel', 2: 'profile', 3: 'kp', 4: 'cal_start', 5: 'cal_end', 6: 'dc_cal_needed',
-  7: 'gain_mode', 8: 'menu', 9: 'fault', 10: 'dropout', 11: 'recovered', 12: 'snapshot', 13: 'dropped' };
+  7: 'gain_mode', 8: 'menu', 9: 'fault', 10: 'dropout', 11: 'recovered', 12: 'snapshot', 13: 'dropped', 14: 'attack' };
 export const DROPOUT = ['CALIBRATION_OR_PHY', 'FAST_EVIDENCE_LOSS', 'AT_RF_FLOOR', 'DEMOD_CLIFF', 'UNKNOWN'];
 export const SPHASE = ['unverified', 'settled', 'drifted', 'unsettled', 'noise_limited', 'probe_failed'];
 export const PROFILES = ['DEFAULT', 'MATCHED', 'NARROW', 'WIDE'];

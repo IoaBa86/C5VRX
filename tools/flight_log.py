@@ -30,7 +30,7 @@ CRC_AT = SECTOR - 4
 MAGIC_BLOCK, MAGIC_SNAP = 0x424C3543, 0x534C3543
 
 EVENTS = {1: 'channel', 2: 'profile', 3: 'kp', 4: 'cal_start', 5: 'cal_end', 6: 'dc_cal_needed', 7: 'gain_mode',
-          8: 'menu', 9: 'fault', 10: 'dropout', 11: 'recovered', 12: 'snapshot', 13: 'dropped'}
+          8: 'menu', 9: 'fault', 10: 'dropout', 11: 'recovered', 12: 'snapshot', 13: 'dropped', 14: 'attack'}
 DROPOUT = ['CALIBRATION_OR_PHY', 'FAST_EVIDENCE_LOSS', 'AT_RF_FLOOR', 'DEMOD_CLIFF', 'UNKNOWN']
 SPHASE = ['unverified', 'settled', 'drifted', 'unsettled', 'noise_limited', 'probe_failed']
 PROFILES = ['DEFAULT', 'MATCHED', 'NARROW', 'WIDE']
