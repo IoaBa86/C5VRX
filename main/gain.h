@@ -126,6 +126,11 @@ typedef struct {
     uint8_t anchor_gain;
     uint64_t anchor_us, carrier_us, climb_us;
     uint32_t anchor_returns, climbs;
+    /* V7 (gain.c): model gain per table step, peak memory, write pacing. */
+    int16_t model_db_q8[DG_STATES];
+    uint8_t peak_p95[32];         /* highest P95 per 2 ms over 64 ms */
+    uint8_t peak_i;
+    uint64_t peak_since_us, peak_bucket_us, up_after_us, down_after_us;
     uint32_t magic;
 } direct_gain_t;
 
