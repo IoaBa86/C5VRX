@@ -34,7 +34,7 @@ uint8_t receiver_gain_mode(void) { return s_gain_mode; }
 
 void receiver_set_gain_mode(uint8_t mode, bool save)
 {
-    if (mode != GAIN_MODE_AUTO && mode != GAIN_MODE_MAX && (mode < 20u || mode > ARC_VENDOR_GAIN_MAX)) return;
+    if (mode != GAIN_MODE_AUTO && mode != GAIN_MODE_MAX && (mode < 2u || mode > ARC_VENDOR_GAIN_MAX)) return;
     s_gain_mode = mode;
     if (save) settings_save_gain_mode(mode);
     if (save) flightlog_event(FLOG_E_GAIN_MODE, &mode, 1);
@@ -57,9 +57,55 @@ const char *receiver_gain_mode_name(uint8_t mode, char *buf, unsigned size)
     return buf;
 }
 
+/* Bench (console Q): the real gain step between neighbouring table rows.
+ * The gain alternates between rows hi and hi-1 every PAIR_SWITCH_OBS
+ * observations (~5 ms), so both see the same carrier however it fades, and
+ * the ratio of their mean probe powers is the real step. Each pair runs
+ * PAIR_OBS observations (~1 s), then hi moves down one row, G83 to G3.
+ * Probes within 600 us of a write, clipping or folding are left out. One
+ * GPAIR line per pair; research/gain_step_measure.py chains them. */
+#define PAIR_SWITCH_OBS 25u
+#define PAIR_OBS        5000u
+static volatile bool s_pair_active;
+static uint8_t s_pair_hi;
+static uint32_t s_pair_obs, s_pair_n[2], s_pair_skip[2];
+static uint64_t s_pair_sum[2];
+static int64_t s_pair_last_write_us;
+static uint8_t s_pair_last_gain;
+void receiver_pair_sweep_toggle(void)
+{
+    if (s_pair_active) { s_pair_active = false; printf("GPAIR stopped\n"); return; }
+    s_pair_hi = rf_gain_table()->max_index;
+    s_pair_obs = 0;
+    memset(s_pair_n, 0, sizeof(s_pair_n)); memset(s_pair_skip, 0, sizeof(s_pair_skip)); memset(s_pair_sum, 0, sizeof(s_pair_sum));
+    s_pair_active = true;
+    printf("GPAIR start hi=%u (keep the VTX still; ~%u s)\n", s_pair_hi, (unsigned)s_pair_hi);
+}
+static uint8_t pair_decision(const dg_observation_t *o)
+{
+    const int64_t now = esp_timer_get_time();
+    if (s_current_gain != s_pair_last_gain) { s_pair_last_gain = s_current_gain; s_pair_last_write_us = now; }
+    const int side = s_current_gain == s_pair_hi ? 0 : s_current_gain == (uint8_t)(s_pair_hi - 1u) ? 1 : -1;
+    if (side >= 0) {
+        const bool folded = (o->rails & 3u) == 3u || (o->rails & 12u) == 12u;
+        if (now - s_pair_last_write_us < 600 || o->clip_pm >= 20u || folded) ++s_pair_skip[side];
+        else { s_pair_sum[side] += o->pwr_x16; ++s_pair_n[side]; }
+    }
+    if (++s_pair_obs >= PAIR_OBS) {
+        printf("GPAIR hi=%u lo=%u sum_hi=%llu n_hi=%lu skip_hi=%lu sum_lo=%llu n_lo=%lu skip_lo=%lu\n", s_pair_hi,
+               s_pair_hi - 1u, (unsigned long long)s_pair_sum[0], (unsigned long)s_pair_n[0], (unsigned long)s_pair_skip[0],
+               (unsigned long long)s_pair_sum[1], (unsigned long)s_pair_n[1], (unsigned long)s_pair_skip[1]);
+        s_pair_obs = 0;
+        memset(s_pair_n, 0, sizeof(s_pair_n)); memset(s_pair_skip, 0, sizeof(s_pair_skip)); memset(s_pair_sum, 0, sizeof(s_pair_sum));
+        if (--s_pair_hi < 3u) { s_pair_active = false; printf("GPAIR done\n"); return s_current_gain; }
+    }
+    return (s_pair_obs / PAIR_SWITCH_OBS) & 1u ? (uint8_t)(s_pair_hi - 1u) : s_pair_hi;
+}
+
 /* Fixed modes bypass the controller; apply_target clamps to the live table. */
 static uint8_t gain_decision(const dg_observation_t *o)
 {
+    if (s_pair_active) return pair_decision(o);
     const uint8_t mode = s_gain_mode;
     if (mode == GAIN_MODE_AUTO) return dg_tick(&s_gain, o);
     const uint8_t target = mode == GAIN_MODE_MAX ? rf_gain_table()->max_index : mode;
