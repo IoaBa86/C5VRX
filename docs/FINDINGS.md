@@ -1027,3 +1027,43 @@ snapshot into a range limit (required C/N, 20.7 MHz chip channel).
   locked (`lock_rx_only`), so they are external. 51 snapshots on A1, A4 and
   A8 at G83 held none: rare. The blackbox overload snapshots will show their
   rate, length and channel.
+
+## Direct Gain V7: a peak AGC (2026-10-19, PR #226)
+
+- **Blackbox, VTX on, handheld (session 13):** close in at a C/N estimate of
+  15-20 dB the V6 gain swung 10-30 steps within a second with 255+ writes and
+  overloads; sync fell to 60-80 % in those seconds (94-95 % in calm ones).
+  At the range edge the gain sat at G66-G81.
+- **Front end:** the RF/LNA stage is 8 (the highest) over G54-G83, and the
+  noise follows the baseband gain (-4.4..-4.9 dB per 5-6 steps) down to the
+  quantisation floor (~0.3 cells at G60). The noise is set before the
+  baseband: no range is hidden in another gain split.
+- **Cause in V6:** the healthy band reached P50 32 (radius 5.7 cells, ~2.5 dB
+  under the rails), so multipath clipped, the emergency drop overshot, the
+  next window read weak and the climb (8 steps per 3 ms) folded again; and
+  2 % of clipping without a rail-side check also lowered the gain.
+- **V7 (gain.c):** the classic radio AGC on envelope peaks.
+  - Attack only on folding: two-sided clipping in two probes, or 1 ms of
+    saturation.
+  - Release only when the highest P95 of a 16 ms memory leaves room under
+    the target (P95 30). Steps come from a tuple gain model.
+- **Model (test_gain_track: Rician/Rayleigh at 30 Hz, Gaussian noise peaks
+  as on the board, each write 0.4 ms of garbage):**
+
+  | metric | V6 | V7 |
+  | --- | ---: | ---: |
+  | close in, picture SNR >= 10 dB | 93.5 % | 94.1 % |
+  | Rayleigh fading | 87.3 % | 87.0 % |
+  | mid range | 94.5 % | 94.7 % |
+  | usable edge (~3 dB C/N), above threshold | 38.3 % | 39.8 % |
+  | writes per second, close in / edge | 122 / 90 | 46 / 29 |
+
+  A 30 ms multipath null takes 3 writes instead of 10.
+- **Conclusion:** the gain loop is not where range is lost (1.5 points at the
+  edge); V7 is about stability close in. Board, VTX off: G83 with 0 writes
+  in 2 minutes. Carrier test pending.
+- **Tuning lessons:**
+  - A level loop on a mean followed every fade both ways.
+  - A fixed release level under the receiver-noise peaks (P95 15-19 at G83)
+    held the gain a step below the maximum.
+  - P95 alone as an attack trigger stepped down at the edge on noise.

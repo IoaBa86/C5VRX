@@ -1,4 +1,4 @@
-/* C5VRX-5 by Twotoz and the C5VRX contributors: Direct Gain V6 core.
+/* C5VRX-5 by Twotoz and the C5VRX contributors: Direct Gain core (V7 decision: peak AGC; measurement and map from V3-V6).
  * Ported from legacy/c5vrx4/main/direct_gain_v3.c (PR #190) with the fixed-lane,
  * staged-recovery, boost-off configuration that ran on the board (V5), plus
  * the V6 carrier memory described in gain.h. */
@@ -604,7 +604,19 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
  *   2 dB C/N at G83, 3 dB at G72-78, 4 dB at G66).
  * Steps use the model gain per table step: 6 dB per RF stage, 6 dB per
  * baseband doubling, 0.83 dB per fine step (the board's noise fell 4.4-4.9
- * dB per 5-6 steps, 2026-10-19). test/test_gain_track.c compares V6. */
+ * dB per 5-6 steps, 2026-10-19).
+ *
+ * Parameters from sweeps in test/test_gain_track.c (Rician K 3 and
+ * Rayleigh at 30 Hz, Gaussian noise peaks P95 ~ 4.3 x P50 as on the board,
+ * picture SNR with each write costing 0.4 ms): peak memory 16 ms, target
+ * P95 30, release below 26 (a gain step must leave the peaks under the
+ * target), up to 6 steps. Against V6: close in 94.1 vs 93.5 % of the time
+ * at >= 10 dB, Rayleigh 87.0 vs 87.3, mid range 94.7 vs 94.5, at the usable
+ * edge (~3 dB C/N) above the threshold 39.8 vs 38.3 % of the time, with
+ * 46 / 29 instead of 122 / 90 writes a second close in / at the edge. The
+ * gain loop is not where range is lost: the edge differs by 1.5 points.
+ * A fixed release far under the target (18-22) left the gain a step below
+ * the maximum on receiver noise alone (board, P95 15-19 at G83). */
 #ifndef DG7_ATTACK_P95
 #define DG7_ATTACK_P95 56u      /* radius ~7.5: the rails */
 #endif
@@ -612,13 +624,13 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
 #define DG7_FOLD_PM 20u      /* two-sided clipping per mille that starts a fold */
 #endif
 #ifndef DG7_TARGET_P95
-#define DG7_TARGET_P95 36u      /* radius ~6: ~2 dB below them */
+#define DG7_TARGET_P95 30u      /* radius ~5.5: ~3 dB below them, inside the deviation gate (profile_logic.h, P50 <= 32) */
 #endif
 #ifndef DG7_RELEASE_P95
-#define DG7_RELEASE_P95 22u      /* radius ~4.7: ~4 dB below the target */
+#define DG7_RELEASE_P95 26u      /* one step under the target: above the noise peaks at G83 (P95 15-19) */
 #endif
 #ifndef DG7_HOLD_US
-#define DG7_HOLD_US 64000u   /* peak memory */
+#define DG7_HOLD_US 16000u   /* peak memory */
 #endif
 #define DG7_BUCKET_US    2000u
 #define DG7_BUCKETS      (DG7_HOLD_US / DG7_BUCKET_US)
@@ -626,7 +638,7 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
 #define DG7_STEP_PCT 70
 #endif
 #ifndef DG7_UP_MAX
-#define DG7_UP_MAX 3
+#define DG7_UP_MAX 6
 #endif
 #ifndef DG7_UP_GAP_US
 #define DG7_UP_GAP_US 8000u
@@ -748,12 +760,16 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
         return start_write(g, o, &prior, target);
     }
     /* Release: only after a full peak memory below the release level. */
-    if (peak < DG7_RELEASE_P95 && now - g->peak_since_us >= DG7_HOLD_US && now >= g->up_after_us &&
-        g->current_gain < g->table.max_index) {
+    /* Far below (6 dB under the release level) is no null any more but a
+     * carrier gone weaker or gone: half the memory, twice the step. */
+    const bool far = peak * 4u < DG7_RELEASE_P95;
+    if (peak < DG7_RELEASE_P95 && now - g->peak_since_us >= (far ? DG7_HOLD_US / 2u : DG7_HOLD_US) &&
+        now >= g->up_after_us && g->current_gain < g->table.max_index) {
         delta = (power_db_q8(DG7_TARGET_P95) - power_db_q8(peak ? peak : 1u)) * DG7_STEP_PCT / 100;
         uint8_t target = dg7_index_for(g, g->current_gain, delta);
         if (target <= g->current_gain) target = (uint8_t)(g->current_gain + 1u);
-        if (target > g->current_gain + DG7_UP_MAX) target = (uint8_t)(g->current_gain + DG7_UP_MAX);
+        const unsigned up_max = far ? 2u * DG7_UP_MAX : DG7_UP_MAX;
+        if (target > g->current_gain + up_max) target = (uint8_t)(g->current_gain + up_max);
         if (target > g->table.max_index) target = g->table.max_index;
         g->up_after_us = now + DG7_UP_GAP_US;
         ++g->writes_moderate;

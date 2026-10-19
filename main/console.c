@@ -38,7 +38,7 @@ void firmware_print(void)
 static void status(void)
 {
     firmware_print();
-    printf("C5VRX5 version=%s demod=U85Q_1a09f5c092e8 lane=ultrafine gain_owner=direct_gain_v6 "
+    printf("C5VRX5 version=%s demod=U85Q_1a09f5c092e8 lane=ultrafine gain_owner=direct_gain_v7 "
            "uptime_s=%lld heap_internal=%u heap_largest=%u heap_dma=%u heap_dma_largest=%u heap_lp=%u fw=%s\n",
            esp_app_get_description()->version,
            esp_timer_get_time() / 1000000, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -93,7 +93,7 @@ static void help(void)
            "  K kp ladder OFF -> AUTO kp -> AUTO kp+LP (brief restarts), k/j kp calmer/faster, P U85Q/U85Q-LP\n"
            "    (k/j/P save AUTO OFF; fresh settings default to AUTO kp+LP),\n"
            "  g OUTPUT 0.5x..5.0x in 0.5x steps (saved after application; restored at boot),\n"
-           "  G RX gain AUTO (Direct Gain V6) -> MAX -> fixed G78..G24 (saved; restored at boot),\n"
+           "  G RX gain AUTO (Direct Gain V7 peak AGC) -> MAX -> fixed G78..G24 (saved; restored at boot),\n"
            "  A live VTX profile switch on/off (continuous matching every 30 s; off = report only),\n"
            "  U sync flywheel ON/OFF (saved; menu FLYWHEEL; default ON),\n"
            "  I IQ snapshot, o menu open/close, n/x menu next/select, c next channel, b next band, s scan,\n"

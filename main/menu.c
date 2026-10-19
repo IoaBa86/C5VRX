@@ -244,7 +244,7 @@ void menu_render(void)
         value_box(100, 22, 276, "MODE", receiver_gain_mode_name(receiver_gain_mode(), mode, sizeof(mode)));
         snprintf(buf, sizeof(buf), "G%u", s_current_gain);
         value_box(100, 34, 276, "ACTIVE GAIN", buf);
-        text(receiver_gain_mode() == GAIN_MODE_AUTO ? "AUTO FOLLOWS THE SIGNAL (V6)" : "FIXED: COSTS RANGE, USE AUTO",
+        text(receiver_gain_mode() == GAIN_MODE_AUTO ? "AUTO FOLLOWS THE SIGNAL (V7)" : "FIXED: COSTS RANGE, USE AUTO",
              100, 47, UI_WHITE, 1);
         break;
     }
