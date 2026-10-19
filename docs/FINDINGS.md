@@ -1155,3 +1155,26 @@ it used fewer writes but over more rows.
 
 **CI.** A host-test line `cc ... && ./t` let a failed compile pass, because
 `-e` ignores failures inside an `&&` list. Each compile is now its own line.
+
+## First KEEL-1 board session and the real RF stage gains (2026-10-19)
+
+Blackbox session 24: KEEL-1, VTX close, hand on the antenna, -25..-56 dBm
+at the pin.
+
+- **Close in the gain hunted:** G7-G61 within a second, 255 writes and
+  overloads in about half the seconds, picture SNR 0-8 dB at C/N >= 20 dB.
+- **After the carrier arrived or left at G79/G83:**
+  - those rows held 2-3 cells of DC (IQ snapshots);
+  - the picture was gone for 19 s.
+  - Cause: observer windows with the carrier folding fed the DC servo. Fixed
+    by keeping windows that reach both rails of an axis out of the servo
+    (T: `DC_FEED rejected_folded`).
+- **The model's RF stage steps are wrong:**
+  - IQ snapshots at fixed gains (`research/gain_step_measure.py`), VTX at
+    ~2 m: G42 -> G36 (RF stage 5 -> 4) is about -13.5 dB, the model says
+    -3.3 dB.
+  - An overload snapshot at G2 read ~10 dB above the model.
+  - Close in KEEL-1 (and V6/V7) computed steps with the wrong size: the
+    hunting. Above G54 (one RF stage) the model holds.
+- **Next:** measure every RF stage with the VTX at ~0.3 m and ~8 m, give the
+  gain core a measured per-row table, and repeat the session.
