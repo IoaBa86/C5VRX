@@ -263,6 +263,7 @@ int receiver_obs_cn_x10(void)
  * rows; the servo restarts a row whose codes it changed. The observer is
  * the only writer. */
 typedef struct { int64_t si, sq; uint32_t samples; } dc_row_acc_t;
+static uint32_t s_dc_rejected_folded;   /* windows kept out of the DC means (both rails) */
 static dc_row_acc_t s_dc_rows[ARC_VENDOR_GAIN_MAX + 1u];
 static uint32_t s_dc_rows_control, s_dc_rows_phy, s_dc_rows_table;
 static portMUX_TYPE s_dc_acc_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -270,6 +271,14 @@ static void dc_accumulate(const dg_observation_t *o, size_t bytes, uint8_t gain,
                           uint32_t table)
 {
     if (gain > ARC_VENDOR_GAIN_MAX) return;
+    /* A window that reaches both rails of an axis holds a carrier folding
+     * through the 4-bit window: its mean is no DC. Blackbox session 24 (VTX
+     * close, a hand on the antenna): such windows at G79/G83, as the carrier
+     * arrived or left before the gain moved, walked those rows' trims by up
+     * to 88 codes; the rows then sat at 2-3 cells of DC (IQ snapshots) and
+     * the picture was gone for 19 s. One rail per axis is the DC itself and
+     * still counts. */
+    if ((o->rails & 3u) == 3u || (o->rails & 12u) == 12u) { ++s_dc_rejected_folded; return; }
     taskENTER_CRITICAL(&s_dc_acc_lock);
     if (s_dc_rows_control != control || s_dc_rows_phy != phy || s_dc_rows_table != table) {
         memset(s_dc_rows, 0, sizeof(s_dc_rows));
@@ -483,6 +492,8 @@ void receiver_print(void)
         printf("RX_LEVEL unknown probes=%lu clipped_pm=%u\n", (unsigned long)lv.probes, lv.clipped_pm);
     printf("GAIN_SAT one_sided=%lu two_sided=%lu to_dc_servo=%lu (saturated observer windows: one rail per axis = DC-pushed, both = large signal; one-sided ones go to the DC servo, not the gain)\n",
            (unsigned long)s_sat_one_sided, (unsigned long)s_sat_two_sided, (unsigned long)s_gain.one_sided_clips);
+    printf("DC_FEED rejected_folded=%lu (observer windows reaching both rails of an axis: a folding carrier, kept out of the DC servo)\n",
+           (unsigned long)s_dc_rejected_folded);
     printf("CN_OBSERVER windows=%lu period_us=%u max_age_us=%u\n", (unsigned long)s_cn_windows,
            CN_OBSERVE_PERIOD_US, CN_OBSERVE_MAX_AGE_US);
     char mode[16];
