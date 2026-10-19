@@ -19,6 +19,8 @@
 #include "phase8_gain_lut.h"
 #include "phy.h"
 #include "rf.h"
+#include "flightlog.h"
+#include "flightlog_format.h"
 
 #define BOOT_BUTTON      GPIO_NUM_28    /* XIAO ESP32-C5 BOOT */
 #define TICK_MS          50
@@ -162,6 +164,11 @@ static int strength(const metrics_t *m, uint8_t gain)
 static void after_retune(void)
 {
     ++s_control_epoch;
+    {
+        uint8_t e[3] = {(uint8_t)rf_channel_index()};
+        flog_put16(e + 1, rf_frequency_mhz());
+        flightlog_event(FLOG_E_CHANNEL, e, sizeof(e));
+    }
     s_cfo_khz = 0;
     s_afc_locked = false;
     standard_reset();
@@ -367,6 +374,11 @@ static uint32_t afc_context(void)
     return h;
 }
 
+/* End-to-end video quality, one-second periods (video_quality.h). */
+static vq_acc_t s_vq_acc;
+static vq_t s_vq;
+static uint32_t s_vq_periods;
+
 static void control_task(void *arg)
 {
     (void)arg;
@@ -488,7 +500,9 @@ static void control_task(void *arg)
         if (window_ok) {
             r = afc2_measure(s_window, CONTROL_BYTES, c5vrx_phase8_gain_lut);
             afc2_ctrl_observe_at(&afc, &r, (uint64_t)now);
+            vq_add(&s_vq_acc, &r);
         } else afc2_ctrl_miss(&afc);   /* settle and context changes reset via afc2_ctrl_sync */
+        if (vq_close(&s_vq_acc, now, &s_vq)) ++s_vq_periods;
         if (copied) s_cfo_khz = r.porch_pairs ? r.porch_khz : 0;
         /* Burst or line timing confirmed the syncs (afc2_measure). */
         bool valid = window_ok && r.lines && r.standard && r.porch_pairs && r.sync_pairs;
@@ -654,6 +668,16 @@ void control_print_beat(void)
            profile_live_mode(), menu_status_active(), firmware_id());
 }
 
+void control_flog_afc(int16_t *offset_khz, int16_t *residual_khz, uint32_t *corrections)
+{
+    *offset_khz = (int16_t)rf_offset_khz();
+    *residual_khz = (int16_t)s_afc_evidence.residual_khz;
+    *corrections = s_afc_corrections;
+}
+
+/* End-to-end video quality of the last second (video_quality.h). */
+void control_video_quality(vq_t *out) { vTaskSuspendAll(); *out = s_vq; (void)xTaskResumeAll(); }
+
 void control_print(void)
 {
     vTaskSuspendAll();
@@ -693,5 +717,10 @@ void control_print(void)
            (unsigned long)s_ladder_ctx, (unsigned long)s_ladder_copy_fail, (unsigned long)s_ladder_stuck,
            (unsigned long)s_guard_confirms, (unsigned long)s_auto_candidate.resets, s_kp.level, s_kp.lp,
            (long)(s_kp.release_hold_us / 1000), (long)(s_kp.cn_q4 / 16));
+    vq_t vq;
+    control_video_quality(&vq);
+    printf("VIDEO_Q known=%u snr_x10=%d lines_x100=%u lines=%lu windows=%lu periods=%lu (end-to-end: sync/porch "
+           "spread of the demodulated video, last second)\n", vq.known, vq.snr_x10, vq.lines_x100,
+           (unsigned long)vq.lines, (unsigned long)vq.windows, (unsigned long)s_vq_periods);
 }
 
