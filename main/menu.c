@@ -212,8 +212,12 @@ void menu_render(void)
         snprintf(buf, sizeof(buf), "%u", ch->freq_mhz);
         text(buf, 224, 29, UI_WHITE, 2);
         text("SIGNAL", 100, 47, UI_MUTED, 1);
-        meter(156, 48, 160, s_signal_strength);
-        snprintf(buf, sizeof(buf), "%d", s_signal_strength);
+        meter(156, 48, 120, s_signal_strength);
+        {   /* the level at the chip pin (rx_level.h) */
+            const rx_level_t lv = receiver_level();
+            if (lv.valid && lv.above_noise) snprintf(buf, sizeof(buf), "%d DBM", (lv.carrier_dbm_x10 - 5) / 10);
+            else snprintf(buf, sizeof(buf), lv.valid ? "NOISE" : "--");
+        }
         text_right(buf, 376, 47, UI_WHITE);
         break;
     case MENU_SCAN:

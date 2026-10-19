@@ -203,6 +203,9 @@ const char *calibration_filter_result(void);
 int calibration_filter_class_mhz(void);
 /* C/N model of the latest observer window; CN_UNKNOWN_X10 on a fixed IQ point. */
 int receiver_obs_cn_x10(void);
+#include "rx_level.h"
+void receiver_level_roll(bool no_carrier);   /* 1 Hz, the supervisor (diag.c) */
+rx_level_t receiver_level(void);    /* last full second */
 unsigned calibration_narrow_width_khz(void);   /* measured -3 dB width, 0 = none */
 const char *calibration_sphase_state(void);
 bool calibration_sphase_settled(void);

@@ -1095,3 +1095,23 @@ How the receive-state check works:
 carrier power at its pin. Range lost against an RX5808 at equal distance is
 signal that never reaches the pin: that is the next measurement (VTX at a
 known distance and power against free space; FPV channel by channel).
+
+## Received level at the chip pin (RX_LEVEL, 2026-10-19)
+
+`main/rx_level.h`, host test `test/test_rx_level.c`. Shown in console `T`
+(`RX_LEVEL carrier_dbm=...`) and on the menu's CHANNEL page.
+
+- **What it reads:** the absolute carrier level at the chip pin in dBm.
+- **How:** every observer probe's DC-removed mean power is referred to the
+  pin with the Direct Gain model, then calibrated against the Wi-Fi PHY
+  (4.76 cells^2 of thermal noise at G83 = -96.7 dBm).
+- **Accuracy:** +-1 dB over G54-G83 (one RF stage, the checked model). Below
+  G54 the RF stage steps are model values, flagged `exact=0`.
+- **Noise:** learned per channel with no carrier at the table maximum. At
+  5865 MHz (A1) it reads -95.0 dBm, 1.7 dB above the 5180 MHz calibration.
+  A1 is at the top of the C5's documented range.
+
+**Use:** a VTX at a known distance and power against free space gives the
+dB lost before the chip. For example, 25 mW with 2 dBi each side over 10 m at
+5.8 GHz is ~-50 dBm. To stay in the exact range (below about -67 dBm at G54),
+test far enough away or at the lowest VTX power.

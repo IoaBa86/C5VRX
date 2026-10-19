@@ -174,6 +174,15 @@ static dg_observation_t measure(const uint8_t *samples, size_t bytes,
     r.sum_i = cx;
     r.sum_q = cy;
     r.rails = (uint8_t)((i_seen & 1u) | ((i_seen >> 14) & 2u) | ((q_seen & 1u) << 2) | ((q_seen >> 12) & 8u));
+    /* Mean power around the window DC from the sums already taken: in dsp
+     * units (2v+1) N * sum(x^2+y^2) - sum(x)^2 - sum(y)^2 over N^2, and a
+     * dsp unit is half a cell, so cells^2 x16 is 4x that. */
+    {
+        const int64_t nb = (int64_t)bytes;
+        const int64_t num = (4 * (int64_t)cp - 2 * nb) * nb - (int64_t)cx * cx - (int64_t)cy * cy;
+        const int64_t x16 = num > 0 ? 4 * num / (nb * nb) : 0;
+        r.pwr_x16 = (uint16_t)(x16 > 65535 ? 65535 : x16);
+    }
     int di, dq;
     if (!dg_stuck(&r) && dc_dominated(cx, cy, 4ull * cp - 2ull * bytes, bytes, &di, &dq)) {
         memset(hist, 0, sizeof(hist));

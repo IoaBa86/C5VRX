@@ -194,6 +194,41 @@ static void apply_target(uint8_t target, uint32_t control, uint32_t phy)
     phy_end_actuator();
 }
 
+/* Received level at the pin (rx_level.h): probe power per gain row over one
+ * second, rolled by the supervisor's 1 Hz step. */
+static uint32_t s_lvl_sum[RX_LEVEL_ROWS], s_lvl_n[RX_LEVEL_ROWS], s_lvl_clipped;
+static portMUX_TYPE s_lvl_lock = portMUX_INITIALIZER_UNLOCKED;
+static rx_level_t s_level;
+static float s_noise_rel;          /* learned noise, calibration units; 0 = not yet */
+static uint16_t s_noise_freq;
+static void level_accumulate(const dg_observation_t *o, uint8_t gain)
+{
+    if (gain >= RX_LEVEL_ROWS || s_obs_stuck) return;
+    taskENTER_CRITICAL(&s_lvl_lock);
+    if (o->clip_pm >= 20u) ++s_lvl_clipped;
+    else { s_lvl_sum[gain] += o->pwr_x16; ++s_lvl_n[gain]; }
+    taskEXIT_CRITICAL(&s_lvl_lock);
+}
+void receiver_level_roll(bool no_carrier)
+{
+    static uint32_t sum[RX_LEVEL_ROWS], n[RX_LEVEL_ROWS];
+    uint32_t clipped;
+    taskENTER_CRITICAL(&s_lvl_lock);
+    memcpy(sum, s_lvl_sum, sizeof(sum)); memcpy(n, s_lvl_n, sizeof(n)); clipped = s_lvl_clipped;
+    memset(s_lvl_sum, 0, sizeof(s_lvl_sum)); memset(s_lvl_n, 0, sizeof(s_lvl_n)); s_lvl_clipped = 0;
+    taskEXIT_CRITICAL(&s_lvl_lock);
+    if (s_noise_freq != rf_frequency_mhz()) { s_noise_freq = rf_frequency_mhz(); s_noise_rel = 0.0f; }
+    rx_level_t r = rx_level_compute(sum, n, clipped, s_gain.model_db_q8, s_gain.table.max_index, s_noise_rel);
+    /* Learn the noise with no carrier at the table maximum, inside -3..+4 dB
+     * of the calibration (a carrier the supervisor missed stays out). */
+    if (no_carrier && r.valid && r.gain_min == s_gain.table.max_index && r.rel > 0.5f && r.rel < 2.5f) {
+        s_noise_rel = s_noise_rel > 0.0f ? s_noise_rel + (r.rel - s_noise_rel) / 8.0f : r.rel;
+        r = rx_level_compute(sum, n, clipped, s_gain.model_db_q8, s_gain.table.max_index, s_noise_rel);
+    }
+    s_level = r;
+}
+rx_level_t receiver_level(void) { return s_level; }
+
 int receiver_obs_cn_x10(void)
 {
     /* Envelope model (cn_estimate.h); a fixed IQ point has no envelope to
@@ -382,8 +417,10 @@ static void observer_task(void *arg)
         const dg_map_context_t after_context = map_context();
         if (phy != phy_generation() || phy_busy() || gain_epoch != s_gain_epoch || control != s_control_epoch ||
             table != rf_table_generation() || !dg_map_context_equal(&context, &after_context)) continue;
-        if (cn_gain_settled((uint64_t)t0, (uint64_t)s_last_gain_write_us, s_gain.state == DG_SETTLE))
+        if (cn_gain_settled((uint64_t)t0, (uint64_t)s_last_gain_write_us, s_gain.state == DG_SETTLE)) {
             dc_accumulate(&o, sizeof(sample), s_current_gain, control, phy, table);
+            level_accumulate(&o, s_current_gain);
+        }
         if (measure_cn) {
             ++s_cn_sequence;
             __sync_synchronize();
@@ -422,6 +459,17 @@ void receiver_start(void)
 
 void receiver_print(void)
 {
+    const rx_level_t lv = s_level;
+    if (lv.valid)
+        printf("RX_LEVEL carrier_dbm=%.1f input_dbm=%.1f noise_dbm=%.1f noise_learned=%u cn_db=%.1f above_noise=%u exact=%u gains=%u-%u probes=%lu clipped_pm=%u "
+               "(at the chip pin; calibrated against the Wi-Fi PHY RSSI: +-1 dB at G54-G83, a few dB below G54; "
+               "free space for 25 mW, 2 dBi each side, 10 m at 5.8 GHz is ~-50 dBm)\n",
+               lv.carrier_dbm_x10 / 10.0, lv.input_dbm_x10 / 10.0, lv.noise_dbm_x10 / 10.0, (unsigned)(s_noise_rel > 0.0f),
+               lv.cn_x10 / 10.0,
+               (unsigned)lv.above_noise, (unsigned)lv.exact, lv.gain_min, lv.gain_max, (unsigned long)lv.probes,
+               lv.clipped_pm);
+    else
+        printf("RX_LEVEL unknown probes=%lu clipped_pm=%u\n", (unsigned long)lv.probes, lv.clipped_pm);
     printf("GAIN_SAT one_sided=%lu two_sided=%lu to_dc_servo=%lu (saturated observer windows: one rail per axis = DC-pushed, both = large signal; one-sided ones go to the DC servo, not the gain)\n",
            (unsigned long)s_sat_one_sided, (unsigned long)s_sat_two_sided, (unsigned long)s_gain.one_sided_clips);
     printf("CN_OBSERVER windows=%lu period_us=%u max_age_us=%u\n", (unsigned long)s_cn_windows,
