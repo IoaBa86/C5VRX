@@ -229,6 +229,16 @@ void receiver_level_roll(bool no_carrier)
 }
 rx_level_t receiver_level(void) { return s_level; }
 bool receiver_noise_learned(void) { return s_noise_rel > 0.0f; }
+/* The menu owns TX and the gain observer stands still, so the menu feeds
+ * its control windows here instead (control.c), in 256-byte probes like
+ * the observer's, and rolls once a second. */
+void receiver_level_feed(const uint8_t *window, size_t bytes)
+{
+    for (size_t at = 0; at + 256u <= bytes; at += 256u) {
+        const dg_observation_t o = dg_measure_gain(window + at, 256u, c5vrx_phase8_gain_lut, 0);
+        level_accumulate(&o, s_current_gain);
+    }
+}
 
 int receiver_obs_cn_x10(void)
 {

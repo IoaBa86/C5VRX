@@ -434,6 +434,12 @@ static void control_task(void *arg)
                 printf("[MENU] refused: sync release still waiting for the PHY after 1 s; live video kept\n");
         }
         if (s_menu_active) {
+            /* The dBm on the CHANNEL page: the gain observer stands still in
+             * the menu, so its control windows feed the level, rolled once a
+             * second (20 ticks). */
+            static uint8_t level_ticks;
+            if (copy_control_window(s_window, CONTROL_BYTES)) receiver_level_feed(s_window, CONTROL_BYTES);
+            if (++level_ticks >= 20u) { level_ticks = 0; receiver_level_roll(false); }
             if (++menu_idle >= MENU_IDLE_TICKS) { menu_close(); printf("[MENU] closed after 30 s idle\n"); }
             else if (++menu_refresh >= 5) { menu_refresh = 0; menu_render(); }
         } else menu_idle = menu_refresh = 0;
