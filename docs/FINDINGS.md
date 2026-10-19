@@ -859,3 +859,106 @@ C5VRX by Twotoz and the C5VRX contributors; extends Direct Gain V6 and its
   the unchanged main build failed the same route too (2026-10-19). After a
   replug the board came up in the ROM loader twice, so the board may stay
   powered through the video side; a RESET tap recovers it. Cause open.
+
+## DC table from another filter: 3.7 cells of DC and the gain parked on it (2026-10-19)
+
+C5VRX by Twotoz and the C5VRX contributors; extends the per-gain DC tables
+(`dco_slots.h`, PR #196) and the FLOOR-row work of PR #211. Relates to
+issue #222 track A (hidden loss in the gain allocation).
+
+- **Board** (main after #221, A1, no VTX received, four IQ snapshots at
+  G71): DC (-0.9, -3.6) cells, receiver noise 0.68 cells per axis. `T`:
+  `DCO held=1`, `DCO_CONTEXT table_bw20=0 table_code=-1 table_skirt=0`
+  against the live `active_bw20=1 active_code=16 active_skirt=32`,
+  `filter_same=0`; `SPHASE dc_mcell` -1.1..-2.6 / -2.1..-3.7 cells in every
+  status of 2026-10-18/19. The codes are held, but they were measured with
+  another analog filter.
+- **The gain parks on it.** p50 = 15 comes from the DC point (3.7^2 ~ 14),
+  inside the Direct Gain healthy band (13..32): the gain stays at G71
+  instead of the table maximum, the same mechanism as the 2026-10-13 G59
+  park, now through the filter context.
+- **Cost** (`research/dc_board_study.py`, `data/dc_board_study.json`;
+  bit-exact U85Q, deviation 0.69, 12 MHz, quantiser scaled to a fixed
+  receiver noise per axis instead of the Direct Gain radius used by
+  `situations.py`, two seeds): range limit (picture >= 0.9 and SINAD >= 0)
+  **14 dB C/N with the measured DC, 4-6 dB without it**; below 10 dB the
+  SINAD stays at -1.6 dB (the demodulator follows the DC point). The
+  2026-10-13 walk-edge state (DC 2.1 cells against 2.2 cells of noise at
+  G74) costs 0-0.3 dB in the same model. Simulation, not measured range.
+- **Cause.** `dco_matches()` compares frequency, gain table and IQ scale but
+  deliberately not the filter ("an assumption, not measured equivalence").
+  The board refutes the assumption.
+- **Fix.** `dco_filter_same()` / `dco_filter_stale()` (`dco_slots.h`, host
+  test `test/test_dco_slots.c`): at startup a table with rows measured under
+  another filter is measured again in full, like a manual CALIBRATE of the
+  DC rows, through the existing own-channel (VTX off) and quiet-channel
+  (VTX on) paths; the table takes the live filter only after a complete
+  pass (`done` or `floor`), so an interrupted pass is repeated at the next
+  boot. Live profile switches still keep the table (unchanged, see the
+  `dco_matches` comment); a WIDE profile with another filter therefore still
+  runs on codes of the normal filter until a boot measures it.
+- **Board check** (2026-10-19, ELF `6722a826d`, A1, no VTX; data in
+  `research/data/dc_2026-10-19/`): the first boot logged `DCO startup
+  filter_stale=1 table_bw20=0 table_code=-1 ... live_code=16 live_skirt=32`
+  and measured all rows on the own channel (`searched=30 result=done`); `T`
+  then showed `DCO_CONTEXT ... filter_same=1`. Six IQ snapshots: gain **G82**
+  (was G71), receiver noise **2.15 cells** per axis (was 0.68), DC
+  **1.5-2.4 cells** (was 3.7), DC/noise **0.7** (was 5.3). In the model above
+  that state costs 0-0.3 dB instead of 8-10 dB. A residual Q offset of about
+  -1.5 cells stays after the search; a DC search should end within half a
+  cell, so this is open. No range measurement yet.
+
+## Analog filter branches, per-filter DC, a live DC trim that runs (2026-10-19)
+
+C5VRX by Twotoz and the C5VRX contributors; extends ESPARGOS esp-sdr's C5
+filter control (GPL-3.0), PR #196's filter sweep and the DC work above.
+Board: XIAO ESP32-C5, A1, no VTX; data in `research/data/filter_2026-10-19/`.
+
+- **Two analog filter branches.** The PHY builds its analog tables at
+  channel setup from the bandwidth mode then in force: set up in BW20 the
+  RX0 code sets the width and the skirt does nothing, set up in BW40 the
+  reverse (same boot: code 63/skirt 0 11.9 vs 19.7 MHz noise bandwidth,
+  code 16/skirt 32 21.1 vs 13.0 MHz). `rf_set_channel` tuned before
+  `phy_wifi_fbw_sel` and `rf_set_filter` never redid the setup, so the sweep
+  measured settings in whatever branch was active: the board flew a stored
+  "12.5 MHz" setting at 19.7 MHz noise bandwidth (live IQ spectrum; the
+  firmware's own PSD method agrees). `channel_setup()` selects the mode
+  first and `rf_set_filter` repeats the setup on a mode change;
+  FILTER_VERSION 5 re-sweeps. After: stored 13.0 MHz, live 13.0-13.4 MHz.
+  `FILTER_HW` reads the filter registers back (they always held what was
+  set; the branch was the problem, not the registers).
+- **DC per filter.** One table per (channel, filter key), index version 3
+  with an upgrade that keeps measured tables; startup measures the NORMAL,
+  NARROW and WIDE filters' tables (resumable, `DCO_READY`); narrowing in
+  flight waits for the narrow table. Stale tables are re-measured row by row
+  and stamped only when complete (review P1/P2).
+- **DC moves at every channel setup.** Same DC words in both PBUS banks
+  (`DCO_BANKS`), yet DC (+1.5, -0.1) -> (-0.5, -3.0) cells after 8 retunes:
+  a stored table only fits the setup it was measured in. The live trim never
+  ran (`DC_LIVE trials=0`): it needed a carrier circle, its sample missed a
+  2 ms deadline under the PHY lease, gain writes and sampling-phase probes
+  re-held the bare table codes, steps were one code within +-4, and two
+  single windows had to agree within 150 mcells while the DC wanders about
+  half a cell. All five fixed (noise-mean estimate, lease-free sample,
+  trimmed holds, sized steps, 8-window mean, deadband 600 mcells).
+- **Sensitivity model** (`research/sensitivity_model.py`): required C/N
+  referred to the fixed 20.7 MHz chip channel, from no-carrier board IQ (live
+  filter shape, noise, DC, digital floor) through the bit-exact U85Q chain;
+  dBm only with an assumed NF. Deviation 0.69, 2 dB C/N steps:
+
+  | board state | live NBW | DC | range limit |
+  | --- | ---: | ---: | ---: |
+  | before #223 (wrong DC table, G71) | 20.5 MHz | 3.6 cells | 14 dB |
+  | DC table fixed (G82) | 20.7 MHz | 1.7 cells | 4 dB |
+  | filter branch fixed (G83) | 13.4 MHz | 1.7 cells | 4 dB (2 without DC) |
+  | after a channel round, no trim | 13.7 MHz | 3.1 cells | 6 dB |
+  | after a channel round, live trim | 13.2 MHz | 1.2 cells | 4 dB |
+
+  Simulation at measured board levels; no range walk yet. The digital path
+  (quantisation, sampling phase, folding) costs 0.03-0.16 dB.
+- **1 dB steps** (`data/sensitivity_2026-10-19_fine.json`): with the live
+  trim the limit is **3 dB C/N** (DC 1.16 cells, of which the DC costs 1 dB;
+  2 dB without it), against 14 dB before #223: 11 dB in this model.
+- **Open:** a DC wander of about half a cell over seconds remains below the
+  trim's reach (2 dB C/N steps cannot resolve its cost); carrier-on checks of
+  the live profile switch onto the narrow table and of the trim at the edge.

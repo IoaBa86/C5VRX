@@ -33,6 +33,12 @@ bool phy_filter_set_skirt(int offset);
 int phy_filter_code(void);
 int phy_filter_skirt(void);
 int phy_filter_calibrated_code(void);
+/* Hardware read-back of BBTOP 0x67 regs 6..13 against the bytes the shadow
+ * code/skirt imply. The write-time read-back alone cannot see a later
+ * vendor write (gain force, channel setup) restoring other bytes. Returns
+ * the number of mismatching registers (0 = live filter as set), -1 when
+ * unsupported; hw[8]/want[8] receive the bytes when not NULL. */
+int phy_filter_hw_mismatch(uint8_t hw[8], uint8_t want[8]);
 
 /* RX DC DACs (PBUS blocks 2/3 bank 2). A hold forces one pair in PBUS
  * debug mode with every owned live word re-asserted; any gain write or PHY
@@ -51,6 +57,10 @@ esp_err_t phy_dco_search_flat(bool (*measure)(int dc[2]), phy_dco_result_t *res)
 esp_err_t phy_dco_hold(int code_i, int code_q);
 bool phy_dco_release(void);
 bool phy_dco_held(void);
+/* PBUS DC words, read back: bank 1 (written by the vendor PHY) and bank 2
+ * (the pair the hold forces), I then Q. false without the pinned PHY. */
+bool phy_dco_banks(int bank1[2], int bank2[2]);
+#define PHY_DCO_TRY_MAX 8   /* codes per verified live trial (phy_dco_try_pair) */
 bool phy_dco_nudge(int di, int dq, int out[2]);
 /* Sample the actual current DAC pair twice; no mode change or assumed codes.
  * try_pair requires the caller's PHY actuator lease and an exact actual

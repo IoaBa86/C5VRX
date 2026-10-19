@@ -157,6 +157,29 @@ bool phy_filter_set_skirt(int offset)
 int phy_filter_code(void) { return s_filter_code; }
 int phy_filter_skirt(void) { return s_filter_skirt; }
 
+int phy_filter_hw_mismatch(uint8_t hw[8], uint8_t want[8])
+{
+#ifdef C5VRX_PHY_PINNED
+    if (!s_filter_base_valid) return -1;
+    int bad = 0;
+    lock_take();
+    for (uint8_t i = 0; i < 8; ++i) {
+        uint8_t w = i < 2 ? (s_filter_code == PHY_FILTER_CALIBRATED ? s_filter_base[i] :
+                             (uint8_t)((s_filter_base[i] & ~63u) | (unsigned)s_filter_code)) :
+                    (s_filter_skirt ? dsp_filter_code(s_filter_base[i], s_filter_skirt) : s_filter_base[i]);
+        uint8_t h = phy_i2c_readReg(0x67, 1, 6 + i);
+        if (hw) hw[i] = h;
+        if (want) want[i] = w;
+        bad += h != w;
+    }
+    lock_give();
+    return bad;
+#else
+    (void)hw; (void)want;
+    return -1;
+#endif
+}
+
 int phy_filter_calibrated_code(void)
 {
 #ifdef C5VRX_PHY_PINNED
@@ -406,6 +429,20 @@ bool phy_dco_release(void)
 #endif
 }
 
+bool phy_dco_banks(int bank1[2], int bank2[2])
+{
+#ifdef C5VRX_PHY_PINNED
+    lock_take();
+    bank1[0] = phy_pbus_rd(2, 1); bank1[1] = phy_pbus_rd(3, 1);
+    bank2[0] = phy_pbus_rd(2, 2); bank2[1] = phy_pbus_rd(3, 2);
+    lock_give();
+    return true;
+#else
+    bank1[0] = bank1[1] = bank2[0] = bank2[1] = 0;
+    return false;
+#endif
+}
+
 bool phy_dco_held(void)
 {
 #ifdef C5VRX_PHY_PINNED
@@ -461,8 +498,12 @@ esp_err_t phy_dco_try_pair(uint32_t packed_gain, const int expected[2], const in
     if (!expected || !target || expected[0] < 0 || expected[0] > 511 || expected[1] < 0 || expected[1] > 511 ||
         target[0] < 0 || target[0] > 511 || target[1] < 0 || target[1] > 511)
         return ESP_ERR_INVALID_ARG;
+    /* One axis per trial, up to PHY_DCO_TRY_MAX codes (the search itself
+     * probes 16): a DC that moved by cells after a channel setup needs more
+     * than single-code steps. */
     int di = target[0] - expected[0], dq = target[1] - expected[1];
-    if ((di < 0 ? -di : di) + (dq < 0 ? -dq : dq) != 1) return ESP_ERR_INVALID_ARG;
+    const int ai = di < 0 ? -di : di, aq = dq < 0 ? -dq : dq;
+    if ((ai && aq) || !(ai + aq) || ai > PHY_DCO_TRY_MAX || aq > PHY_DCO_TRY_MAX) return ESP_ERR_INVALID_ARG;
     lock_take();
     int current[2];
     uint16_t rf = phy_pbus_rd(8, 1), bb = phy_pbus_rd(0, 2), fine = phy_pbus_rd(1, 2);

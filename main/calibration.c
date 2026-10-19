@@ -36,6 +36,7 @@
 #include "profile_logic.h"
 #include "sphase_logic.h"
 #include "dco_slots.h"
+#include "dc_health.h"
 #include "rf.h"
 #include "soc/pcr_struct.h"
 
@@ -282,8 +283,11 @@ bool calibration_sphase_settled(void)
  * 14 MHz (enough for every tested VTX deviation, docs/FINDINGS.md) and whose
  * noise stays incoherent (so Direct Gain still recognises "no carrier")
  * is kept. Built on ESPARGOS esp-sdr's C5 BANDWIDTH control (GPL-3.0). */
-/* 3: wide class; 4: codes 52/62/63 (one new sweep after the update) */
-#define FILTER_VERSION     4u
+/* 3: wide class; 4: codes 52/62/63 (one new sweep after the update);
+ * 5: settings measured in the analog branch they fly in (rf_set_filter sets
+ * the bandwidth mode up before measuring; every earlier sweep mixed the two
+ * branches, board 2026-10-19: chosen 12.5 MHz flew at 19.7 MHz) */
+#define FILTER_VERSION     5u
 /* Two classes from one sweep (research: 12 MHz helps every tested VTX
  * deviation and keeps strong-signal sharpness; 10 MHz adds up to ~1.7 dB
  * for deviation <= ~1.1 but hurts wide VTXs, so it is used only when the
@@ -607,19 +611,24 @@ static void dco_context(dco_table_t *t, uint16_t freq)
 typedef struct {
     uint16_t freq;
     uint8_t lo, hi, band5, iq_scale_sel;
+    uint16_t key;            /* dco_filter_key() of the live filter */
 } dco_want_t;
+static uint16_t live_filter_key(void)
+{
+    const rf_filter_t f = rf_filter();
+    return dco_filter_key(f.code, (int)f.skirt, f.bw20);
+}
 static dco_want_t dco_want_now(void)
 {
     /* The compared fields of dco_context(), without a table on the stack. */
     const arc_gain_table_t *table = rf_gain_table();
     return (dco_want_t){rf_frequency_mhz(), arc_gain_highest_rf_stage_start(table), table->max_index,
-                        table->band5, phy_param[650]};
+                        table->band5, phy_param[650], live_filter_key()};
 }
-/* Filter fields are recorded but shared across profiles today. This is
- * an assumption, not measured equivalence; DCO_CONTEXT prints both
- * settings so a range capture can expose it. Rejecting the table here
- * alone would discard all per-gain correction after a live profile
- * switch, without a safe live replacement calibration. */
+/* The header without the filter: a table of another filter can still seed
+ * this one (its rows then stay template rows until measured here). Which
+ * filter a table serves is s_dco_serving; its own filter fields say what it
+ * was measured with (dco_startup re-measures when they differ). */
 static bool dco_matches(const dco_table_t *t, const dco_want_t *w)
 {
     return t->version == DCO_VERSION && t->freq == w->freq && t->lo == w->lo && t->hi == w->hi &&
@@ -633,6 +642,11 @@ static bool s_dco_index_loaded;
 static uint16_t s_dco_seed_mhz;     /* the current table was seeded from this channel, 0 = own */
 static uint32_t s_dco_seeds;
 static dco_mask_t s_dco_templ;      /* rows of the current table that come from a template */
+static uint16_t s_dco_serving;      /* dco_filter_key() of the filter the current table is for */
+static bool s_dco_serving_valid;
+static int s_drift_offset[ARC_VENDOR_GAIN_MAX + 1u][2];   /* live trim per row (dco_post_gain) */
+static uint32_t s_dco_reloads;      /* dco_select() loads of another table (each drops the trims) */
+static uint8_t s_dco_reload_why;    /* 1 none yet, 2 filter, 3 freq, 4 rows, 5 band, 6 IQ scale, 7 version */
 
 static unsigned dco_template_rows(void) { return dco_mask_count(s_dco_templ, s_dco.lo, s_dco.hi); }
 
@@ -651,10 +665,12 @@ static bool dco_load_slot(unsigned slot, dco_table_t *out)
 static bool dco_save(void)
 {
     char key[8];
-    const unsigned slot = dco_slot_for_store(&s_dco_index, s_dco.freq);
+    const uint16_t filt = s_dco_serving_valid ? s_dco_serving :
+                          dco_filter_key(s_dco.filter_code, s_dco.filter_skirt, s_dco.filter_bw20);
+    const unsigned slot = dco_slot_for_store(&s_dco_index, s_dco.freq, filt);
     dco_slot_key(slot, key);
     if (!blob_store(key, &s_dco, sizeof(s_dco))) return false;
-    dco_index_touch(&s_dco_index, slot, s_dco.freq);
+    dco_index_touch(&s_dco_index, slot, s_dco.freq, filt);
     memcpy(s_dco_index.templ[slot], s_dco_templ, sizeof(s_dco_templ));
     if (!blob_store("dco_idx", &s_dco_index, sizeof(s_dco_index))) return false;
     s_dco_seed_mhz = 0;
@@ -667,9 +683,28 @@ static void dco_index_load(void)
     s_dco_index_loaded = true;
     if (blob_load("dco_idx", &s_dco_index, sizeof(s_dco_index)) && s_dco_index.version == DCO_INDEX_VERSION) return;
     dco_index_init(&s_dco_index);
+    /* Version 2 (one table per frequency): keep the measured tables, each
+     * under the filter its header records. */
+    dco_index_v2_t v2;
+    if (blob_load("dco_idx", &v2, sizeof(v2)) && v2.version == 2u) {
+        for (unsigned k = 0; k < DCO_SLOTS; ++k) {
+            s_dco_index.freq[k] = v2.freq[k];
+            s_dco_index.seq[k] = v2.seq[k];
+            memcpy(s_dco_index.templ[k], v2.templ[k], sizeof(dco_mask_t));
+            if (v2.freq[k] && dco_load_slot(k, &s_dco))
+                s_dco_index.filt[k] = dco_filter_key(s_dco.filter_code, s_dco.filter_skirt, s_dco.filter_bw20);
+            else
+                s_dco_index.freq[k] = 0;
+        }
+        s_dco_index.next_seq = v2.next_seq;
+        memset(&s_dco, 0, sizeof(s_dco));
+        if (blob_store("dco_idx", &s_dco_index, sizeof(s_dco_index))) printf("DCO index upgraded to per-filter slots\n");
+        return;
+    }
     /* Adopt the single table of earlier builds as the first slot. */
     memset(s_dco_templ, 0, sizeof(s_dco_templ));   /* measured on its own channel */
     if (blob_load("dco", &s_dco, sizeof(s_dco)) && s_dco.version == DCO_VERSION && s_dco.freq) {
+        s_dco_serving_valid = false;   /* dco_save() keys it by its own filter fields */
         if (dco_save()) printf("DCO adopted the legacy table freq=%u as slot 0\n", s_dco.freq);
     }
 }
@@ -677,7 +712,7 @@ static void dco_index_load(void)
 static void dco_select(void)
 {
     const dco_want_t want = dco_want_now();
-    if (dco_matches(&s_dco, &want)) return;
+    if (s_dco_serving_valid && s_dco_serving == want.key && dco_matches(&s_dco, &want)) return;
     (void)phy_dco_release();
     memset(s_dco_found_us, 0, sizeof(s_dco_found_us));
     memset(s_dco_banned, 0, sizeof(s_dco_banned));
@@ -686,13 +721,20 @@ static void dco_select(void)
     dco_index_load();
     memset(s_dco_templ, 0, sizeof(s_dco_templ));
     const uint16_t freq = want.freq;
-    const int own = dco_slot_of(&s_dco_index, freq);
+    ++s_dco_reloads;
+    s_dco_reload_why = !s_dco_serving_valid ? 1u : s_dco_serving != want.key ? 2u : s_dco.freq != want.freq ? 3u :
+                       s_dco.lo != want.lo || s_dco.hi != want.hi ? 4u : s_dco.band5 != want.band5 ? 5u :
+                       s_dco.iq_scale_sel != want.iq_scale_sel ? 6u : 7u;
+    s_dco_serving = want.key;
+    s_dco_serving_valid = true;
+    memset(s_drift_offset, 0, sizeof(s_drift_offset));   /* trims belong to the table they were made on */
+    const int own = dco_slot_of(&s_dco_index, freq, want.key);
     if (own >= 0 && dco_load_slot((unsigned)own, &s_dco) && dco_matches(&s_dco, &want)) {
         memcpy(s_dco_templ, s_dco_index.templ[own], sizeof(s_dco_templ));
         return;
     }
-    /* No own table: start from the nearest measured channel. */
-    const int near = dco_nearest_slot(&s_dco_index, freq);
+    /* No own table: start from the nearest one, the same filter first. */
+    const int near = dco_nearest_slot(&s_dco_index, freq, want.key);
     if (near >= 0 && dco_load_slot((unsigned)near, &s_dco)) {
         const uint16_t from = s_dco.freq;
         s_dco.freq = freq;
@@ -704,8 +746,8 @@ static void dco_select(void)
                 dco_mask_put(s_dco_templ, g, s_dco.e[g].valid != 0);
                 ok += s_dco.e[g].valid != 0;
             }
-            printf("DCO template freq=%u from=%u rows=%u (nearest measured channel; replaced by own measurements)\n",
-                   freq, from, ok);
+            printf("DCO template freq=%u from=%u rows=%u (nearest table, same_filter=%u; replaced by own measurements)\n",
+                   freq, from, ok, s_dco_index.filt[near] == want.key);
             return;
         }
     }
@@ -713,11 +755,20 @@ static void dco_select(void)
     dco_context(&s_dco, freq);
 }
 
+/* Live trim on top of the stored codes, per row, for this table (a gain
+ * write used to re-hold the bare table codes and drop it: with Direct Gain
+ * moving between G82 and G83 every trim was undone within a second). */
+static int dco_trimmed(unsigned g, unsigned axis)
+{
+    const int v = s_dco.e[g].code[axis] + s_drift_offset[g][axis];
+    return v < 0 ? 0 : v > 511 ? 511 : v;
+}
+
 void dco_post_gain(uint8_t g)
 {
     if (receiver_paused() || g < s_dco.lo || g > s_dco.hi || s_dco.e[g].valid != DCO_ROW_OK ||
         s_dco_banned[g] || s_dco.freq != rf_frequency_mhz()) return;
-    if (phy_dco_hold(s_dco.e[g].code[0], s_dco.e[g].code[1]) == ESP_OK) ++s_dco_hook_holds;
+    if (phy_dco_hold(dco_trimmed(g, 0), dco_trimmed(g, 1)) == ESP_OK) ++s_dco_hook_holds;
 }
 
 /* Sampling-phase probes run with the gain worker paused, where the post-gain
@@ -729,7 +780,7 @@ static void dco_hold_for_scan(void)
     const uint8_t g = s_current_gain;
     if (g < s_dco.lo || g > s_dco.hi || s_dco.e[g].valid != DCO_ROW_OK || s_dco_banned[g] ||
         s_dco.freq != rf_frequency_mhz()) return;
-    (void)phy_dco_hold(s_dco.e[g].code[0], s_dco.e[g].code[1]);
+    (void)phy_dco_hold(dco_trimmed(g, 0), dco_trimmed(g, 1));   /* the live trim too */
 }
 
 static bool dco_measure(int dc[2])
@@ -863,7 +914,10 @@ static int dco_quiet_search(uint8_t g)
         /* Less gain, even less noise, and no flip found: the rows below
          * cannot be searched either. Codes measured on a carrier stay. */
         for (int k = g; k >= (int)s_dco.lo; --k) {
-            if (s_dco.e[k].valid != DCO_ROW_OK) s_dco.e[k].valid = DCO_ROW_FLOOR;
+            /* Own codes measured on a carrier stay; template codes (another
+             * channel or another filter) are not this context's and go. */
+            if (s_dco.e[k].valid != DCO_ROW_OK || dco_mask_get(s_dco_templ, (unsigned)k))
+                s_dco.e[k].valid = DCO_ROW_FLOOR;
             dco_row_measured((unsigned)k);   /* measured: nothing to correct here */
         }
         s_dco_floor = (uint8_t)(g + 1);
@@ -939,7 +993,7 @@ static const char *dco_quiet_rows(bool manual, bool refine, int64_t deadline, co
  * is restored. The DC DAC offsets are baseband offsets per gain row, so the
  * codes are stored for the own channel; the live drift nudges trim the
  * remaining difference. Startup only, behind the status screen. */
-static const char *dco_remote_search(bool manual, int64_t deadline, unsigned *done)
+static const char *dco_remote_search(bool manual, bool refine, int64_t deadline, unsigned *done)
 {
     *done = 0;
     const size_t original = rf_channel_index();
@@ -955,7 +1009,7 @@ static const char *dco_remote_search(bool manual, int64_t deadline, unsigned *do
     receiver_resume();
     char line1[48];
     snprintf(line1, sizeof(line1), "ON QUIET CHANNEL %s (VTX MAY STAY ON)", rf_channel()->name);
-    const char *why = quiet ? dco_quiet_rows(manual, false, deadline, line1, done) : "no_quiet_channel";
+    const char *why = quiet ? dco_quiet_rows(manual, refine, deadline, line1, done) : "no_quiet_channel";
     /* Back to the exact original tuning, checked like the filter sweep. */
     (void)receiver_pause("DCO_REMOTE");
     bool restored = rf_channel_index() == original;
@@ -974,18 +1028,165 @@ static const char *dco_remote_search(bool manual, int64_t deadline, unsigned *do
     return why;
 }
 
+/* ---- DC health in flight, repair at the next boot (dc_health.h) ---------
+ * Passive: reads the table state, the filter registers and the trim's DC
+ * mean; never writes the receiver. A sustained finding stores one flag per
+ * (frequency, filter) and the menu shows DC CAL NEEDED; dco_startup then
+ * re-measures that table and clears the flag only when it is complete. */
+static dc_flags_t s_dc_flags;
+static bool s_dc_flags_loaded;
+static dc_watch_t s_dc_watch[DC_HEALTH_REASONS];
+static uint32_t s_dc_flag_writes;
+
+static void dc_flags_load(void)
+{
+    if (s_dc_flags_loaded) return;
+    s_dc_flags_loaded = true;
+    if (!blob_load("dc_recal", &s_dc_flags, sizeof(s_dc_flags)) || !dc_flags_valid(&s_dc_flags))
+        dc_flags_init(&s_dc_flags);
+}
+
+static void dc_flags_save(void)
+{
+    if (blob_store("dc_recal", &s_dc_flags, sizeof(s_dc_flags))) ++s_dc_flag_writes;
+    else printf("DC_HEALTH error: repair flags not stored\n");
+}
+
+/* Profile name of a filter key on this board (NORMAL/NARROW/WIDE). */
+static const char *dc_key_profile(uint16_t key)
+{
+    static const int classes[3] = {FILTER_NORMAL, FILTER_NARROW, FILTER_WIDE};
+    static const char *const names[3] = {"NORMAL", "NARROW", "WIDE"};
+    for (unsigned c = 0; c < 3u; ++c) {
+        rf_filter_t f;
+        if (filter_setting(classes[c], &f) && dco_filter_key(f.code, (int)f.skirt, f.bw20) == key) return names[c];
+    }
+    return "OTHER";
+}
+
+static void dc_health_latch(unsigned reason)
+{
+    dc_flags_load();
+    const uint16_t freq = rf_frequency_mhz(), key = live_filter_key();
+    printf("DC_HEALTH finding=%s freq=%u filter_key=%04x profile=%s gain=%u: DC CAL NEEDED, repaired at the next "
+           "boot\n", dc_health_reason_name(reason), freq, key, dc_key_profile(key), s_current_gain);
+    if (dc_flags_add(&s_dc_flags, freq, key, (uint8_t)reason)) dc_flags_save();
+}
+
+/* The trim's averaged DC (drift_service): qualified only on a consistent
+ * mean of DC_TRIM_AVERAGE windows in one context. */
+static void dc_health_drift(bool consistent, const int center[2])
+{
+    const bool bad = abs(center[0]) > DC_HEALTH_DRIFT_MCELLS || abs(center[1]) > DC_HEALTH_DRIFT_MCELLS;
+    if (dc_watch_step(&s_dc_watch[DC_HEALTH_DRIFT], DC_HEALTH_DRIFT, rf_frequency_mhz(), live_filter_key(),
+                      consistent && !s_startup, bad, esp_timer_get_time()))
+        dc_health_latch(DC_HEALTH_DRIFT);
+}
+
+/* Table and filter findings, every calibration tick (250 ms). */
+static void dc_health_service(void)
+{
+    const uint16_t freq = rf_frequency_mhz(), key = live_filter_key();
+    const int64_t now = esp_timer_get_time();
+    const uint8_t g = s_current_gain;
+    const bool settled = !s_startup && quiet_owner() && s_gain.state == DG_HOLD && g <= ARC_VENDOR_GAIN_MAX &&
+                         phy_filter_calibrated_code() >= 0;
+    /* TABLE: the live row is not this channel's and this filter's own. */
+    const bool table_known = settled && s_dco_serving_valid && s_dco_serving == key && s_dco.freq == freq;
+    bool own = true;
+    if (table_known) {
+        const rf_filter_t live = rf_filter();
+        own = dco_filter_same(s_dco.filter_code, s_dco.filter_skirt, s_dco.filter_bw20, live.code, (int)live.skirt,
+                              live.bw20);
+        if (own && g >= s_dco.lo && g <= s_dco.hi)
+            own = s_dco.e[g].valid && !dco_mask_get(s_dco_templ, g) && !s_dco_banned[g];
+    }
+    if (dc_watch_step(&s_dc_watch[DC_HEALTH_TABLE], DC_HEALTH_TABLE, freq, key, table_known, !own, now))
+        dc_health_latch(DC_HEALTH_TABLE);
+    /* FILTER: the BBTOP filter registers read back (8 I2C reads, every 2 s). */
+    static unsigned ticks;
+    if ((ticks++ & 7u) == 0u) {
+        const int bad = settled ? phy_filter_hw_mismatch(NULL, NULL) : -1;
+        if (dc_watch_step(&s_dc_watch[DC_HEALTH_FILTER], DC_HEALTH_FILTER, freq, key, bad >= 0, bad > 0, now))
+            dc_health_latch(DC_HEALTH_FILTER);
+    }
+}
+
+/* DC CAL NEEDED for the current channel: the flagged profiles ("NARROW",
+ * "NORMAL+WIDE") in buf, the number of flags as the result. */
+unsigned calibration_dc_needed(char *buf, size_t size)
+{
+    dc_flags_load();
+    const uint16_t freq = rf_frequency_mhz();
+    unsigned n = 0;
+    size_t used = 0;
+    if (size) buf[0] = 0;
+    for (unsigned k = 0; k < s_dc_flags.count; ++k) {
+        if (s_dc_flags.f[k].freq != freq) continue;
+        if (size > used) used += (size_t)snprintf(buf + used, size - used, "%s%s", n ? "+" : "",
+                                                  dc_key_profile(s_dc_flags.f[k].key));
+        ++n;
+    }
+    return n;
+}
+
+static void dc_health_print(void)
+{
+    dc_flags_load();
+    printf("DC_HEALTH flags=%u writes=%lu watch=table:%u/%u filter:%u/%u drift:%u/%u (latched/bad)",
+           s_dc_flags.count, (unsigned long)s_dc_flag_writes,
+           s_dc_watch[DC_HEALTH_TABLE].latched, s_dc_watch[DC_HEALTH_TABLE].since_us != 0,
+           s_dc_watch[DC_HEALTH_FILTER].latched, s_dc_watch[DC_HEALTH_FILTER].since_us != 0,
+           s_dc_watch[DC_HEALTH_DRIFT].latched, s_dc_watch[DC_HEALTH_DRIFT].since_us != 0);
+    for (unsigned k = 0; k < s_dc_flags.count; ++k)
+        printf(" %u/%s/%s", s_dc_flags.f[k].freq, dc_key_profile(s_dc_flags.f[k].key),
+               dc_health_reason_name(s_dc_flags.f[k].reason));
+    printf("\n");
+}
+
 /* Startup: only the rows of the channel that are still missing (all rows
  * on a manual request). Rows that have codes or a measured noise floor are
  * kept, so a boot after a complete calibration does nothing here. */
 static void dco_startup(bool manual, int64_t deadline)
 {
     dco_select();
-    const unsigned missing = dco_rows(0), templ = dco_template_rows();
+    const unsigned missing = dco_rows(0);
     const bool carrier = video_recent();
-    /* Template rows (from another channel) are used as they are; they are
-     * replaced only when the own channel can be measured without a detour:
-     * VTX off at boot. With the VTX on there is no quiet-channel trip. */
-    const bool refine = !manual && !missing && templ && !carrier && noise_like();
+    /* Codes measured with another analog filter do not fit the live one
+     * (dco_slots.h dco_filter_same: 3.7 cells of DC left on the board, and
+     * the gain parked on it). Every row with a result (codes or FLOOR) is
+     * then marked as a template row, i.e. not measured in this context; a
+     * row leaves that mask only on a new result (dco_row_measured), the mask
+     * is stored with the table, so an interrupted pass goes on at the next
+     * boot, and the table takes the live filter only when no template row
+     * is left. Template rows are measured on the own channel (VTX off) or a
+     * quiet channel (VTX on). */
+    const rf_filter_t live = rf_filter();
+    const unsigned results = dco_valid_rows() + dco_rows(DCO_ROW_FLOOR);
+    const bool stale = dco_filter_stale(results,
+        dco_filter_same(s_dco.filter_code, s_dco.filter_skirt, s_dco.filter_bw20, live.code, (int)live.skirt,
+                        live.bw20));
+    /* A repair flag from the last flight (dc_health_latch): the whole table
+     * is re-measured like a stale one, also with the VTX on. */
+    dc_flags_load();
+    const bool flagged = dc_flags_find(&s_dc_flags, rf_frequency_mhz(), live_filter_key()) >= 0;
+    if (flagged)
+        printf("DCO startup repair_flag=1 freq=%u filter_key=%04x profile=%s\n", rf_frequency_mhz(),
+               live_filter_key(), dc_key_profile(live_filter_key()));
+    if ((stale || flagged) && !dco_template_rows()) {
+        for (unsigned g = s_dco.lo; g <= s_dco.hi && g <= ARC_VENDOR_GAIN_MAX; ++g)
+            if (s_dco.e[g].valid) dco_mask_put(s_dco_templ, g, true);
+        s_dco_dirty = true;
+    }
+    const unsigned templ = dco_template_rows();
+    if (stale)
+        printf("DCO startup filter_stale=1 table_bw20=%u table_code=%d table_skirt=%d live_bw20=%u live_code=%d "
+               "live_skirt=%u rows_to_measure=%u\n", (unsigned)s_dco.filter_bw20, (int)s_dco.filter_code,
+               (int)s_dco.filter_skirt, (unsigned)live.bw20, live.code, (unsigned)live.skirt, templ);
+    /* Template rows from another channel are replaced only when the own
+     * channel can be measured without a detour (VTX off at boot); rows of
+     * another filter also go to a quiet channel. */
+    const bool refine = !manual && !missing && templ && (stale || flagged || (!carrier && noise_like()));
     if (!manual && !missing && !refine) {
         printf("DCO startup skip=complete rows=%u floor_rows=%u template_rows=%u\n", dco_valid_rows(),
                dco_rows(DCO_ROW_FLOOR), templ);
@@ -1000,7 +1201,7 @@ static void dco_startup(bool manual, int64_t deadline)
         /* A carrier on the own channel: measure on a quiet channel; only if
          * there is none, the current row on the carrier's circle. */
         where = "quiet_channel";
-        why = dco_remote_search(manual, deadline, &done);
+        why = dco_remote_search(manual, refine, deadline, &done);
         if (!strcmp(why, "no_quiet_channel") || !strcmp(why, "busy")) {
             bool ok = carrier && dco_carrier_search(manual);
             printf("DCO startup carrier=%u result=%s gain=%u missing_rows=%u\n", carrier, ok ? "stored" : "skip",
@@ -1008,16 +1209,105 @@ static void dco_startup(bool manual, int64_t deadline)
             where = "carrier";
         }
     }
+    const bool complete = !strcmp(why, "floor") || !strcmp(why, "done");
     /* The noise floor ends the search before the last row: that is the
      * normal end, not a stall, so the bar completes and says so. */
-    if (!strcmp(why, "floor") || !strcmp(why, "done"))
+    if (complete)
         status_screen("DC CALIBRATED", "LOWER GAINS NEED NO DC CORRECTION", "", 100);
     else
         status_screen("DC NOT COMPLETE", why, "SAFE DEFAULT, RETRY NEXT BOOT", -1);
     vTaskDelay(pdMS_TO_TICKS(800));
+    if (stale && complete && !dco_template_rows()) {
+        s_dco.filter_code = live.code;          /* every row now has a result in the live filter */
+        s_dco.filter_skirt = (int8_t)live.skirt;
+        s_dco.filter_bw20 = live.bw20;
+        s_dco_dirty = true;
+    }
     if (s_dco_dirty && dco_save()) s_dco_dirty = false;
-    printf("DCO startup where=%s result=%s searched=%u rows=%u floor_rows=%u missing=%u floor_from_gain=%u\n", where,
-           why, done, dco_valid_rows(), dco_rows(DCO_ROW_FLOOR), dco_rows(0), s_dco_floor);
+    /* The flag goes only with a complete table of this filter, saved. */
+    if (complete && !s_dco_dirty && !dco_rows(0) && !dco_template_rows() &&
+        dc_flags_clear(&s_dc_flags, rf_frequency_mhz(), live_filter_key())) {
+        dc_flags_save();
+        printf("DCO startup repair_flag=cleared freq=%u profile=%s\n", rf_frequency_mhz(),
+               dc_key_profile(live_filter_key()));
+    }
+    printf("DCO startup where=%s result=%s searched=%u rows=%u floor_rows=%u missing=%u template_rows=%u "
+           "floor_from_gain=%u\n", where, why, done, dco_valid_rows(), dco_rows(DCO_ROW_FLOOR), dco_rows(0),
+           dco_template_rows(), s_dco_floor);
+}
+
+/* DC readiness per physical filter on the current channel, summarised after
+ * every startup DC pass: a profile switch may only narrow onto a filter whose
+ * table is complete there (no missing or template rows, measured with that
+ * filter); otherwise it would fly on codes of another filter. */
+#define DCO_READY_MAX 3u
+static struct { uint16_t freq, key; bool ready; } s_dco_ready[DCO_READY_MAX];
+
+static bool dco_current_complete(void)
+{
+    const rf_filter_t live = rf_filter();
+    return !dco_rows(0) && !dco_template_rows() &&
+           dco_filter_same(s_dco.filter_code, s_dco.filter_skirt, s_dco.filter_bw20, live.code, (int)live.skirt,
+                           live.bw20);
+}
+
+static void dco_ready_note(void)
+{
+    const uint16_t key = live_filter_key(), freq = rf_frequency_mhz();
+    unsigned slot = 0;
+    for (unsigned k = 0; k < DCO_READY_MAX; ++k) {
+        if (s_dco_ready[k].freq == freq && s_dco_ready[k].key == key) { slot = k; break; }
+        if (s_dco_ready[k].freq != freq) slot = k;
+    }
+    s_dco_ready[slot].freq = freq;
+    s_dco_ready[slot].key = key;
+    s_dco_ready[slot].ready = dco_current_complete();
+}
+
+bool calibration_dc_ready(rf_filter_t f)
+{
+    const uint16_t key = dco_filter_key(f.code, (int)f.skirt, f.bw20), freq = rf_frequency_mhz();
+    for (unsigned k = 0; k < DCO_READY_MAX; ++k)
+        if (s_dco_ready[k].freq == freq && s_dco_ready[k].key == key) return s_dco_ready[k].ready;
+    return false;
+}
+
+/* Startup: the DC tables of the other profile filters too (NORMAL, NARROW,
+ * WIDE, each distinct physical setting once), so a profile switch in flight
+ * finds the codes of its own filter. Each filter is set up in its own
+ * analog branch (rf_set_filter) and goes through dco_startup(); a pass cut
+ * by the budget continues at the next boot (template/missing rows). */
+static void dco_startup_profiles(bool manual, int64_t deadline)
+{
+    const rf_filter_t live = rf_filter();
+    dco_ready_note();
+    rf_filter_t todo[3];
+    unsigned n = 0;
+    static const int classes[3] = {FILTER_NORMAL, FILTER_NARROW, FILTER_WIDE};
+    for (unsigned c = 0; c < 3u; ++c) {
+        rf_filter_t f;
+        if (!filter_setting(classes[c], &f) || rf_filter_equal(f, live)) continue;
+        bool dup = false;
+        for (unsigned k = 0; k < n; ++k) dup |= rf_filter_equal(todo[k], f);
+        if (!dup) todo[n++] = f;
+    }
+    for (unsigned k = 0; k < n && esp_timer_get_time() < deadline; ++k) {
+        printf("DCO startup profile_filter bw20=%u code=%d skirt=%u\n", (unsigned)todo[k].bw20, todo[k].code,
+               (unsigned)todo[k].skirt);
+        if (!rf_set_filter(todo[k])) continue;
+        receiver_set_gain(rf_gain_table()->max_index);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        dco_startup(manual, deadline);
+        dco_ready_note();
+    }
+    if (n) {
+        if (!rf_set_filter(live)) printf("DCO startup error: live filter not restored\n");
+        dco_select();
+    }
+    for (unsigned k = 0; k < DCO_READY_MAX; ++k)
+        if (s_dco_ready[k].freq)
+            printf("DCO_READY freq=%u filter_key=%04x ready=%u\n", s_dco_ready[k].freq, s_dco_ready[k].key,
+                   s_dco_ready[k].ready);
 }
 
 /* Live: hold the stored codes after gain writes and guard them; never a
@@ -1049,8 +1339,17 @@ static void dco_service(void)
  * The PHY lease covers the short trial, but tasks/interrupts and the hardware
  * video path remain runnable. A preempted trial is rejected on resumption;
  * its measured duration is reported, not presented as a hard deadline. */
-static int s_drift_offset[ARC_VENDOR_GAIN_MAX + 1u][2];
 static int s_drift_avg[2];
+static int s_dc_slope[2];           /* learned mcells per code (signed), 0 = unknown */
+static uint32_t s_dc_noise_samples;
+/* Trim range around the stored codes (the search spans +-96) and the faster
+ * period while the DC is more than a cell off. */
+#define DC_TRIM_MAX_OFFSET 48
+#define DC_TRIM_FAST_MCELLS 1000
+#define DC_TRIM_FAST_US 300000
+#define DC_TRIM_AVERAGE 8u      /* windows averaged before a trial */
+#define DC_TRIM_SAMPLE_US 25000  /* lease-free 4092-byte sample */
+#define DC_TRIM_VERIFY_BYTES 1024u   /* trial check inside DC_TRIM_DEADLINE_US */
 static uint32_t s_drift_nudges;
 static float s_temp_c = -100.0f;
 static dc_trim_t s_dc_trim;
@@ -1088,48 +1387,87 @@ static void dc_trim_invalidate(void)
     ++s_gain_epoch; /* A physical DC change invalidates amplitude/CN evidence too. */
 }
 
+/* Refusals (T DC_LIVE refuse=): owner, context, pair, deadline, copy,
+ * unqualified window, changed after the copy. */
+static uint32_t s_dc_refuse[7];
 static bool dc_trim_sample(const dc_trim_context_t *want, const int pair[2],
-                            int64_t deadline, int center[2])
+                            int64_t deadline, int center[2], size_t bytes)
 {
     dc_trim_context_t current;
     int actual[2];
-    if (!quiet_owner() || !dc_trim_snapshot(&current) || !dc_trim_same(&current, want) ||
-        !phy_dco_read_pair(actual) || actual[0] != pair[0] || actual[1] != pair[1] ||
-        esp_timer_get_time() >= deadline || !copy_control_window(s_cal_scratch, DC_LIVE_BYTES))
-        return false;
+    if (!quiet_owner()) { ++s_dc_refuse[0]; return false; }
+    if (!dc_trim_snapshot(&current) || !dc_trim_same(&current, want)) { ++s_dc_refuse[1]; return false; }
+    if (!phy_dco_read_pair(actual) || actual[0] != pair[0] || actual[1] != pair[1]) { ++s_dc_refuse[2]; return false; }
+    if (esp_timer_get_time() >= deadline) { ++s_dc_refuse[3]; return false; }
+    if (!copy_control_window(s_cal_scratch, bytes)) { ++s_dc_refuse[4]; return false; }
     dsp_circle_t circle = {0};
     unsigned rails = 0;
-    dsp_circle_sums(s_cal_scratch, DC_LIVE_BYTES, &circle);
-    for (unsigned k = 0; k < DC_LIVE_BYTES; ++k) {
+    dsp_circle_sums(s_cal_scratch, bytes, &circle);
+    for (unsigned k = 0; k < bytes; ++k) {
         int i = dsp_i(s_cal_scratch[k]), q = dsp_q(s_cal_scratch[k]);
         rails += i == -8 || i == 7 || q == -8 || q == 7;
     }
-    bool qualified = dc_live_fit(&circle, rails * 1000u / DC_LIVE_BYTES,
+    bool qualified = dc_live_fit(&circle, rails * 1000u / bytes,
                                   &center[0], &center[1], NULL);
-    return qualified && esp_timer_get_time() < deadline && quiet_owner() &&
+    if (!qualified && dc_live_noise_mean(&circle, rails * 1000u / bytes, &center[0], &center[1])) {
+        qualified = true;
+        ++s_dc_noise_samples;
+    }
+    if (!qualified) { ++s_dc_refuse[5]; return false; }
+    const bool still = esp_timer_get_time() < deadline && quiet_owner() &&
            dc_trim_snapshot(&current) && dc_trim_same(&current, want) &&
            phy_dco_read_pair(actual) && actual[0] == pair[0] && actual[1] == pair[1];
+    if (!still) ++s_dc_refuse[6];
+    return still;
 }
 
+/* Why the trim did not sample (T DC_LIVE skip=): fault, owner, gain state,
+ * recent gain write, no snapshot, sample refused. */
+static uint32_t s_dc_skip[6];
 static void drift_service(void)
 {
     drift_temperature();
     int64_t now = esp_timer_get_time();
-    if (s_dc_fault || !quiet_owner() || s_gain.state != DG_HOLD ||
-        s_current_gain > ARC_VENDOR_GAIN_MAX || rf_lane() != RF_LANE_ULTRAFINE ||
-        now < s_last_gain_write_us || now - s_last_gain_write_us < 500) {
+    const unsigned why = s_dc_fault ? 0u : !quiet_owner() ? 1u :
+        (s_gain.state != DG_HOLD || s_current_gain > ARC_VENDOR_GAIN_MAX || rf_lane() != RF_LANE_ULTRAFINE) ? 2u :
+        (now < s_last_gain_write_us || now - s_last_gain_write_us < 500) ? 3u : 6u;
+    if (why < 6u) {
+        ++s_dc_skip[why];
         s_dc_trim.have = false;
         return;
     }
+    /* The 4092-byte sample takes longer than the 2 ms trial deadline on
+     * this CPU, so every sample used to expire and no trim ever ran (board
+     * 2026-10-19: trials=0). It needs no PHY lease: it is checked against
+     * the context and the held pair afterwards. Only a trial takes the lease,
+     * and its check reads a short window inside the deadline. */
     dc_trim_context_t context;
-    if (!dc_trim_snapshot(&context) || !phy_try_actuator(context.phy)) return;
+    if (!dc_trim_snapshot(&context)) { ++s_dc_skip[4]; return; }
     int pair[2], center[2];
-    bool measured = phy_dco_read_pair(pair) && dc_trim_sample(&context, pair, now + DC_TRIM_DEADLINE_US, center);
-    if (!measured) { s_dc_trim.have = false; phy_end_actuator(); return; }
+    bool measured = phy_dco_read_pair(pair) &&
+                    dc_trim_sample(&context, pair, now + DC_TRIM_SAMPLE_US, center, DC_LIVE_BYTES);
+    if (!measured) { ++s_dc_skip[5]; s_dc_trim.have = false; return; }
     s_drift_avg[0] = center[0]; s_drift_avg[1] = center[1];
-    bool consistent = s_dc_trim.have && dc_trim_same(&context, &s_dc_trim.context) &&
-        pair[0] == s_dc_trim.pair[0] && pair[1] == s_dc_trim.pair[1] &&
-        abs(center[0] - s_dc_trim.center[0]) <= 150 && abs(center[1] - s_dc_trim.center[1]) <= 150;
+    /* The receiver DC itself wanders by about half a cell over seconds
+     * (board 2026-10-19, fixed G83, no VTX), so two single windows rarely
+     * agreed within 150 mcells and no trial ever started. Decide on the mean
+     * of at least DC_TRIM_AVERAGE windows in one context and pair instead. */
+    static int s_dc_sum[2];
+    static unsigned s_dc_n;
+    const bool same = s_dc_trim.have && dc_trim_same(&context, &s_dc_trim.context) &&
+        pair[0] == s_dc_trim.pair[0] && pair[1] == s_dc_trim.pair[1];
+    if (!same) { s_dc_sum[0] = s_dc_sum[1] = 0; s_dc_n = 0; }
+    if (s_dc_n == 2u * DC_TRIM_AVERAGE) {        /* keep a running mean */
+        s_dc_sum[0] -= s_dc_sum[0] / (int)s_dc_n;
+        s_dc_sum[1] -= s_dc_sum[1] / (int)s_dc_n;
+        --s_dc_n;
+    }
+    s_dc_sum[0] += center[0]; s_dc_sum[1] += center[1]; ++s_dc_n;
+    center[0] = s_dc_sum[0] / (int)s_dc_n;
+    center[1] = s_dc_sum[1] / (int)s_dc_n;
+    s_drift_avg[0] = center[0]; s_drift_avg[1] = center[1];
+    bool consistent = same && s_dc_n >= DC_TRIM_AVERAGE;
+    dc_health_drift(consistent, center);
     if (!dc_trim_same(&context, &s_dc_trim.context)) {
         s_dc_trim.direction[0] = s_dc_trim.direction[1] = 1;
     }
@@ -1138,14 +1476,28 @@ static void drift_service(void)
     memcpy(s_dc_trim.center, center, sizeof(center));
     s_dc_trim.have = true;
     int axis = abs(center[0]) >= abs(center[1]) ? 0 : 1;
+    const int64_t period = abs(center[axis]) > DC_TRIM_FAST_MCELLS ? DC_TRIM_FAST_US : DC_TRIM_PERIOD_US;
     if (!consistent || abs(center[axis]) <= DC_TRIM_DEADBAND_MCELLS ||
-        now - s_dc_last_trial < DC_TRIM_PERIOD_US) { phy_end_actuator(); return; }
+        now - s_dc_last_trial < period) return;
+    /* Step: from the learned slope when known, else two codes in the last
+     * good direction; one axis, at most PHY_DCO_TRY_MAX codes. */
     int direction = s_dc_trim.direction[axis];
     if (!direction) direction = 1;
+    int step = 2 * direction;
+    if (s_dc_slope[axis]) {
+        step = -center[axis] / s_dc_slope[axis];
+        if (!step) step = (center[axis] > 0) == (s_dc_slope[axis] > 0) ? -1 : 1;
+    }
+    if (step > PHY_DCO_TRY_MAX) step = PHY_DCO_TRY_MAX;
+    if (step < -PHY_DCO_TRY_MAX) step = -PHY_DCO_TRY_MAX;
+    direction = step > 0 ? 1 : -1;
     int target[2] = {pair[0], pair[1]};
-    if (target[axis] + direction < 0 || target[axis] + direction > 511) direction = -direction;
-    if (abs(s_drift_offset[context.gain][axis] + direction) > 4) { phy_end_actuator(); return; }
-    target[axis] += direction;
+    if (target[axis] + step < 0 || target[axis] + step > 511) return;
+    if (abs(s_drift_offset[context.gain][axis] + step) > DC_TRIM_MAX_OFFSET) return;
+    target[axis] += step;
+    int held[2];
+    if (!phy_try_actuator(context.phy)) return;
+    if (!phy_dco_read_pair(held) || held[0] != pair[0] || held[1] != pair[1]) { phy_end_actuator(); return; }
     s_dc_last_trial = esp_timer_get_time();
     ++s_dc_trials;
     dc_trim_invalidate();
@@ -1162,7 +1514,7 @@ static void drift_service(void)
         s_last_gain_write_us = began;
         while (esp_timer_get_time() - began < DC_TRIM_SETTLE_US) { /* preemptible fresh-RX guard */ }
         accepted = dc_trim_snapshot(&trial) && dc_trim_same(&trial, &expected) &&
-                   dc_trim_sample(&expected, target, deadline, after) &&
+                   dc_trim_sample(&expected, target, deadline, after, DC_TRIM_VERIFY_BYTES) &&
                    dc_trim_improves(center, after);
         if (!accepted) {
             if (esp_timer_get_time() >= deadline) ++s_dc_deadlines;
@@ -1171,7 +1523,10 @@ static void drift_service(void)
             fault = phy_dco_try_pair(context.packed_gain, target, pair) != ESP_OK;
         } else {
             ++s_drift_nudges;
-            s_drift_offset[context.gain][axis] += direction;
+            s_drift_offset[context.gain][axis] += step;
+            const int moved = after[axis] - center[axis];
+            if (abs(moved) >= 100) s_dc_slope[axis] = moved / step;   /* mcells per code */
+            s_dc_trim.direction[axis] = direction;
             s_drift_avg[0] = after[0]; s_drift_avg[1] = after[1];
         }
     }
@@ -1278,6 +1633,8 @@ static void startup_phase(bool manual)
         }
         printf("STARTUP step=dco\n");
         if (esp_timer_get_time() < deadline) dco_startup(manual, deadline);
+        if (esp_timer_get_time() < deadline) dco_startup_profiles(manual, deadline);
+        else dco_ready_note();
         printf("STARTUP step=deviation\n");
         /* Video needs a moment back on the own channel before measuring. */
         status_screen_end();
@@ -1289,6 +1646,17 @@ static void startup_phase(bool manual)
         else sphase_qualify("final", true);
         if (esp_timer_get_time() < deadline) deviation_startup(deadline);
         else profile_set_reason("startup_budget");
+    }
+    /* A fixed gain is saved across boots and costs range without any sign
+     * in the picture (a bench setting left behind): say so at every boot. */
+    if (!manual && receiver_gain_mode() != GAIN_MODE_AUTO) {
+        char mode[16], line[48];
+        const char *name = receiver_gain_mode_name(receiver_gain_mode(), mode, sizeof(mode));
+        snprintf(line, sizeof(line), "GAIN %s COSTS RANGE: USE AUTO", name);
+        printf("GAIN_WARNING mode=%s: a fixed gain is saved and costs range; menu GAIN or console G to AUTO\n",
+               name);
+        status_screen("GAIN NOT AUTO", line, "MENU > GAIN, HOLD TO CHANGE", -1);
+        vTaskDelay(pdMS_TO_TICKS(3000));
     }
     status_screen_end();
     s_startup = false;
@@ -1373,6 +1741,7 @@ static void calibration_task(void *arg)
         if (s_manual_requested && !s_menu_active) { s_manual_requested = false; startup_phase(true); continue; }
         if (s_lane_requested && !s_menu_active) { s_lane_requested = false; lane_compare(); continue; }
         dco_service();
+        dc_health_service();
         drift_service();
         gain_map_service();
         sphase_monitor();
@@ -1400,16 +1769,43 @@ void calibration_print(void)
            s_filter_cal.normal.nbw_khz, s_filter_cal.narrow.valid, s_filter_cal.narrow.width_khz,
            s_filter_cal.narrow.nbw_khz, s_filter_cal.wide.valid, s_filter_cal.wide.width_khz,
            s_filter_cal.wide.nbw_khz, s_filter_cal.calibrated_nbw_khz);
+    uint8_t hw[8] = {0}, want[8] = {0};
+    const int bad = phy_filter_hw_mismatch(hw, want);
+    printf("FILTER_HW mismatch=%d hw=%02x%02x%02x%02x%02x%02x%02x%02x want=%02x%02x%02x%02x%02x%02x%02x%02x\n", bad,
+           hw[0], hw[1], hw[2], hw[3], hw[4], hw[5], hw[6], hw[7],
+           want[0], want[1], want[2], want[3], want[4], want[5], want[6], want[7]);
     printf("DCO held=%u gains_valid=%u floor_rows=%u missing_rows=%u floor=%u searches=%lu carrier_searches=%lu hook_holds=%lu aborts=%lu "
            "drift_avg_mcells=%d/%d nudges=%lu temp_c=%.1f\n", phy_dco_held(), valid, dco_rows(DCO_ROW_FLOOR), dco_rows(0),
            s_dco_floor,
            (unsigned long)s_dco_searches, (unsigned long)s_dco_carrier_searches, (unsigned long)s_dco_hook_holds,
            (unsigned long)s_dco_aborts, s_drift_avg[0], s_drift_avg[1], (unsigned long)s_drift_nudges,
            (double)s_temp_c);
+    {
+        int b1[2], b2[2];
+        const uint8_t g = s_current_gain;
+        if (phy_dco_banks(b1, b2))
+            printf("DCO_BANKS bank1=%d/%d bank2=%d/%d gain=%u row_codes=%d/%d row_valid=%u banned=%u\n", b1[0], b1[1],
+                   b2[0], b2[1], g, g <= ARC_VENDOR_GAIN_MAX ? s_dco.e[g].code[0] : -1,
+                   g <= ARC_VENDOR_GAIN_MAX ? s_dco.e[g].code[1] : -1,
+                   g <= ARC_VENDOR_GAIN_MAX ? s_dco.e[g].valid : 0u, g <= ARC_VENDOR_GAIN_MAX ? s_dco_banned[g] : 0u);
+    }
     printf("DC_LIVE trials=%lu accepted=%lu rejected=%lu deadlines=%lu max_trial_us=%lu fault=%u "
-           "deadline_us=%u settle_us=%u volatile=1\n", (unsigned long)s_dc_trials,
+           "deadline_us=%u settle_us=%u noise_samples=%lu slope_mcells_per_code=%d/%d offset=%d/%d "
+           "skip=%lu/%lu/%lu/%lu/%lu/%lu refuse=%lu/%lu/%lu/%lu/%lu/%lu/%lu table_reloads=%lu reload_why=%u "
+           "volatile=1\n",
+           (unsigned long)s_dc_trials,
            (unsigned long)s_drift_nudges, (unsigned long)s_dc_rejected, (unsigned long)s_dc_deadlines,
-           (unsigned long)s_dc_max_us, (unsigned)s_dc_fault, DC_TRIM_DEADLINE_US, DC_TRIM_SETTLE_US);
+           (unsigned long)s_dc_max_us, (unsigned)s_dc_fault, DC_TRIM_DEADLINE_US, DC_TRIM_SETTLE_US,
+           (unsigned long)s_dc_noise_samples, s_dc_slope[0], s_dc_slope[1],
+           s_current_gain <= ARC_VENDOR_GAIN_MAX ? s_drift_offset[s_current_gain][0] : 0,
+           s_current_gain <= ARC_VENDOR_GAIN_MAX ? s_drift_offset[s_current_gain][1] : 0,
+           (unsigned long)s_dc_skip[0], (unsigned long)s_dc_skip[1], (unsigned long)s_dc_skip[2],
+           (unsigned long)s_dc_skip[3], (unsigned long)s_dc_skip[4], (unsigned long)s_dc_skip[5],
+           (unsigned long)s_dc_refuse[0], (unsigned long)s_dc_refuse[1], (unsigned long)s_dc_refuse[2],
+           (unsigned long)s_dc_refuse[3], (unsigned long)s_dc_refuse[4], (unsigned long)s_dc_refuse[5],
+           (unsigned long)s_dc_refuse[6],
+           (unsigned long)s_dco_reloads, (unsigned)s_dco_reload_why);
+    dc_health_print();
     unsigned stored = 0;
     for (unsigned k = 0; k < DCO_SLOTS; ++k) stored += s_dco_index.freq[k] != 0;
     printf("DCO tables freq=%u template_rows=%u seeded_from=%u seeds=%lu stored_channels=%u/%u:", s_dco.freq,
