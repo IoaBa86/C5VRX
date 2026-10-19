@@ -1,0 +1,113 @@
+/* C5VRX-5 by Twotoz and the C5VRX contributors: Direct Gain V7 peak AGC
+ * (main/gain.c), actual dg_tick(): behaviour on clean evidence.
+ *
+ * A steady carrier gets no writes; a multipath null does not raise the gain;
+ * a carrier really gone climbs to the table maximum; noise at the maximum
+ * (the range edge) stays there; a Wi-Fi burst under 1 ms is ignored while
+ * lasting saturation cuts the gain once; clipping on one rail per axis (DC)
+ * never moves the gain while clipping on both rails does.
+ *
+ *   cc -O2 -std=c11 -I../main test_gain_v7.c ../main/gain.c ../main/arc_phy.c -lm -o t && ./t
+ */
+#include <stdio.h>
+#include <string.h>
+#include "gain.h"
+
+unsigned char phy_param[2048];     /* arc_phy.c reference; unused for the 5 GHz table */
+
+static unsigned s_fail, s_run;
+#define CHECK(c, ...) do { ++s_run; if (!(c)) { ++s_fail; printf("FAIL %s:%d: ", __FILE__, __LINE__); \
+                           printf(__VA_ARGS__); printf("\n"); } } while (0)
+
+static dg_observation_t carrier(uint64_t t)   /* radius ~5 cells, constant envelope */
+{
+    return (dg_observation_t){.p50 = 25, .p90 = 26, .p95 = 27, .origin_pm = 0, .clip_pm = 0, .coherence = 90,
+                              .repeat_pm = 50, .span = 11, .observed_us = t};
+}
+static dg_observation_t empty(uint64_t t)
+{
+    return (dg_observation_t){.p50 = 1, .p90 = 2, .p95 = 2, .origin_pm = 900, .coherence = 5,
+                              .repeat_pm = 100, .span = 3, .observed_us = t};
+}
+static dg_observation_t noise_at_max(uint64_t t)   /* receiver noise at G83, 1.95 cells per axis */
+{
+    return (dg_observation_t){.p50 = 6, .p90 = 14, .p95 = 18, .origin_pm = 360, .coherence = 38,
+                              .repeat_pm = 120, .span = 12, .rails = 0, .observed_us = t};
+}
+static dg_observation_t folded(uint64_t t)    /* a carrier too large: both rails of both axes */
+{
+    return (dg_observation_t){.p50 = 80, .p90 = 105, .p95 = 110, .origin_pm = 0, .clip_pm = 700, .coherence = 30,
+                              .repeat_pm = 50, .span = 15, .rails = 15, .observed_us = t};
+}
+
+static uint8_t step(direct_gain_t *g, dg_observation_t o)
+{
+    uint8_t before = g->current_gain, target = dg_tick(g, &o);
+    if (target != before) dg_sync_applied(g, target, o.observed_us);
+    return target;
+}
+
+int main(void)
+{
+    arc_gain_table_t table;
+    arc_gain_table_from_bytes(&table, NULL, ARC_5G_GAIN_MAX);
+    static direct_gain_t g;
+    const dg_map_context_t c = {.freq_mhz = 5865, .lane_mode = 2, .iq_scale = 1, .filter_skirt = 32, .filter_bw20 = 1,
+                                .filter_code = 60};
+    uint64_t t = 1000;
+
+    dg_reset_context(&g, &table, 40, &c);
+    for (int k = 0; k < 5000; ++k, t += 200) step(&g, carrier(t));
+    CHECK(g.current_gain == 40 && g.writes == 0, "steady carrier: no writes in 1 s (gain %u, writes %lu)",
+          g.current_gain, (unsigned long)g.writes);
+
+    for (int k = 0; k < 25; ++k, t += 200) step(&g, empty(t));        /* a 5 ms multipath null */
+    for (int k = 0; k < 500; ++k, t += 200) step(&g, carrier(t));
+    CHECK(g.current_gain == 40 && g.writes == 0, "5 ms null: the gain does not move (gain %u, writes %lu)",
+          g.current_gain, (unsigned long)g.writes);
+
+    const uint32_t w0 = g.writes;
+    for (int k = 0; k < 1500; ++k, t += 200) step(&g, empty(t));      /* the VTX is gone */
+    CHECK(g.current_gain == table.max_index, "VTX gone: the table maximum within 300 ms (G%u, %lu writes)",
+          g.current_gain, (unsigned long)(g.writes - w0));
+    const uint32_t w1 = g.writes;
+    for (int k = 0; k < 5000; ++k, t += 200) step(&g, noise_at_max(t));
+    CHECK(g.current_gain == table.max_index && g.writes == w1, "noise at the maximum (range edge): stays there");
+
+    dg_reset_context(&g, &table, 60, &c);
+    for (int k = 0; k < 3; ++k, t += 200) step(&g, folded(t));        /* 0.6 ms: a Wi-Fi burst */
+    for (int k = 0; k < 500; ++k, t += 200) step(&g, carrier(t));
+    CHECK(g.current_gain == 60 && g.overloads == 0 && g.bursts_ignored > 0, "a burst under 1 ms is ignored");
+    for (int k = 0; k < 8; ++k, t += 200) step(&g, folded(t));        /* lasting saturation */
+    CHECK(g.current_gain < 60 && g.overloads == 1, "lasting saturation cuts the gain once (G%u, overloads %lu)",
+          g.current_gain, (unsigned long)g.overloads);
+    /* One-sided clipping (DC on a rail, gain.h dg_one_sided) is not overload:
+     * no carrier at the table maximum, the noise cloud pushed onto Q-8 by
+     * DC (board blackbox 2026-10-19: bursts of 255+ writes, 10-20 steps
+     * down). Clipping on both rails of an axis still cuts the gain. */
+    {
+        static direct_gain_t h;
+        dg_reset_context(&h, &table, table.max_index, &c);
+        uint64_t u = 1000;
+        for (int k = 0; k < 40; ++k, u += 200) step(&h, noise_at_max(u));
+        const uint8_t top = h.current_gain;
+        const uint32_t writes = h.writes;
+        dg_observation_t dc = {.p50 = 6, .p90 = 30, .p95 = 40, .origin_pm = 300, .clip_pm = 160, .coherence = 30,
+                               .repeat_pm = 200, .span = 9, .rails = 4u /* Q-8 only */};
+        for (int k = 0; k < 200; ++k, u += 200) { dc.observed_us = u; step(&h, dc); }
+        CHECK(h.current_gain == top && h.writes == writes && h.overloads == 0 && h.one_sided_clips == 200,
+              "one-sided clipping leaves the gain (gain %u of %u, writes %lu, overloads %lu, one-sided %lu)",
+              h.current_gain, top, (unsigned long)(h.writes - writes), (unsigned long)h.overloads,
+              (unsigned long)h.one_sided_clips);
+        dg_observation_t big = dc;
+        big.rails = 4u | 8u;   /* Q-8 and Q+7: a carrier too large for the window */
+        for (int k = 0; k < 40; ++k, u += 200) { big.observed_us = u; step(&h, big); }
+        CHECK(h.current_gain < top && h.overloads > 0, "two-sided clipping still cuts the gain (gain %u, top %u)",
+              h.current_gain, top);
+        dg_observation_t legacy = dc;
+        legacy.rails = 0;      /* no rail evidence: the old rule */
+        CHECK(!dg_one_sided(&legacy) && dg_one_sided(&dc) && !dg_one_sided(&big), "rail classification");
+    }
+    printf("%s: %u checks, %u failures\n", s_fail ? "FAIL" : "PASS", s_run, s_fail);
+    return s_fail ? 1 : 0;
+}

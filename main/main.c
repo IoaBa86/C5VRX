@@ -32,7 +32,7 @@ void app_main(void)
     settings_load();
     s_boot_stage = "flightlog";
     flightlog_start();
-    /* Start at the first index of the highest RF stage; Direct Gain V6 takes
+    /* Start at the first index of the highest RF stage; Direct Gain takes
      * over at once (table maximum without a carrier). */
     receiver_set_gain(arc_gain_highest_rf_stage_start(rf_gain_table()));
     s_boot_stage = "calibration";
@@ -51,6 +51,6 @@ void app_main(void)
     receiver_start();
     control_start();
     s_boot_stage = "ready";
-    printf("C5VRX5 %s ready: %s %u MHz, U85Q, ultrafine IQ, Direct Gain V6 ('h' for keys) fw=%s\n",
+    printf("C5VRX5 %s ready: %s %u MHz, U85Q, ultrafine IQ, Direct Gain V7 ('h' for keys) fw=%s\n",
            esp_app_get_description()->version, rf_channel()->name, rf_frequency_mhz(), firmware_id());
 }

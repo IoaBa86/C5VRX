@@ -44,6 +44,7 @@ typedef struct {
     uint8_t centered;        /* judged around the window DC (DC-dominated, gain.c) */
     int32_t sum_i, sum_q;    /* sums of 2v+1 per axis (dsp units): the probe DC for the servo */
     uint8_t rails;           /* rails reached: bit 0 I-8, 1 I+7, 2 Q-8, 3 Q+7 */
+    uint16_t pwr_x16;        /* DC-removed mean power, cells^2 x16 (rx_level.h) */
     uint64_t observed_us;
 } dg_observation_t;
 
@@ -126,6 +127,12 @@ typedef struct {
     uint8_t anchor_gain;
     uint64_t anchor_us, carrier_us, climb_us;
     uint32_t anchor_returns, climbs;
+    /* V7 (gain.c): model gain per table step, peak memory, write pacing. */
+    int16_t model_db_q8[DG_STATES];
+    uint8_t peak_p95[32];         /* highest P95 per 2 ms over 64 ms */
+    uint8_t peak_i;
+    uint64_t peak_since_us, peak_bucket_us, up_after_us, down_after_us;
+    bool far_run;                 /* releasing a carrier that stays far below (gain.c) */
     uint32_t magic;
 } direct_gain_t;
 

@@ -80,7 +80,7 @@ What was received, so a log can be compared across VTXs and cameras.
 Written at the first carrier of a session, after every deviation measurement
 that changes the result, and on a channel change.
 
-## Per-second summary (fixed 40 bytes)
+## Per-second summary (34 bytes, 38 with the received level)
 
 One per second while the receiver runs; ~7 hours in the ring.
 
@@ -92,10 +92,12 @@ One per second while the receiver runs; ~7 hours in the ring.
 | DC | residual I and Q of the active row (0.05 cells, signed), offset I and Q of the active row (codes), servo corrections |
 | AFC | offset applied (kHz), porch residual (kHz), corrections |
 | demodulator | profile, kp level, LP (packed), sampling-phase state and last probe excess |
+| received level | carrier at the chip pin (0.1 dBm), the noise it is measured against (dBm), flags: valid, above the noise, exact (G54+), noise learned (`main/rx_level.h`) |
 | environment | temperature (degC) |
 | flags | menu, scan, calibrating, paused, fault latched, flywheel active, status screen |
 
-Counters are per second (saturating), not per event.
+Counters are per second (saturating), not per event. Readers take any record
+of 34 bytes or more. Older 34-byte records simply have no level.
 
 ## Events (rare, ~20-200 bytes)
 

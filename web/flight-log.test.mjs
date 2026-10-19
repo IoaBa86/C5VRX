@@ -6,12 +6,13 @@ import { FlightLogCapture, decodeImage, summarize, secondsCsv, crc32, SECTOR, PA
 
 const le = (n, bytes) => Array.from({ length: bytes }, (_, i) => (n >>> (8 * i)) & 0xff);
 
-function second(t, snr, gain, dcI, temp, dropout = 0) {
-  const p = new Uint8Array(34);
+function second(t, snr, gain, dcI, temp, dropout = 0, level = null) {
+  const p = new Uint8Array(level === null ? 34 : 38);
   const d = new DataView(p.buffer);
   d.setUint32(0, t, true); d.setInt16(4, snr * 10, true); d.setUint16(6, 120, true); d.setInt16(8, 85, true);
   p[10] = 90; p[11] = dropout; p[12] = gain - 1; p[13] = gain; p[14] = gain + 1;
   d.setInt8(18, dcI / 0.05); d.setInt8(30, temp); p[28] = 1 | (3 << 2); p[29] = 1;
+  if (level !== null) { d.setInt16(34, level * 10, true); d.setInt8(36, -95); p[37] = 1 | 2 | 4 | 8; }
   return p;
 }
 
@@ -27,7 +28,7 @@ function image({ closed = true } = {}) {
   session.set(le(5865, 2), 46);
   put(1, session);
   put(4, second(10, 12.5, 80, 0.4, 41));
-  put(4, second(11, 3.0, 83, 1.2, 42, 3));
+  put(4, second(11, 3.0, 83, 1.2, 42, 3, -88.5));
   put(5, new Uint8Array([...le(11500, 4), 10, 2]));
   if (closed) block.set(le(crc32(block.subarray(0, SECTOR - 4)), 4), SECTOR - 4);
   img.set(block, SECTOR * 5);
@@ -63,6 +64,10 @@ test('decodes sessions, seconds, events and snapshots', () => {
   assert.equal(sum.snrWorst, 3);
   assert.equal(sum.dropouts, 1);
   assert.equal(sum.tempMax, 42);
+  assert.equal(s.seconds[0].level, null);         // a 34-byte record: no level
+  assert.equal(s.seconds[1].level, -88.5);
+  assert.equal(s.seconds[1].noise, -95);
+  assert.equal(sum.levelWorstWithPicture, -88.5);
   assert.match(secondsCsv(s), /^t,snr,lines/);
 });
 

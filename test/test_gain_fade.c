@@ -241,7 +241,9 @@ int main(void)
         check("fast sentinel preserves all gain evidence on 64 probes", fast_ok);
         for (unsigned k = 0; k < 256u; ++k) {
             double phase = 6.283185307179586 * k * 7500000. / 40000000.;
-            int ci = (int)floor(4.2 * cos(phase)), cq = (int)floor(4.2 * sin(phase));
+            /* Radius 5.2: inside the V7 window (peaks between the release
+             * and the rails); a 4.2-cell carrier is lifted towards it. */
+            int ci = (int)floor(5.2 * cos(phase)), cq = (int)floor(5.2 * sin(phase));
             envelope[k] = (uint8_t)(((unsigned)ci & 15u) << 4 | ((unsigned)cq & 15u));
         }
         dg_observation_t high_fm = dg_measure(envelope, sizeof(envelope), c5vrx_phase8_gain_lut, 1000);

@@ -1,4 +1,4 @@
-/* C5VRX-5 by Twotoz and the C5VRX contributors: Direct Gain V6 runtime.
+/* C5VRX-5 by Twotoz and the C5VRX contributors: Direct Gain runtime (V7 decision core, gain.c).
  * A 200 us timer wakes sentinel/gain; full C/N runs every 20 ms with
  * context/age validation. Bound a continuously runnable observer batch so
  * IDLE/calibration get time even if notifications accumulate. */
@@ -194,6 +194,52 @@ static void apply_target(uint8_t target, uint32_t control, uint32_t phy)
     phy_end_actuator();
 }
 
+/* Received level at the pin (rx_level.h): probe power per gain row over one
+ * second, rolled by the supervisor's 1 Hz step. */
+static uint32_t s_lvl_sum[RX_LEVEL_ROWS], s_lvl_n[RX_LEVEL_ROWS], s_lvl_clipped;
+static portMUX_TYPE s_lvl_lock = portMUX_INITIALIZER_UNLOCKED;
+static rx_level_t s_level;
+static float s_noise_rel;          /* learned noise, calibration units; 0 = not yet */
+static uint16_t s_noise_freq;
+static void level_accumulate(const dg_observation_t *o, uint8_t gain)
+{
+    if (gain >= RX_LEVEL_ROWS || s_obs_stuck) return;
+    taskENTER_CRITICAL(&s_lvl_lock);
+    if (o->clip_pm >= 20u) ++s_lvl_clipped;
+    else { s_lvl_sum[gain] += o->pwr_x16; ++s_lvl_n[gain]; }
+    taskEXIT_CRITICAL(&s_lvl_lock);
+}
+void receiver_level_roll(bool no_carrier)
+{
+    static uint32_t sum[RX_LEVEL_ROWS], n[RX_LEVEL_ROWS];
+    uint32_t clipped;
+    taskENTER_CRITICAL(&s_lvl_lock);
+    memcpy(sum, s_lvl_sum, sizeof(sum)); memcpy(n, s_lvl_n, sizeof(n)); clipped = s_lvl_clipped;
+    memset(s_lvl_sum, 0, sizeof(s_lvl_sum)); memset(s_lvl_n, 0, sizeof(s_lvl_n)); s_lvl_clipped = 0;
+    taskEXIT_CRITICAL(&s_lvl_lock);
+    if (s_noise_freq != rf_frequency_mhz()) { s_noise_freq = rf_frequency_mhz(); s_noise_rel = 0.0f; }
+    rx_level_t r = rx_level_compute(sum, n, clipped, s_gain.model_db_q8, s_gain.table.max_index, s_noise_rel);
+    /* Learn the noise with no carrier at the table maximum, inside -3..+4 dB
+     * of the calibration (a carrier the supervisor missed stays out). */
+    if (no_carrier && r.valid && r.gain_min == s_gain.table.max_index && r.rel > 0.5f && r.rel < 2.5f) {
+        s_noise_rel = s_noise_rel > 0.0f ? s_noise_rel + (r.rel - s_noise_rel) / 8.0f : r.rel;
+        r = rx_level_compute(sum, n, clipped, s_gain.model_db_q8, s_gain.table.max_index, s_noise_rel);
+    }
+    s_level = r;
+}
+rx_level_t receiver_level(void) { return s_level; }
+bool receiver_noise_learned(void) { return s_noise_rel > 0.0f; }
+/* The menu owns TX and the gain observer stands still, so the menu feeds
+ * its control windows here instead (control.c), in 256-byte probes like
+ * the observer's, and rolls once a second. */
+void receiver_level_feed(const uint8_t *window, size_t bytes)
+{
+    for (size_t at = 0; at + 256u <= bytes; at += 256u) {
+        const dg_observation_t o = dg_measure_gain(window + at, 256u, c5vrx_phase8_gain_lut, 0);
+        level_accumulate(&o, s_current_gain);
+    }
+}
+
 int receiver_obs_cn_x10(void)
 {
     /* Envelope model (cn_estimate.h); a fixed IQ point has no envelope to
@@ -263,7 +309,7 @@ void receiver_dc_reset_all(void)
     taskEXIT_CRITICAL(&s_dc_acc_lock);
 }
 
-static uint32_t s_sat_one_sided, s_sat_two_sided, s_sat_run;
+static uint32_t s_sat_one_sided, s_sat_two_sided, s_sat_score;
 
 static void tick_cb(void *arg)
 {
@@ -372,15 +418,20 @@ static void observer_task(void *arg)
             const bool both = (o.rails & 3u) == 3u || (o.rails & 12u) == 12u;
             if (both) ++s_sat_two_sided; else ++s_sat_one_sided;
             if (o.clip_pm >= 100u && dg_one_sided(&o)) calibration_dc_urgent();   /* real clipping, not a touch */
-            if (++s_sat_run == 50u) flightlog_snapshot_request(FLOG_SNAP_OVERLOAD);   /* a burst, ~10 ms */
+            /* A leaky count, not a run: with oscillating gain the saturated
+             * windows alternate and a run of 50 never came (blackbox
+             * session 13: 7549 overloads, no snapshot). */
+            if (both && (s_sat_score += 16u) > 400u) { s_sat_score = 0; flightlog_snapshot_request(FLOG_SNAP_OVERLOAD); }
         } else {
-            s_sat_run = 0;
+            s_sat_score -= s_sat_score >> 5;
         }
         const dg_map_context_t after_context = map_context();
         if (phy != phy_generation() || phy_busy() || gain_epoch != s_gain_epoch || control != s_control_epoch ||
             table != rf_table_generation() || !dg_map_context_equal(&context, &after_context)) continue;
-        if (cn_gain_settled((uint64_t)t0, (uint64_t)s_last_gain_write_us, s_gain.state == DG_SETTLE))
+        if (cn_gain_settled((uint64_t)t0, (uint64_t)s_last_gain_write_us, s_gain.state == DG_SETTLE)) {
             dc_accumulate(&o, sizeof(sample), s_current_gain, control, phy, table);
+            level_accumulate(&o, s_current_gain);
+        }
         if (measure_cn) {
             ++s_cn_sequence;
             __sync_synchronize();
@@ -419,6 +470,17 @@ void receiver_start(void)
 
 void receiver_print(void)
 {
+    const rx_level_t lv = s_level;
+    if (lv.valid)
+        printf("RX_LEVEL carrier_dbm=%.1f input_dbm=%.1f noise_dbm=%.1f noise_learned=%u cn_db=%.1f above_noise=%u exact=%u gains=%u-%u probes=%lu clipped_pm=%u "
+               "(at the chip pin; calibrated against the Wi-Fi PHY RSSI: +-1 dB at G54-G83, a few dB below G54; "
+               "free space for 25 mW, 2 dBi each side, 10 m at 5.8 GHz is ~-50 dBm)\n",
+               lv.carrier_dbm_x10 / 10.0, lv.input_dbm_x10 / 10.0, lv.noise_dbm_x10 / 10.0, (unsigned)(s_noise_rel > 0.0f),
+               lv.cn_x10 / 10.0,
+               (unsigned)lv.above_noise, (unsigned)lv.exact, lv.gain_min, lv.gain_max, (unsigned long)lv.probes,
+               lv.clipped_pm);
+    else
+        printf("RX_LEVEL unknown probes=%lu clipped_pm=%u\n", (unsigned long)lv.probes, lv.clipped_pm);
     printf("GAIN_SAT one_sided=%lu two_sided=%lu to_dc_servo=%lu (saturated observer windows: one rail per axis = DC-pushed, both = large signal; one-sided ones go to the DC servo, not the gain)\n",
            (unsigned long)s_sat_one_sided, (unsigned long)s_sat_two_sided, (unsigned long)s_gain.one_sided_clips);
     printf("CN_OBSERVER windows=%lu period_us=%u max_age_us=%u\n", (unsigned long)s_cn_windows,
@@ -430,7 +492,7 @@ void receiver_print(void)
            "map_imports=%lu preset_imports=%lu "
            "obs_windows=%lu obs_us_max=%lu\n",
            s_paused ? "paused" :
-           s_gain_mode == GAIN_MODE_AUTO ? "direct_gain_v6" : "manual",
+           s_gain_mode == GAIN_MODE_AUTO ? "direct_gain_v7" : "manual",
            receiver_gain_mode_name(s_gain_mode, mode, sizeof(mode)),
            s_current_gain, (unsigned)s_gain.state, s_obs_p50, s_obs_p95, s_obs_coherence, s_obs_env_ratio_x100,
            (unsigned)s_obs_stuck, receiver_obs_cn_x10(),

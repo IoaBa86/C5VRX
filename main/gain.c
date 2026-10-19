@@ -1,4 +1,4 @@
-/* C5VRX-5 by Twotoz and the C5VRX contributors: Direct Gain V6 core.
+/* C5VRX-5 by Twotoz and the C5VRX contributors: Direct Gain core (V7 decision: peak AGC; measurement and map from V3-V6).
  * Ported from legacy/c5vrx4/main/direct_gain_v3.c (PR #190) with the fixed-lane,
  * staged-recovery, boost-off configuration that ran on the board (V5), plus
  * the V6 carrier memory described in gain.h. */
@@ -174,6 +174,15 @@ static dg_observation_t measure(const uint8_t *samples, size_t bytes,
     r.sum_i = cx;
     r.sum_q = cy;
     r.rails = (uint8_t)((i_seen & 1u) | ((i_seen >> 14) & 2u) | ((q_seen & 1u) << 2) | ((q_seen >> 12) & 8u));
+    /* Mean power around the window DC from the sums already taken: in dsp
+     * units (2v+1) N * sum(x^2+y^2) - sum(x)^2 - sum(y)^2 over N^2, and a
+     * dsp unit is half a cell, so cells^2 x16 is 4x that. */
+    {
+        const int64_t nb = (int64_t)bytes;
+        const int64_t num = (4 * (int64_t)cp - 2 * nb) * nb - (int64_t)cx * cx - (int64_t)cy * cy;
+        const int64_t x16 = num > 0 ? 4 * num / (nb * nb) : 0;
+        r.pwr_x16 = (uint16_t)(x16 > 65535 ? 65535 : x16);
+    }
     int di, dq;
     if (!dg_stuck(&r) && dc_dominated(cx, cy, 4ull * cp - 2ull * bytes, bytes, &di, &dq)) {
         memset(hist, 0, sizeof(hist));
@@ -276,16 +285,6 @@ static bool carrier(const dg_observation_t *o)
 #define SCHMITT_P95      65
 #define SCHMITT_LO       14
 
-static bool healthy(const dg_observation_t *o)
-{
-    /* Gain health is envelope placement, not FM phase-step speed. The
-     * old coherence gate could leave a clean fast-FM carrier in ACQUIRE/
-     * VERIFY forever and block profile/DC work that requires DG_HOLD.
-     * Learning keeps its separate confirmed-carrier safeguards. */
-    return o->p50 >= BAND_LO && o->p50 <= BAND_HI &&
-           o->p95 <= BAND_P95 && o->clip_pm < BAND_CLIP_PM && o->origin_pm <= 250;
-}
-
 static bool valid_learning(const dg_observation_t *o)
 {
     return carrier(o) && o->p50 >= 7 && o->p50 <= 45 &&
@@ -366,8 +365,16 @@ void dg_reset_context(direct_gain_t *g, const arc_gain_table_t *table, uint8_t c
     prepare_lut();
     if (table && table->max_index >= 20u && table->max_index <= ARC_VENDOR_GAIN_MAX) g->table = *table;
     else arc_gain_table_from_bytes(&g->table, NULL, ARC_VENDOR_GAIN_MAX);
-    for (unsigned k = 0; k <= g->table.max_index; ++k)
+    for (unsigned k = 0; k <= g->table.max_index; ++k) {
         (void)arc_gain_tuple_decode(&g->table, (uint8_t)k, &g->tuple[k]);
+        const arc_gain_tuple_t *t = &g->tuple[k];
+        /* V7 model: 6 dB per RF stage, 6 dB per baseband doubling, 0.83 dB
+         * per fine step (fine 0 is the highest). */
+        unsigned bb = t->bb_code + 1u, bits_q8 = 0;
+        while (bb >= 2u) { bb >>= 1; bits_q8 += 256u; }
+        bits_q8 += (unsigned)((((t->bb_code + 1u) << 8) >> (bits_q8 >> 8)) - 256u);   /* linear between powers of two */
+        g->model_db_q8[k] = (int16_t)(6 * 256 * (int)t->rf_stage + 6 * (int)bits_q8 + 212 * (5 - (int)t->fine_code));
+    }
     g->current_gain = (uint8_t)clamp_i(current_gain, 20, g->table.max_index);
     g->target_gain = g->current_gain;
     g->relative_power_q10[g->current_gain] = 1024u;
@@ -490,99 +497,6 @@ static bool predict(const direct_gain_t *g, uint8_t candidate, int *ratio_q10, i
     return true;
 }
 
-static uint8_t adjacent_physical(const direct_gain_t *g, bool up)
-{
-    const arc_gain_tuple_t *current = &g->tuple[g->current_gain];
-    for (int distance = 1; distance <= 2; ++distance) {
-        int wanted_fine = (int)current->fine_code + (up ? -distance : distance);
-        for (unsigned k = 20u; k <= g->table.max_index; ++k) {
-            const arc_gain_tuple_t *t = &g->tuple[k];
-            if (g->confidence[k] && g->confidence[g->current_gain]) {
-                bool measured_up = g->relative_power_q10[k] > g->relative_power_q10[g->current_gain];
-                if (measured_up != up) continue;
-            }
-            if (t->rf_stage == current->rf_stage && t->bb_code == current->bb_code &&
-                t->fine_code == wanted_fine) return (uint8_t)k;
-        }
-    }
-    /* Fine exhausted: the adjacent BB bank at its least aggressive state. */
-    int wanted_bb = up ? (int)current->bb_code * 2 + 1 : ((int)current->bb_code - 1) / 2;
-    for (int distance = 0; distance < 6; ++distance) {
-        int boundary_fine = up ? 5 - distance : distance;
-        for (unsigned k = 20u; k <= g->table.max_index; ++k) {
-            const arc_gain_tuple_t *t = &g->tuple[k];
-            if (t->rf_stage == current->rf_stage && t->bb_code == wanted_bb &&
-                t->fine_code == boundary_fine) return (uint8_t)k;
-        }
-    }
-    /* Last resort: the adjacent RF stage's nearest entry in vendor order
-     * (the exact 5 GHz table starts stages at counters 12..15). */
-    int wanted_rf = (int)current->rf_stage + (up ? 1 : -1);
-    if (up) {
-        for (unsigned k = 20u; k <= g->table.max_index; ++k)
-            if ((int)g->tuple[k].rf_stage == wanted_rf) return (uint8_t)k;
-    } else {
-        for (int k = (int)g->table.max_index; k >= 20; --k)
-            if ((int)g->tuple[k].rf_stage == wanted_rf) return (uint8_t)k;
-    }
-    return g->current_gain;
-}
-
-/* Overload: remove late (BB) gain first; the RF stage sets the noise
- * figure. Still saturated a window later, the next drop takes RF. */
-static uint8_t emergency_drop(const direct_gain_t *g)
-{
-    const arc_gain_tuple_t *current = &g->tuple[g->current_gain];
-    if (current->bb_code > 1u) {
-        unsigned lower_bb = (current->bb_code - 1u) / 2u;
-        for (unsigned k = 20u; k < g->current_gain; ++k) {
-            const arc_gain_tuple_t *t = &g->tuple[k];
-            if (t->rf_stage == current->rf_stage && t->bb_code == lower_bb) return (uint8_t)k;
-        }
-    }
-    if (current->rf_stage > 0u) {
-        for (unsigned k = 20u; k < g->current_gain; ++k)
-            if (g->tuple[k].rf_stage + 1u == current->rf_stage) return (uint8_t)k;
-    }
-    return adjacent_physical(g, false);
-}
-
-static uint8_t select_destination(const direct_gain_t *g, const dg_observation_t *o,
-                                  bool up, int32_t desired_q8)
-{
-    uint8_t best = g->current_gain;
-    int best_class = 4, best_error = 99999, best_uncertainty = 999, best_artifact = 999;
-    for (unsigned k = 20u; k <= g->table.max_index; ++k) {
-        if (k == g->current_gain) continue;
-        int ratio, uncertainty;
-        if (!predict(g, (uint8_t)k, &ratio, &uncertainty)) continue;
-        int p50 = (int)o->p50 * ratio / 1024;
-        int p95_worst = (int)o->p95 * ratio * (1000 + uncertainty) / 1024000;
-        if (p50 < BAND_LO || p50 > BAND_HI || p95_worst > BAND_P95) continue;
-        if (up && ratio <= 1024) continue;
-        if (!up && ratio >= 1024) continue;
-        int kind = transition_kind(g, g->current_gain, (uint8_t)k);
-        int delta_q8 = ratio_db_q8(ratio);
-        int hysteresis_q8 = kind == DG_FINE ? 90 : kind == DG_BB ? 192 : 384;
-        if ((up && desired_q8 < delta_q8 + hysteresis_q8) ||
-            (!up && desired_q8 > delta_q8 - hysteresis_q8)) continue;
-        int error = abs_i((int)desired_q8 - delta_q8);
-        int artifact = g->artifact_score[k];
-        if (kind < best_class ||
-            (kind == best_class && error < best_error) ||
-            (kind == best_class && error == best_error && uncertainty < best_uncertainty) ||
-            (kind == best_class && error == best_error && uncertainty == best_uncertainty &&
-             artifact < best_artifact)) {
-            best = (uint8_t)k;
-            best_class = kind;
-            best_error = error;
-            best_uncertainty = uncertainty;
-            best_artifact = artifact;
-        }
-    }
-    return best == g->current_gain ? adjacent_physical(g, up) : best;
-}
-
 static void learn_transition(direct_gain_t *g, const dg_observation_t *after)
 {
     if (!g->learn_enabled) { ++g->learn_refused; return; }
@@ -669,193 +583,239 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
     return g->settle_us[g->transition] > 400u ? (uint64_t)g->settle_us[g->transition] * 3u / 4u : 300u;
 }
 
+/* ---- Direct Gain V7: peak AGC ------------------------------------------
+ * Board blackbox 2026-10-19 (VTX on, handheld): close in the gain swung over
+ * 10-30 steps a second with 255+ writes and overloads, and sync fell to
+ * 60-80 %; at the range edge it sat at G66-G81 instead of the maximum. The
+ * V6 core caused both: it steered the median level into a band up to P50
+ * 32 (radius 5.7 cells, ~2.5 dB below the rails), so every multipath swing
+ * clipped, the emergency drop overshot, the next window read weak and the
+ * climb (8 steps per 3 ms) folded the carrier again; 2 % of clipping
+ * without a rail-side check also dropped the gain for DC. A level loop on a
+ * mean (tried first) still followed every fade both ways.
+ *
+ * V7 is the classic radio AGC on the envelope peaks, fast attack and slow
+ * release, which is what the 4-bit window needs: as much gain as the peaks
+ * allow.
+ * - Attack: clipping on both rails of an axis (DG7_FOLD_PM) in two probes
+ *   running, or saturation lasting DG7_SAT_US (Wi-Fi bursts and one-sided
+ *   DC clipping never count), steps down to put the peak at DG7_TARGET_P95,
+ *   at most DG7_DOWN_MAX steps per DG7_DOWN_GAP_US. P95 alone is no
+ *   evidence: at the range edge the noise peaks reach the rails while the
+ *   maximum gain is still the best.
+ * - Release: only when the highest P95 of the last DG7_HOLD_US stayed below
+ *   DG7_RELEASE_P95 does the gain rise, by 70 % of the model difference to
+ *   the target, at most DG7_UP_MAX steps per DG7_UP_GAP_US. A multipath
+ *   null of a few ms never raises the gain: the peak memory still holds the
+ *   level before it.
+ * - At the range edge the noise peaks are far below the attack level, so
+ *   the gain stays at the table maximum (research/sensitivity_model.py:
+ *   2 dB C/N at G83, 3 dB at G72-78, 4 dB at G66).
+ * Steps use the model gain per table step: 6 dB per RF stage, 6 dB per
+ * baseband doubling, 0.83 dB per fine step (the board's noise fell 4.4-4.9
+ * dB per 5-6 steps, 2026-10-19).
+ *
+ * Parameters from sweeps in test/test_gain_track.c (Rician K 3 and
+ * Rayleigh at 30 Hz, Gaussian noise peaks P95 ~ 4.3 x P50 as on the board).
+ * Each write costs 2 ms of picture, taken from the blackbox: at the range
+ * edge, at equal C/N, a steady gain gave 75 % video and a gain hopping with
+ * 255 writes a second gave 28 % (session 13). The cost is the transient plus
+ * the DC of briefly visited rows. Chosen: peak memory 48 ms, target P95 30,
+ * release below 26, up to 6 steps.
+ *
+ * Against V6, close in / Rayleigh / mid range at >= 10 dB:
+ * 90.5 / 82.9 / 92.0 % vs 83.4 / 77.5 / 84.4 %. At the usable edge (~3 dB
+ * C/N), above the threshold: 37.9 vs 35.0 %. Writes: 12-20 instead of
+ * 90-125 a second.
+ *
+ * Rejected:
+ * - A 16 ms memory (the first choice, under a 0.4 ms write cost) wrote 29-48
+ *   times a second.
+ * - A fixed release far under the target (18-22) left the gain a step below
+ *   the maximum on receiver noise alone (board, P95 15-19 at G83). */
+#ifndef DG7_ATTACK_P95
+#define DG7_ATTACK_P95 56u      /* radius ~7.5: the rails */
+#endif
+#ifndef DG7_FOLD_PM
+#define DG7_FOLD_PM 20u      /* two-sided clipping per mille that starts a fold */
+#endif
+#ifndef DG7_TARGET_P95
+#define DG7_TARGET_P95 30u      /* radius ~5.5: ~3 dB below them, inside the deviation gate (profile_logic.h, P50 <= 32) */
+#endif
+#ifndef DG7_RELEASE_P95
+#define DG7_RELEASE_P95 26u      /* one step under the target: above the noise peaks at G83 (P95 15-19) */
+#endif
+#ifndef DG7_HOLD_US
+#define DG7_HOLD_US 48000u   /* peak memory */
+#endif
+#define DG7_BUCKET_US    2000u
+/* Far below the release level (6 dB) for this long, judged on the newest
+ * peaks only, a weaker carrier is no multipath null any more: release then
+ * instead of after the full memory. A -22 / -12 dB step behind an obstacle
+ * recovers in 22 / 14 ms, not 54 / 46 (test_gain_fade); 12 ms released on
+ * Rician nulls (close in 89.8 %), 20-32 ms cost the steps 26-38 ms. */
+#ifndef DG7_FAR_HOLD_US
+#define DG7_FAR_HOLD_US 16000u
+#endif
+_Static_assert(DG7_HOLD_US / DG7_BUCKET_US <= 32u, "peak memory: 32 buckets (gain.h peak_p95)");
+#define DG7_BUCKETS      (DG7_HOLD_US / DG7_BUCKET_US)
+#ifndef DG7_STEP_PCT
+#define DG7_STEP_PCT 70
+#endif
+#ifndef DG7_UP_MAX
+#define DG7_UP_MAX 6
+#endif
+#ifndef DG7_UP_GAP_US
+#define DG7_UP_GAP_US 8000u
+#endif
+#ifndef DG7_DOWN_MAX
+#define DG7_DOWN_MAX 8
+#endif
+#ifndef DG7_DOWN_GAP_US
+#define DG7_DOWN_GAP_US 1000u
+#endif
+#ifndef DG7_SAT_US
+#define DG7_SAT_US 1000u
+#endif
+#ifndef DG7_SAT_DROP_DB
+#define DG7_SAT_DROP_DB 9
+#endif
+
+/* The table step closest to the model gain of `from` plus delta (dB Q8). */
+static uint8_t dg7_index_for(const direct_gain_t *g, uint8_t from, int delta_q8)
+{
+    const int want = g->model_db_q8[from] + delta_q8;
+    unsigned best = from;
+    int best_err = 1 << 30;
+    for (unsigned k = 2; k <= g->table.max_index; ++k) {
+        const int err = abs_i(g->model_db_q8[k] - want);
+        if (err < best_err || (err == best_err && abs_i((int)k - from) < abs_i((int)best - from))) {
+            best = k;
+            best_err = err;
+        }
+    }
+    return (uint8_t)best;
+}
+
+/* Peak memory: the highest P95 per DG7_BUCKET_US over DG7_HOLD_US,
+ * restarted after every write (the gain changed every peak). */
+static void dg7_peak_reset(direct_gain_t *g, uint64_t now)
+{
+    memset(g->peak_p95, 0, sizeof(g->peak_p95));
+    g->peak_since_us = now ? now : 1u;
+    g->peak_bucket_us = now;
+    g->peak_i = 0;
+}
+
+static unsigned dg7_peak(direct_gain_t *g, const dg_observation_t *o, unsigned *recent_out)
+{
+    const uint64_t now = o->observed_us;
+    if (now - g->peak_bucket_us > DG7_HOLD_US) {
+        memset(g->peak_p95, 0, sizeof(g->peak_p95));
+        g->peak_bucket_us = now;
+    }
+    while (now - g->peak_bucket_us >= DG7_BUCKET_US) {
+        g->peak_bucket_us += DG7_BUCKET_US;
+        g->peak_i = (uint8_t)((g->peak_i + 1u) % DG7_BUCKETS);
+        g->peak_p95[g->peak_i] = 0;
+    }
+    if (o->p95 > g->peak_p95[g->peak_i]) g->peak_p95[g->peak_i] = o->p95;
+    unsigned top = 0, recent = 0;
+    for (unsigned k = 0; k < DG7_BUCKETS; ++k) {
+        const unsigned v = g->peak_p95[(g->peak_i + DG7_BUCKETS - k) % DG7_BUCKETS];
+        if (v > top) top = v;
+        if (k < DG7_FAR_HOLD_US / DG7_BUCKET_US && v > recent) recent = v;
+    }
+    *recent_out = recent;
+    return top;
+}
+
 uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
 {
     if (!g || !o) return 0u;
     dg_observation_t prior = g->last_tracking;
     g->last_tracking = *o;
-    bool no_carrier = o->p50 <= 4 && o->origin_pm >= 650 && o->coherence < 20;
-    bool saturated = (o->clip_pm >= 100 && !dg_one_sided(o)) || o->p95 >= 95;
-    if (o->clip_pm >= 100 && dg_one_sided(o)) ++g->one_sided_clips;
-    if (!no_carrier) g->carrier_us = o->observed_us;
-    /* V6: a carrier clipping above its remembered gain returns to it at
-     * once (see DG6_CLIMB_STEP). At or below it, V5's burst gate and
-     * staged overload recovery still apply. */
-    if (saturated && g->anchor_valid && g->current_gain > g->anchor_gain) {
-        ++g->overloads;
-        ++g->anchor_returns;
-        g->saturated_run = false;
-        g->overload_recovery = false;
-        g->high_windows = g->weak_windows = 0;
-        g->virtual_gain_q8 = 0;
-        g->last_direction = 0;
-        g->climb_us = 0;
-        return start_write(g, o, &prior, g->anchor_gain);
-    }
-    if (!saturated) g->saturated_run = false;
-    else if (!g->saturated_run) { g->saturated_run = true; g->saturated_since_us = o->observed_us; }
-    if (saturated && o->observed_us - g->saturated_since_us < DG_BURST_US) {
-        /* Possibly an interference burst: not an overload, not a prior. */
-        ++g->bursts_ignored;
-        g->last_tracking = prior;
-        return g->current_gain;
-    }
-    bool at_max = g->current_gain == g->table.max_index;
-    if (no_carrier) {
-        /* Near-origin IQ during a settling write is not carrier loss yet. */
-        if (g->state == DG_SETTLE &&
-            (o->observed_us <= g->write_us || o->observed_us - g->write_us < settle_guard_us(g)))
-            return g->current_gain;
-        /* Fade hold: an empty window right after a healthy carrier is a
-         * null, not a lost VTX; keep the gain the carrier will need again. */
-        if (!g->overload_recovery && !at_max && g->last_healthy_us &&
-            o->observed_us - g->last_healthy_us < DG_FADE_HOLD_US) {
-            ++g->fade_holds;
-            return g->current_gain;
-        }
-        /* V6: with a remembered carrier, climb from it in bounded steps. */
-        if (!g->overload_recovery && !at_max && g->anchor_valid) {
-            if (g->climb_us && o->observed_us >= g->climb_us &&
-                o->observed_us - g->climb_us < DG6_CLIMB_US) return g->current_gain;
-            unsigned next = (unsigned)g->current_gain + DG6_CLIMB_STEP;
-            if (next > g->table.max_index) next = g->table.max_index;
-            g->climb_us = o->observed_us;
-            ++g->climbs;
-            g->high_windows = g->weak_windows = 0;
-            g->virtual_gain_q8 = 0;
-            g->last_direction = 0;
-            return start_write(g, o, &prior, (uint8_t)next);
-        }
-        /* After an overload a low radius is no proof the carrier vanished:
-         * walk back through physical tuples instead of jumping to max. */
-        if (g->overload_recovery && !at_max)
-            return start_write(g, o, &prior, adjacent_physical(g, true));
-        /* No carrier: listen at the table maximum, where a weak carrier
-         * becomes visible; a strong one takes the saturation path next. */
-        g->state = DG_ACQUIRE;
-        g->stable_windows = 0;
-        g->high_windows = g->weak_windows = 0;
-        g->virtual_gain_q8 = 0;
-        g->last_direction = 0;
-        return start_write(g, o, &prior, g->table.max_index);
-    }
-    /* Saturation does not wait for a settling write once the window can no
-     * longer hold pre-write samples; that write's learning is dropped. */
-    if (saturated && g->state == DG_SETTLE &&
-        (g->current_gain > g->prior_gain ||
-         (o->observed_us >= g->write_us && o->observed_us - g->write_us >= 300u))) {
-        g->before.p50 = 0u;
-        g->state = DG_VERIFY;
-    }
+    const uint64_t now = o->observed_us;
+    if (!g->peak_since_us) dg7_peak_reset(g, now);
+    const bool one_sided = o->clip_pm >= 100 && dg_one_sided(o);
+    if (one_sided) ++g->one_sided_clips;
+    const bool saturated = o->clip_pm >= 100 && !dg_one_sided(o);
+    const bool no_carrier = o->p50 <= 4 && o->origin_pm >= 650 && o->coherence < 20;
+    if (!no_carrier) g->carrier_us = now;
+    /* A write is still settling: its transient is no evidence. */
     if (g->state == DG_SETTLE) {
-        if (o->observed_us <= g->write_us || o->observed_us - g->write_us < settle_guard_us(g))
-            return g->current_gain;
-        if (g->stable_windows &&
-            abs_i((int)o->p50 - (int)g->previous.p50) <= 2 &&
-            abs_i((int)o->p95 - (int)g->previous.p95) <= 4 &&
-            abs_i((int)o->origin_pm - (int)g->previous.origin_pm) <= 60 &&
-            abs_i((int)o->coherence - (int)g->previous.coherence) <= 12) {
-            if (g->stable_windows < DG_STABLE_WINDOWS) ++g->stable_windows;
-        } else g->stable_windows = 1u;
-        g->previous = *o;
-        if (g->stable_windows < DG_STABLE_WINDOWS) return g->current_gain;
-        uint64_t elapsed = o->observed_us - g->write_us;
+        if (now <= g->write_us || now - g->write_us < settle_guard_us(g)) return g->current_gain;
+        uint64_t elapsed = now - g->write_us;
         if (elapsed < 65535u) {
             uint16_t *settle = &g->settle_us[g->transition];
             *settle = *settle ? (uint16_t)((3u * *settle + elapsed) / 4u) : (uint16_t)elapsed;
         }
-        int quality_drop = (int)g->before.coherence - (int)o->coherence;
-        int clipping_rise = (int)o->clip_pm - (int)g->before.clip_pm;
-        int artifact = clamp_i((quality_drop > 0 ? quality_drop * 4 : 0) +
-                               (clipping_rise > 0 ? clipping_rise / 4 : 0), 0, 1000);
-        uint16_t *score = &g->artifact_score[g->current_gain];
-        *score = *score ? (uint16_t)((3u * *score + artifact) / 4u) : (uint16_t)artifact;
         learn_transition(g, o);
         g->state = DG_VERIFY;
         ++g->verified;
+        dg7_peak_reset(g, now);
     }
+    unsigned recent;
+    const unsigned peak = dg7_peak(g, o, &recent);
+    /* Attack. */
+    bool attack = false;
+    int delta = 0;
     if (saturated) {
-        ++g->overloads;
-        g->high_windows = g->weak_windows = 0;
-        g->virtual_gain_q8 = 0;
-        g->overload_recovery = true;
-        return start_write(g, o, &prior, emergency_drop(g));
-    }
-    if (healthy(o)) {
-        g->last_healthy_us = o->observed_us;
-        /* A fixed IQ point (DC, no VTX) reads healthy but is no carrier. */
-        if (!dg_stuck(o)) {
-            g->anchor_valid = true;
-            g->anchor_gain = g->current_gain;
-            g->anchor_us = o->observed_us;
+        if (!g->saturated_run) { g->saturated_run = true; g->saturated_since_us = now; }
+        if (now - g->saturated_since_us >= DG7_SAT_US) {
+            attack = true;
+            delta = -DG7_SAT_DROP_DB * 256;
+            ++g->overloads;
+        } else {
+            ++g->bursts_ignored;
         }
-        g->climb_us = 0;
-        g->overload_recovery = false;
-        g->state = DG_HOLD;
-        g->corrections = 0;
-        g->high_windows = g->weak_windows = 0;
-        g->virtual_gain_q8 = 0;
-        g->last_direction = 0;
-        ++g->holds;
-        return g->current_gain;
-    }
-    /* Act as soon as the envelope leaves the band, before it gets grainy. A
-     * starved envelope climbs whether or not the carrier is recognised yet. */
-    bool high = o->p50 > BAND_HI || o->p90 >= HIGH_P90 || o->p95 > HIGH_P95 || o->clip_pm >= BAND_CLIP_PM;
-    bool weak = o->p50 < BAND_LO;
-    /* Schmitt bands keep the direction through small fluctuations. */
-    if (g->last_direction == 2 &&
-        (o->p50 > SCHMITT_HI || o->p90 > SCHMITT_P90 || o->p95 > SCHMITT_P95)) high = true;
-    if (g->last_direction == 1 && o->p50 < SCHMITT_LO) weak = true;
-    if (high) {
-        g->weak_windows = 0;
-        g->last_direction = 2;
-        if (!g->high_windows) g->excursion_since_us = o->observed_us;
-        if (g->high_windows < 255u) ++g->high_windows;
-    } else if (weak) {
-        g->high_windows = 0;
-        g->last_direction = 1;
-        if (!g->weak_windows) g->excursion_since_us = o->observed_us;
-        if (g->weak_windows < 255u) ++g->weak_windows;
     } else {
-        g->high_windows = g->weak_windows = 0;
-        g->last_direction = 0;
-        return g->current_gain;
+        g->saturated_run = false;
+        /* The carrier starts to fold: clipping on both rails of an axis in
+         * two probes running. P95 alone is no evidence: at the range edge
+         * the noise peaks reach it while the maximum gain is still best. */
+        if (o->clip_pm >= DG7_FOLD_PM && prior.clip_pm >= DG7_FOLD_PM && !dg_one_sided(o) && !dg_one_sided(&prior)) {
+            attack = true;
+            delta = power_db_q8(DG7_TARGET_P95) - power_db_q8(o->p95 > DG7_ATTACK_P95 ? o->p95 : DG7_ATTACK_P95);
+        }
     }
-    /* Weak at the table maximum: there is no higher state. Receiver noise
-     * reads here (P50 ~9 between "carrier" and "no carrier"); every write
-     * found by the search was a sideways step and V5 hunted ~20 times a
-     * second at G83 with every VTX off (board, 2026-10-11). Hold. */
-    if (weak && at_max) {
-        g->state = DG_HOLD;
-        return g->current_gain;
+    if (attack) {
+        if (now < g->down_after_us) return g->current_gain;
+        uint8_t target = dg7_index_for(g, g->current_gain, delta);
+        if (target >= g->current_gain) target = g->current_gain > 2u ? (uint8_t)(g->current_gain - 1u) : 2u;
+        if (target + DG7_DOWN_MAX < g->current_gain) target = (uint8_t)(g->current_gain - DG7_DOWN_MAX);
+        g->saturated_run = false;
+        g->down_after_us = now + DG7_DOWN_GAP_US;
+        g->up_after_us = now + DG7_HOLD_US;
+        g->far_run = false;
+        ++g->writes_severe;
+        return start_write(g, o, &prior, target);
     }
-    /* Severe excursions act on one window, moderate ones on two windows
-     * and 20 ms; damping after reversals needs eight. */
-    bool damped = o->observed_us < g->damp_until_us;
-    /* Weak right after a healthy carrier is treated as moderate (it must
-     * last 20 ms): a partial null would otherwise raise the gain on one
-     * window and fold the returning carrier. Too strong always acts at once. */
-    const bool fading = g->last_healthy_us && o->observed_us - g->last_healthy_us < DG_FADE_HOLD_US;
-    bool severe = high ? ((int)o->clip_pm >= BAND_CLIP_PM || (int)o->p95 > HIGH_P95 ||
-                          (int)o->p50 > BAND_HI + 8)
-                       : ((int)o->p50 + 4 < BAND_LO && !fading);
-    unsigned need_high = damped ? DG_DAMPED_WINDOWS : severe ? DG_HIGH_WINDOWS : 2u;
-    unsigned need_weak = damped ? DG_DAMPED_WINDOWS : severe ? DG_WEAK_WINDOWS : 2u;
-    if ((high && g->high_windows < need_high) || (weak && g->weak_windows < need_weak))
-        return g->current_gain;
-    if (!severe && o->observed_us - g->excursion_since_us < DG_MODERATE_US) return g->current_gain;
-    int target_power = weak ? WEAK_TARGET : HIGH_TARGET;
-    /* Direct: request the full relative correction in one step. */
-    g->virtual_gain_q8 = clamp_i(power_db_q8((unsigned)target_power) - power_db_q8(o->p50),
-                                 -12 * 256, 12 * 256);
-    uint8_t target = select_destination(g, o, weak, g->virtual_gain_q8);
-    if (target == g->current_gain) return target;
-    if (g->state == DG_VERIFY) ++g->corrections;
-    g->high_windows = g->weak_windows = 0;
-    if (severe) ++g->writes_severe;
-    else ++g->writes_moderate;
-    return start_write(g, o, &prior, target);
+    /* Release: only after a full peak memory below the release level. Far
+     * below it (6 dB) is no multipath null any more but a carrier gone weaker
+     * or gone: DG7_FAR_HOLD_US, the full model step at twice the size, and
+     * while it stays far the next step needs only the write to settle. */
+    const bool far = recent * 4u < DG7_RELEASE_P95;   /* the last DG7_FAR_HOLD_US only */
+    if (!far) g->far_run = false;
+    const uint64_t need = far ? (g->far_run ? 0u : DG7_FAR_HOLD_US) : DG7_HOLD_US;
+    const unsigned level = far ? recent : peak;
+    if (level < DG7_RELEASE_P95 && now - g->peak_since_us >= need &&
+        now >= g->up_after_us && g->current_gain < g->table.max_index) {
+        delta = (power_db_q8(DG7_TARGET_P95) - power_db_q8(level ? level : 1u)) * (far ? 100 : DG7_STEP_PCT) / 100;
+        g->far_run = far;
+        uint8_t target = dg7_index_for(g, g->current_gain, delta);
+        if (target <= g->current_gain) target = (uint8_t)(g->current_gain + 1u);
+        const unsigned up_max = far ? 2u * DG7_UP_MAX : DG7_UP_MAX;
+        if (target > g->current_gain + up_max) target = (uint8_t)(g->current_gain + up_max);
+        if (target > g->table.max_index) target = g->table.max_index;
+        g->up_after_us = now + DG7_UP_GAP_US;
+        ++g->writes_moderate;
+        return start_write(g, o, &prior, target);
+    }
+    g->state = DG_HOLD;
+    ++g->holds;
+    if (!no_carrier) g->last_healthy_us = now;
+    return g->current_gain;
 }
 
 void dg_sync_applied(direct_gain_t *g, uint8_t gain, uint64_t write_us)

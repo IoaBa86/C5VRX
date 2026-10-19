@@ -313,6 +313,7 @@ void flightlog_second(const diag_record_t *r, uint8_t gain_min, uint8_t gain_max
     calibration_flog_live(dc, off, &servo_writes, &sph, &temp);
     int16_t afc_off, afc_res;
     control_flog_afc(&afc_off, &afc_res, &afc_corr);
+    const rx_level_t lv = receiver_level();
     flog_second_t s = {
         .t_s = r->t_s, .vq_snr_x10 = vq.known ? vq.snr_x10 : 0, .vq_lines_x100 = vq.known ? vq.lines_x100 : 0,
         .cn_x10 = r->cn_x10, .video_pct = r->video_pct, .dropout = dropout,
@@ -330,6 +331,10 @@ void flightlog_second(const diag_record_t *r, uint8_t gain_min, uint8_t gain_max
         .flags = (uint16_t)(r->flags | (s_menu_active ? 0x100u : 0u) | (s_scan_active ? 0x200u : 0u) |
                             (calibration_in_startup() ? 0x400u : 0u) | (receiver_paused() ? 0x800u : 0u)),
         .rx_state = rx_state,
+        .level_dbm_x10 = (int16_t)(lv.valid ? lv.carrier_dbm_x10 : FLOG_LEVEL_UNKNOWN),
+        .noise_dbm = flog_clamp8((lv.noise_dbm_x10 - 5) / 10),
+        .level_flags = (uint8_t)((lv.valid ? 1u : 0u) | (lv.above_noise ? 2u : 0u) | (lv.exact ? 4u : 0u) |
+                                 (receiver_noise_learned() ? 8u : 0u)),
     };
     gw = r->gain_writes; ov = r->overloads; sw = servo_writes; ac = afc_corr; have = true;
     uint8_t p[FLOG_SECOND_LEN];

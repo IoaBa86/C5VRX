@@ -1027,3 +1027,91 @@ snapshot into a range limit (required C/N, 20.7 MHz chip channel).
   locked (`lock_rx_only`), so they are external. 51 snapshots on A1, A4 and
   A8 at G83 held none: rare. The blackbox overload snapshots will show their
   rate, length and channel.
+
+## Direct Gain V7: a peak AGC (2026-10-19, PR #226)
+
+- **Blackbox, VTX on, handheld (session 13):** close in at a C/N estimate of
+  15-20 dB the V6 gain swung 10-30 steps within a second with 255+ writes and
+  overloads; sync fell to 60-80 % in those seconds (94-95 % in calm ones).
+  At the range edge the gain sat at G66-G81.
+- **Front end:** the RF/LNA stage is 8 (the highest) over G54-G83, and the
+  noise follows the baseband gain (-4.4..-4.9 dB per 5-6 steps) down to the
+  quantisation floor (~0.3 cells at G60). The noise is set before the
+  baseband: no range is hidden in another gain split.
+- **Cause in V6:** the healthy band reached P50 32 (radius 5.7 cells, ~2.5 dB
+  under the rails), so multipath clipped, the emergency drop overshot, the
+  next window read weak and the climb (8 steps per 3 ms) folded again; and
+  2 % of clipping without a rail-side check also lowered the gain.
+- **V7 (gain.c):** the classic radio AGC on envelope peaks.
+  - Attack only on folding: two-sided clipping in two probes, or 1 ms of
+    saturation.
+  - Release only when the highest P95 of a 16 ms memory leaves room under
+    the target (P95 30). Steps come from a tuple gain model.
+- **Model (test_gain_track: Rician/Rayleigh at 30 Hz, Gaussian noise peaks
+  as on the board, each write 0.4 ms of garbage):**
+
+  | metric | V6 | V7 |
+  | --- | ---: | ---: |
+  | close in, picture SNR >= 10 dB | 93.5 % | 94.1 % |
+  | Rayleigh fading | 87.3 % | 87.0 % |
+  | mid range | 94.5 % | 94.7 % |
+  | usable edge (~3 dB C/N), above threshold | 38.3 % | 39.8 % |
+  | writes per second, close in / edge | 122 / 90 | 46 / 29 |
+
+  A 30 ms multipath null takes 3 writes instead of 10.
+- **Conclusion:** the gain loop is not where range is lost (1.5 points at the
+  edge); V7 is about stability close in. Board, VTX off: G83 with 0 writes
+  in 2 minutes. Carrier test pending.
+- **Tuning lessons:**
+  - A level loop on a mean followed every fade both ways.
+  - A fixed release level under the receiver-noise peaks (P95 15-19 at G83)
+    held the gain a step below the maximum.
+  - P95 alone as an attack trigger stepped down at the edge on noise.
+
+## The whole chain against an absolute reference (2026-10-19, PR #226)
+
+The question: the C5VRX loses range against an RX5808, so where between
+antenna pin and goggle are dB lost? Every step was measured against the Wi-Fi
+PHY's own calibrated per-packet RSSI and noise floor (research/nfprobe,
+research/wifi_reference_snr.py).
+
+| step | measurement | loss |
+| --- | --- | --- |
+| chip front end (Wi-Fi mode) | noise floor -94..-96 dBm per 20 MHz from 5180 to 5845 MHz; packets decoded to -97 dBm | none: NF ~6 dB |
+| our receive state (forced G83, AGC off, dump, clocks, IQ and DAC pins) | C5VRX tuned to 5180 MHz; RSSI histogram (vendor AGC, 3 s) interleaved with IQ snapshots at G83 | none within ~1-2 dB |
+| self-desense (each ingredient alone) | weak packets still decoded to -93..-96 dBm with IQ pins, all clocks, dump, DAC pins | none visible (traffic limits it to a few dB) |
+| 4-bit IQ, U85Q, DAC | bit-exact model against an analog limiter-discriminator, same signals | none: the goggle holds ~1 dB lower, the picture is 4-7 dB cleaner |
+| field edge captures | the picture went at -1..+4 dB C/N, where the model loses it | as modelled |
+
+How the receive-state check works:
+- The vendor AGC's RSSI histogram had its bulk at -94..-85 dBm (mode -91).
+- In our IQ at G83 those packets form a cluster 6-7 dB over our noise
+  (4.93 cells^2, NBW 13.6 MHz).
+- The expected value from the PHY's -168 dBm/Hz is +6.3 dB.
+
+**Result:** the chain from antenna pin to video reaches about -93 dBm (NF 6 dB,
+~1.5 dB C/N in 20.7 MHz), RX5808 class or better. With this calibration,
+4.93 cells^2 at G83 is -96.7 dBm, so the receiver can report the absolute
+carrier power at its pin. Range lost against an RX5808 at equal distance is
+signal that never reaches the pin: that is the next measurement (VTX at a
+known distance and power against free space; FPV channel by channel).
+
+## Received level at the chip pin (RX_LEVEL, 2026-10-19)
+
+`main/rx_level.h`, host test `test/test_rx_level.c`. Shown in console `T`
+(`RX_LEVEL carrier_dbm=...`) and on the menu's CHANNEL page.
+
+- **What it reads:** the absolute carrier level at the chip pin in dBm.
+- **How:** every observer probe's DC-removed mean power is referred to the
+  pin with the Direct Gain model, then calibrated against the Wi-Fi PHY
+  (4.76 cells^2 of thermal noise at G83 = -96.7 dBm).
+- **Accuracy:** +-1 dB over G54-G83 (one RF stage, the checked model). Below
+  G54 the RF stage steps are model values, flagged `exact=0`.
+- **Noise:** learned per channel with no carrier at the table maximum. At
+  5865 MHz (A1) it reads -95.0 dBm, 1.7 dB above the 5180 MHz calibration.
+  A1 is at the top of the C5's documented range.
+
+**Use:** a VTX at a known distance and power against free space gives the
+dB lost before the chip. For example, 25 mW with 2 dBi each side over 10 m at
+5.8 GHz is ~-50 dBm. To stay in the exact range (below about -67 dBm at G54),
+test far enough away or at the lowest VTX power.

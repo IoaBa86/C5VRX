@@ -88,7 +88,13 @@ int main(void)
     check("summary round trip, every field", unpacked && !memcmp(again, b + FLOG_BLOCK_HEAD + 2, FLOG_SECOND_LEN) &&
           u.t_s == 77u && u.vq_snr_x10 == -45 && u.dc_i == -20 && u.off_q == 96 && u.afc_offset_khz == -1250 &&
           u.temp_c == -12 && u.flags == 0x0a05u);
-    check("a short summary is refused", !flog_unpack_second(b + FLOG_BLOCK_HEAD + 2, FLOG_SECOND_LEN - 1u, &u));
+    check("a short summary is refused", !flog_unpack_second(b + FLOG_BLOCK_HEAD + 2, FLOG_SECOND_LEN_V1 - 1u, &u));
+    {   /* format-1 records (34 bytes) still read; the level is unknown */
+        flog_second_t old;
+        check("a 34-byte summary still reads, level unknown",
+              flog_unpack_second(b + FLOG_BLOCK_HEAD + 2, FLOG_SECOND_LEN_V1, &old) &&
+              old.level_dbm_x10 == FLOG_LEVEL_UNKNOWN && old.level_flags == 0);
+    }
 
     /* A record that would cross the CRC word ends the walk. */
     memset(b + FLOG_BLOCK_HEAD, 0xff, FLOG_BLOCK_ROOM);
@@ -120,6 +126,10 @@ int main(void)
         check("a dropout replaces the least important, oldest", flog_snap_victim(important, seq, used, 4, FLOG_SNAP_DROPOUT) == 2);
         uint8_t drops[4] = {FLOG_SNAP_DROPOUT, FLOG_SNAP_DROPOUT, FLOG_SNAP_DROPOUT, FLOG_SNAP_DROPOUT};
         check("all dropouts: the oldest dropout goes", flog_snap_victim(drops, seq, used, 4, FLOG_SNAP_DROPOUT) == 0);
+        check("an edge snapshot ranks with a dropout, above a picture drop",
+              flog_snap_priority(FLOG_SNAP_EDGE) == flog_snap_priority(FLOG_SNAP_DROPOUT) &&
+              flog_snap_priority(FLOG_SNAP_EDGE) > flog_snap_priority(FLOG_SNAP_VQ_DROP) &&
+              flog_snap_priority(FLOG_SNAP_RECOVER) == flog_snap_priority(FLOG_SNAP_DROPOUT));
     }
     printf("%u/%u flight log checks passed\n", s_run - s_fail, s_run);
     return s_fail != 0;
