@@ -1115,3 +1115,43 @@ known distance and power against free space; FPV channel by channel).
 dB lost before the chip. For example, 25 mW with 2 dBi each side over 10 m at
 5.8 GHz is ~-50 dBm. To stay in the exact range (below about -67 dBm at G54),
 test far enough away or at the lowest VTX power.
+
+## KEEL-1: the gain on 3 dB home rows (2026-10-19)
+
+The successor of Direct Gain V7.
+
+**Cause.** Every gain row has its own DC, and the live servo learns a row
+only while the gain stays on it. A gain that visits many rows briefly keeps
+landing on stale DC. Blackbox session 13 at the edge:
+- DC above 1 cell gave 15-25 % video, below 0.5 cell 35-40 %;
+- a steady gain gave 75 % video, V6 hopping 28 %.
+
+**Design.** The V7 peak AGC, restricted to home rows 3 dB apart from the
+table maximum down. A release only goes to the next home row that fits under
+the target, so there is no hunting between rows. The peak memory is 16 ms:
+the rows do the steadying.
+
+**Search harness.** `test/test_keel_track.c`:
+- 12 scenarios: close / mid / edge, K 0-10, 5-80 Hz, a -12 dB obstacle;
+- DC per row shrinks with settled dwell;
+- each write costs 2 ms of picture;
+- score = usable %, edge weighted twice.
+
+| servo time constant | V6 | V7 | KEEL-1 |
+| --- | ---: | ---: | ---: |
+| 0.1 s | 52.5 | 56.1 | 57.9 |
+| 0.3 s | 49.9 | 51.6 | 56.4 |
+| 1 s | 44.0 | 41.6 | 52.6 |
+| 3 s | 37.2 | 34.3 | 46.3 |
+
+At the usable edge KEEL-1 settles on one row: 0-2.5 writes a second, 40 %
+against V7's 38 % above threshold. With a slow servo, V7 did worse than V6:
+it used fewer writes but over more rows.
+
+**Open.**
+- The real per-row servo time is not measured; the blackbox (DC, gain,
+  writes and dBm per second) will say.
+- Board, VTX off: G83 with the owner `keel1`. Carrier and flight test pending.
+
+**CI.** A host-test line `cc ... && ./t` let a failed compile pass, because
+`-e` ignores failures inside an `&&` list. Each compile is now its own line.

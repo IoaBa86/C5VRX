@@ -1,4 +1,4 @@
-/* C5VRX-5 by Twotoz and the C5VRX contributors: Direct Gain core (V7 decision: peak AGC; measurement and map from V3-V6).
+/* C5VRX-5 by Twotoz and the C5VRX contributors: gain core. Decision: KEEL-1 (the V7 peak AGC on 3 dB home rows); measurement and map from Direct Gain V3-V6.
  * Ported from legacy/c5vrx4/main/direct_gain_v3.c (PR #190) with the fixed-lane,
  * staged-recovery, boost-off configuration that ran on the board (V5), plus
  * the V6 carrier memory described in gain.h. */
@@ -335,6 +335,62 @@ bool dg_map_matches(const direct_gain_t *g, const arc_gain_table_t *table, const
     return g && g->magic == DG_MAGIC && g->map_context_valid &&
            dg_map_context_equal(&g->map_context, context) && same_table(&g->table, table);
 }
+/* ---- KEEL-1: home rows ---------------------------------------------------
+ * Every gain row has its own DC, and the live servo learns a row only while
+ * the gain stays on it. A gain that visits many rows briefly keeps landing on
+ * rows with stale DC (blackbox session 13 at the edge: DC > 1 cell with 15-25 %
+ * video, < 0.5 cell with 35-40 %; a steady gain 75 % against 28 % hopping).
+ * KEEL-1 uses only home rows KEEL_LATTICE_Q8 apart from the table maximum
+ * down: few rows, each visited often enough for the servo, and a write only
+ * when the level moved a whole home step. 0 = every row (V7 behaviour).
+ *
+ * Chosen in test/test_keel_track.c (12 scenarios: close / mid / edge, K 0-10,
+ * 5-80 Hz, a -12 dB obstacle; DC per row shrinking with dwell; each write
+ * 2 ms of picture): home rows 3 dB apart with a 16 ms peak memory. Score
+ * (usable %, edge weighted twice) for a servo time constant of 0.1 / 0.3 /
+ * 1 / 3 s: KEEL-1 57.9 / 56.4 / 52.6 / 46.3, V7 (every row, 48 ms) 56.1 /
+ * 51.6 / 41.6 / 34.3, V6 52.5 / 49.9 / 44.0 / 37.2. V7 visited so many rows
+ * that a slow servo left it worse than V6; home rows 2.5 dB apart scored
+ * 2-3 points lower, 3.5 dB about equal. The real servo time per row is not
+ * measured: the blackbox (dc per second, gain, writes) will say. */
+#ifndef KEEL_LATTICE_Q8
+#define KEEL_LATTICE_Q8 768   /* 3 dB */
+#endif
+static void keel_build(direct_gain_t *g)
+{
+    g->keel_rows = 0;
+    if (KEEL_LATTICE_Q8 <= 0) return;
+    const unsigned top = g->table.max_index;
+    uint8_t rows[DG_STATES];
+    unsigned n = 0;
+    rows[n++] = (uint8_t)top;
+    for (int want = g->model_db_q8[top] - KEEL_LATTICE_Q8; want >= g->model_db_q8[2]; want -= KEEL_LATTICE_Q8) {
+        unsigned best = 2;
+        for (unsigned k = 2; k < rows[n - 1u]; ++k)
+            if (abs_i(g->model_db_q8[k] - want) < abs_i(g->model_db_q8[best] - want)) best = k;
+        if (best < rows[n - 1u] && g->model_db_q8[rows[n - 1u]] - g->model_db_q8[best] >= KEEL_LATTICE_Q8 / 2)
+            rows[n++] = (uint8_t)best;
+    }
+    for (unsigned k = 0; k < n; ++k) g->keel_row[k] = rows[n - 1u - k];   /* ascending */
+    g->keel_rows = (uint8_t)n;
+}
+
+/* The highest home row whose model gain is at most that of `from` plus
+ * delta (a quarter dB of slack). Up: `from` itself when no higher home row
+ * fits. Down: the lowest home row when none fits. */
+static uint8_t keel_pick(const direct_gain_t *g, uint8_t from, int delta_q8)
+{
+    const int want = g->model_db_q8[from] + delta_q8 + 64;
+    uint8_t best = 0;
+    bool found = false;
+    for (unsigned k = 0; k < g->keel_rows; ++k) {
+        const uint8_t r = g->keel_row[k];
+        if (g->model_db_q8[r] <= want && (delta_q8 > 0 ? r >= from : r < from)) { best = r; found = true; }
+    }
+    if (found) return best;
+    return delta_q8 > 0 ? from : g->keel_row[0];
+}
+
 
 void dg_reset_context(direct_gain_t *g, const arc_gain_table_t *table, uint8_t current_gain,
                       const dg_map_context_t *context)
@@ -375,6 +431,7 @@ void dg_reset_context(direct_gain_t *g, const arc_gain_table_t *table, uint8_t c
         bits_q8 += (unsigned)((((t->bb_code + 1u) << 8) >> (bits_q8 >> 8)) - 256u);   /* linear between powers of two */
         g->model_db_q8[k] = (int16_t)(6 * 256 * (int)t->rf_stage + 6 * (int)bits_q8 + 212 * (5 - (int)t->fine_code));
     }
+    keel_build(g);
     g->current_gain = (uint8_t)clamp_i(current_gain, 20, g->table.max_index);
     g->target_gain = g->current_gain;
     g->relative_power_q10[g->current_gain] = 1024u;
@@ -646,7 +703,7 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
 #define DG7_RELEASE_P95 26u      /* one step under the target: above the noise peaks at G83 (P95 15-19) */
 #endif
 #ifndef DG7_HOLD_US
-#define DG7_HOLD_US 48000u   /* peak memory */
+#define DG7_HOLD_US 16000u   /* peak memory (KEEL-1; V7 used 48 ms) */
 #endif
 #define DG7_BUCKET_US    2000u
 /* Far below the release level (6 dB) for this long, judged on the newest
@@ -684,6 +741,7 @@ _Static_assert(DG7_HOLD_US / DG7_BUCKET_US <= 32u, "peak memory: 32 buckets (gai
 /* The table step closest to the model gain of `from` plus delta (dB Q8). */
 static uint8_t dg7_index_for(const direct_gain_t *g, uint8_t from, int delta_q8)
 {
+    if (g->keel_rows) return keel_pick(g, from, delta_q8);
     const int want = g->model_db_q8[from] + delta_q8;
     unsigned best = from;
     int best_err = 1 << 30;
@@ -783,7 +841,7 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
         if (now < g->down_after_us) return g->current_gain;
         uint8_t target = dg7_index_for(g, g->current_gain, delta);
         if (target >= g->current_gain) target = g->current_gain > 2u ? (uint8_t)(g->current_gain - 1u) : 2u;
-        if (target + DG7_DOWN_MAX < g->current_gain) target = (uint8_t)(g->current_gain - DG7_DOWN_MAX);
+        if (!g->keel_rows && target + DG7_DOWN_MAX < g->current_gain) target = (uint8_t)(g->current_gain - DG7_DOWN_MAX);
         g->saturated_run = false;
         g->down_after_us = now + DG7_DOWN_GAP_US;
         g->up_after_us = now + DG7_HOLD_US;
@@ -802,15 +860,26 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
     if (level < DG7_RELEASE_P95 && now - g->peak_since_us >= need &&
         now >= g->up_after_us && g->current_gain < g->table.max_index) {
         delta = (power_db_q8(DG7_TARGET_P95) - power_db_q8(level ? level : 1u)) * (far ? 100 : DG7_STEP_PCT) / 100;
-        g->far_run = far;
         uint8_t target = dg7_index_for(g, g->current_gain, delta);
-        if (target <= g->current_gain) target = (uint8_t)(g->current_gain + 1u);
-        const unsigned up_max = far ? 2u * DG7_UP_MAX : DG7_UP_MAX;
-        if (target > g->current_gain + up_max) target = (uint8_t)(g->current_gain + up_max);
-        if (target > g->table.max_index) target = g->table.max_index;
-        g->up_after_us = now + DG7_UP_GAP_US;
-        ++g->writes_moderate;
-        return start_write(g, o, &prior, target);
+        if (g->keel_rows) {
+            /* KEEL-1: the next home row only when it fits under the target;
+             * otherwise stay (no write, no hunting between home rows). */
+            if (target > g->current_gain) {
+                g->far_run = far;
+                g->up_after_us = now + DG7_UP_GAP_US;
+                ++g->writes_moderate;
+                return start_write(g, o, &prior, target);
+            }
+        } else {
+            g->far_run = far;
+            if (target <= g->current_gain) target = (uint8_t)(g->current_gain + 1u);
+            const unsigned up_max = far ? 2u * DG7_UP_MAX : DG7_UP_MAX;
+            if (target > g->current_gain + up_max) target = (uint8_t)(g->current_gain + up_max);
+            if (target > g->table.max_index) target = g->table.max_index;
+            g->up_after_us = now + DG7_UP_GAP_US;
+            ++g->writes_moderate;
+            return start_write(g, o, &prior, target);
+        }
     }
     g->state = DG_HOLD;
     ++g->holds;

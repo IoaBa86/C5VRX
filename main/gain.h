@@ -133,6 +133,9 @@ typedef struct {
     uint8_t peak_i;
     uint64_t peak_since_us, peak_bucket_us, up_after_us, down_after_us;
     bool far_run;                 /* releasing a carrier that stays far below (gain.c) */
+    /* KEEL-1 (gain.c): the home rows the gain may use, ascending. */
+    uint8_t keel_row[DG_STATES];
+    uint8_t keel_rows;
     uint32_t magic;
 } direct_gain_t;
 

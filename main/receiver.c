@@ -492,7 +492,7 @@ void receiver_print(void)
            "map_imports=%lu preset_imports=%lu "
            "obs_windows=%lu obs_us_max=%lu\n",
            s_paused ? "paused" :
-           s_gain_mode == GAIN_MODE_AUTO ? "direct_gain_v7" : "manual",
+           s_gain_mode == GAIN_MODE_AUTO ? "keel1" : "manual",
            receiver_gain_mode_name(s_gain_mode, mode, sizeof(mode)),
            s_current_gain, (unsigned)s_gain.state, s_obs_p50, s_obs_p95, s_obs_coherence, s_obs_env_ratio_x100,
            (unsigned)s_obs_stuck, receiver_obs_cn_x10(),
