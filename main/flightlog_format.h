@@ -157,7 +157,8 @@ static inline bool flog_block_closed(const uint8_t *block)
     return flog_get32(block + FLOG_BLOCK_CRC_AT) == flog_crc32(0, block, FLOG_BLOCK_CRC_AT);
 }
 
-/* Per-second summary payload (FLOG_T_SECOND), 34 bytes in format 1. */
+/* Per-second summary payload (FLOG_T_SECOND), 34 bytes in format 1, 38
+ * with the received level (readers take 34 and up). */
 typedef struct {
     uint32_t t_s;
     int16_t vq_snr_x10;      /* VIDEO_Q, 0 = no line */
@@ -178,9 +179,14 @@ typedef struct {
     int8_t temp_c;
     uint16_t flags;          /* diag flags (low byte) | menu/scan/startup/paused/fault (high) */
     uint8_t rx_state;        /* rx_state.h: state + 1 | reason << 3; 0 = not recorded */
+    int16_t level_dbm_x10;   /* carrier at the chip pin (rx_level.h), FLOG_LEVEL_UNKNOWN if none */
+    int8_t noise_dbm;        /* the noise it is measured against, dBm */
+    uint8_t level_flags;     /* bit 0 valid, 1 above the noise, 2 exact (G54+), 3 noise learned */
 } flog_second_t;
+#define FLOG_LEVEL_UNKNOWN (-32768)
 
-#define FLOG_SECOND_LEN 34u
+#define FLOG_SECOND_LEN 38u
+#define FLOG_SECOND_LEN_V1 34u
 
 static inline uint8_t flog_sat8(uint32_t v) { return (uint8_t)(v > 255u ? 255u : v); }
 static inline int8_t flog_clamp8(int v) { return (int8_t)(v > 127 ? 127 : v < -127 ? -127 : v); }
@@ -201,11 +207,13 @@ static inline void flog_pack_second(const flog_second_t *s, uint8_t p[FLOG_SECON
     p[27] = s->afc_corrections; p[28] = s->demod; p[29] = s->sphase; p[30] = (uint8_t)s->temp_c;
     flog_put16(p + 31, s->flags);
     p[33] = s->rx_state;
+    flog_put16(p + 34, (uint16_t)s->level_dbm_x10);
+    p[36] = (uint8_t)s->noise_dbm; p[37] = s->level_flags;
 }
 
 static inline bool flog_unpack_second(const uint8_t *p, uint8_t len, flog_second_t *s)
 {
-    if (len < FLOG_SECOND_LEN) return false;
+    if (len < FLOG_SECOND_LEN_V1) return false;
     s->t_s = flog_get32(p);
     s->vq_snr_x10 = (int16_t)flog_get16(p + 4);
     s->vq_lines_x100 = (uint16_t)flog_get16(p + 6);
@@ -220,6 +228,9 @@ static inline bool flog_unpack_second(const uint8_t *p, uint8_t len, flog_second
     s->afc_corrections = p[27]; s->demod = p[28]; s->sphase = p[29]; s->temp_c = (int8_t)p[30];
     s->flags = (uint16_t)flog_get16(p + 31);
     s->rx_state = p[33];
+    s->level_dbm_x10 = len >= 38u ? (int16_t)flog_get16(p + 34) : (int16_t)FLOG_LEVEL_UNKNOWN;
+    s->noise_dbm = len >= 38u ? (int8_t)p[36] : 0;
+    s->level_flags = len >= 38u ? p[37] : 0;
     return true;
 }
 

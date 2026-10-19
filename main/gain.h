@@ -132,6 +132,7 @@ typedef struct {
     uint8_t peak_p95[32];         /* highest P95 per 2 ms over 64 ms */
     uint8_t peak_i;
     uint64_t peak_since_us, peak_bucket_us, up_after_us, down_after_us;
+    bool far_run;                 /* releasing a carrier that stays far below (gain.c) */
     uint32_t magic;
 } direct_gain_t;
 

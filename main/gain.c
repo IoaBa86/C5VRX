@@ -616,16 +616,23 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
  * dB per 5-6 steps, 2026-10-19).
  *
  * Parameters from sweeps in test/test_gain_track.c (Rician K 3 and
- * Rayleigh at 30 Hz, Gaussian noise peaks P95 ~ 4.3 x P50 as on the board,
- * picture SNR with each write costing 0.4 ms): peak memory 16 ms, target
- * P95 30, release below 26 (a gain step must leave the peaks under the
- * target), up to 6 steps. Against V6: close in 94.1 vs 93.5 % of the time
- * at >= 10 dB, Rayleigh 87.0 vs 87.3, mid range 94.7 vs 94.5, at the usable
- * edge (~3 dB C/N) above the threshold 39.8 vs 38.3 % of the time, with
- * 46 / 29 instead of 122 / 90 writes a second close in / at the edge. The
- * gain loop is not where range is lost: the edge differs by 1.5 points.
- * A fixed release far under the target (18-22) left the gain a step below
- * the maximum on receiver noise alone (board, P95 15-19 at G83). */
+ * Rayleigh at 30 Hz, Gaussian noise peaks P95 ~ 4.3 x P50 as on the board).
+ * Each write costs 2 ms of picture, taken from the blackbox: at the range
+ * edge, at equal C/N, a steady gain gave 75 % video and a gain hopping with
+ * 255 writes a second gave 28 % (session 13). The cost is the transient plus
+ * the DC of briefly visited rows. Chosen: peak memory 48 ms, target P95 30,
+ * release below 26, up to 6 steps.
+ *
+ * Against V6, close in / Rayleigh / mid range at >= 10 dB:
+ * 90.5 / 82.9 / 92.0 % vs 83.4 / 77.5 / 84.4 %. At the usable edge (~3 dB
+ * C/N), above the threshold: 37.9 vs 35.0 %. Writes: 12-20 instead of
+ * 90-125 a second.
+ *
+ * Rejected:
+ * - A 16 ms memory (the first choice, under a 0.4 ms write cost) wrote 29-48
+ *   times a second.
+ * - A fixed release far under the target (18-22) left the gain a step below
+ *   the maximum on receiver noise alone (board, P95 15-19 at G83). */
 #ifndef DG7_ATTACK_P95
 #define DG7_ATTACK_P95 56u      /* radius ~7.5: the rails */
 #endif
@@ -639,9 +646,18 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
 #define DG7_RELEASE_P95 26u      /* one step under the target: above the noise peaks at G83 (P95 15-19) */
 #endif
 #ifndef DG7_HOLD_US
-#define DG7_HOLD_US 16000u   /* peak memory */
+#define DG7_HOLD_US 48000u   /* peak memory */
 #endif
 #define DG7_BUCKET_US    2000u
+/* Far below the release level (6 dB) for this long, judged on the newest
+ * peaks only, a weaker carrier is no multipath null any more: release then
+ * instead of after the full memory. A -22 / -12 dB step behind an obstacle
+ * recovers in 22 / 14 ms, not 54 / 46 (test_gain_fade); 12 ms released on
+ * Rician nulls (close in 89.8 %), 20-32 ms cost the steps 26-38 ms. */
+#ifndef DG7_FAR_HOLD_US
+#define DG7_FAR_HOLD_US 16000u
+#endif
+_Static_assert(DG7_HOLD_US / DG7_BUCKET_US <= 32u, "peak memory: 32 buckets (gain.h peak_p95)");
 #define DG7_BUCKETS      (DG7_HOLD_US / DG7_BUCKET_US)
 #ifndef DG7_STEP_PCT
 #define DG7_STEP_PCT 70
@@ -691,7 +707,7 @@ static void dg7_peak_reset(direct_gain_t *g, uint64_t now)
     g->peak_i = 0;
 }
 
-static unsigned dg7_peak(direct_gain_t *g, const dg_observation_t *o)
+static unsigned dg7_peak(direct_gain_t *g, const dg_observation_t *o, unsigned *recent_out)
 {
     const uint64_t now = o->observed_us;
     if (now - g->peak_bucket_us > DG7_HOLD_US) {
@@ -704,8 +720,13 @@ static unsigned dg7_peak(direct_gain_t *g, const dg_observation_t *o)
         g->peak_p95[g->peak_i] = 0;
     }
     if (o->p95 > g->peak_p95[g->peak_i]) g->peak_p95[g->peak_i] = o->p95;
-    unsigned top = 0;
-    for (unsigned k = 0; k < DG7_BUCKETS; ++k) if (g->peak_p95[k] > top) top = g->peak_p95[k];
+    unsigned top = 0, recent = 0;
+    for (unsigned k = 0; k < DG7_BUCKETS; ++k) {
+        const unsigned v = g->peak_p95[(g->peak_i + DG7_BUCKETS - k) % DG7_BUCKETS];
+        if (v > top) top = v;
+        if (k < DG7_FAR_HOLD_US / DG7_BUCKET_US && v > recent) recent = v;
+    }
+    *recent_out = recent;
     return top;
 }
 
@@ -734,7 +755,8 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
         ++g->verified;
         dg7_peak_reset(g, now);
     }
-    const unsigned peak = dg7_peak(g, o);
+    unsigned recent;
+    const unsigned peak = dg7_peak(g, o, &recent);
     /* Attack. */
     bool attack = false;
     int delta = 0;
@@ -765,16 +787,22 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
         g->saturated_run = false;
         g->down_after_us = now + DG7_DOWN_GAP_US;
         g->up_after_us = now + DG7_HOLD_US;
+        g->far_run = false;
         ++g->writes_severe;
         return start_write(g, o, &prior, target);
     }
-    /* Release: only after a full peak memory below the release level. */
-    /* Far below (6 dB under the release level) is no null any more but a
-     * carrier gone weaker or gone: half the memory, twice the step. */
-    const bool far = peak * 4u < DG7_RELEASE_P95;
-    if (peak < DG7_RELEASE_P95 && now - g->peak_since_us >= (far ? DG7_HOLD_US / 2u : DG7_HOLD_US) &&
+    /* Release: only after a full peak memory below the release level. Far
+     * below it (6 dB) is no multipath null any more but a carrier gone weaker
+     * or gone: DG7_FAR_HOLD_US, the full model step at twice the size, and
+     * while it stays far the next step needs only the write to settle. */
+    const bool far = recent * 4u < DG7_RELEASE_P95;   /* the last DG7_FAR_HOLD_US only */
+    if (!far) g->far_run = false;
+    const uint64_t need = far ? (g->far_run ? 0u : DG7_FAR_HOLD_US) : DG7_HOLD_US;
+    const unsigned level = far ? recent : peak;
+    if (level < DG7_RELEASE_P95 && now - g->peak_since_us >= need &&
         now >= g->up_after_us && g->current_gain < g->table.max_index) {
-        delta = (power_db_q8(DG7_TARGET_P95) - power_db_q8(peak ? peak : 1u)) * DG7_STEP_PCT / 100;
+        delta = (power_db_q8(DG7_TARGET_P95) - power_db_q8(level ? level : 1u)) * (far ? 100 : DG7_STEP_PCT) / 100;
+        g->far_run = far;
         uint8_t target = dg7_index_for(g, g->current_gain, delta);
         if (target <= g->current_gain) target = (uint8_t)(g->current_gain + 1u);
         const unsigned up_max = far ? 2u * DG7_UP_MAX : DG7_UP_MAX;

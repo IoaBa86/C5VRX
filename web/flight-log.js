@@ -144,8 +144,15 @@ export function decodeSecond(p) {
     offI: d.getInt8(20), offQ: d.getInt8(21), servo: p[22], afcOffset: d.getInt16(23, true),
     afcResidual: d.getInt16(25, true), afcSteps: p[27], profile: PROFILES[p[28] & 3], kp: (p[28] >> 2) & 7,
     lp: (p[28] >> 5) & 1, sphase: SPHASE[p[29]] ?? 'unknown', temp: d.getInt8(30), flags: d.getUint16(31, true),
-    rxState: RX_STATES[p[33] & 7] ?? '', rxReason: p[33] ? RX_REASONS[p[33] >> 3] ?? 'unknown' : ''
+    rxState: RX_STATES[p[33] & 7] ?? '', rxReason: p[33] ? RX_REASONS[p[33] >> 3] ?? 'unknown' : '',
+    // Received level at the chip pin (main/rx_level.h), 38-byte records only.
+    level: null, noise: null, levelExact: false
   };
+  if (p.length >= 38 && (p[37] & 1) && d.getInt16(34, true) !== -32768) {
+    s.level = d.getInt16(34, true) / 10;
+    s.noise = d.getInt8(36);
+    s.levelExact = !!(p[37] & 4);
+  }
   s.cn = s.cn <= -990 ? null : s.cn / 10;
   s.temp = s.temp <= -100 ? null : s.temp;
   s.dc = Math.hypot(s.dcI, s.dcQ);
@@ -228,6 +235,8 @@ export function summarize(session) {
     pictureS: withPicture.length,
     snrMedian: median(withPicture.map((s) => s.snr)),
     snrWorst: withPicture.length ? Math.min(...withPicture.map((s) => s.snr)) : null,
+    levelMedian: median(sec.map((s) => s.level)),
+    levelWorstWithPicture: withPicture.some((s) => s.level !== null) ? Math.min(...withPicture.filter((s) => s.level !== null).map((s) => s.level)) : null,
     dropouts: session.events.filter((e) => e.event === 'dropout').length,
     dcWorst: sec.length ? Math.max(...sec.map((s) => s.dc)) : null,
     tempMax: median(sec.map((s) => s.temp)) === null ? null : Math.max(...sec.filter((s) => s.temp !== null).map((s) => s.temp)),
@@ -240,7 +249,7 @@ export function summarize(session) {
 export function secondsCsv(session) {
   const keys = ['t', 'snr', 'lines', 'cn', 'video', 'dropoutCategory', 'gainMin', 'gain', 'gainMax', 'clip', 'gainWrites',
     'overloads', 'dcI', 'dcQ', 'offI', 'offQ', 'servo', 'afcOffset', 'afcResidual', 'afcSteps', 'profile', 'kp', 'lp',
-    'sphase', 'temp', 'flags', 'rxState', 'rxReason'];
+    'sphase', 'temp', 'flags', 'rxState', 'rxReason', 'level', 'noise', 'levelExact'];
   const rows = session.seconds.map((s) => keys.map((k) => (s[k] === null || s[k] === undefined ? '' : typeof s[k] === 'number' ? +s[k].toFixed(3) : s[k])).join(','));
   return [keys.join(','), ...rows].join('\n') + '\n';
 }

@@ -144,6 +144,12 @@ def second(p):
     rx = p[33] if len(p) > 33 else 0
     d['rx_state'] = RX_STATES[rx & 7] if (rx & 7) < len(RX_STATES) else '?'
     d['rx_reason'] = (RX_REASONS[rx >> 3] if (rx >> 3) < len(RX_REASONS) else '?') if rx else ''
+    # Received level at the chip pin (rx_level.h), 38-byte records.
+    lv, noise, flags = struct.unpack_from('<hbB', p, 34) if len(p) >= 38 else (-32768, 0, 0)
+    d['level_dbm'] = lv / 10 if lv != -32768 and flags & 1 else None
+    d['noise_dbm'] = noise if flags & 1 else None
+    d['level_above_noise'] = int(bool(flags & 2))
+    d['level_exact'] = int(bool(flags & 4))
     return d
 
 

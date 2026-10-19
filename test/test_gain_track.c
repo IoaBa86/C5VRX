@@ -22,6 +22,13 @@
 unsigned char phy_param[2048];
 
 #define TICK_US 200u
+/* Picture lost per gain write. Blackbox session 13 at the range edge, same
+ * C/N: 75 % video with a steady gain, 28 % with 255 writes a second, i.e.
+ * ~2.5 ms per write (the transient plus the DC of briefly visited rows, the
+ * supervisor's dc_clipping); 0.4 ms is the transient alone. */
+#ifndef WRITE_COST_US
+#define WRITE_COST_US 2000u
+#endif
 static direct_gain_t g;
 static arc_gain_table_t table;
 static double s_db[DG_STATES];
@@ -131,13 +138,17 @@ static result_t run(double mean_db, double doppler, double k_factor, double seco
     for (; ticks < (unsigned)(seconds * 1e6 / TICK_US); ++ticks, t += TICK_US) {
         const double lv = mean_db + fading_db(t, doppler, k_factor);
         dg_observation_t o = observe(lv, applied, t);
+#ifdef FIXED_GAIN
+        (void)o; applied = FIXED_GAIN;
+#else
         uint8_t target = dg_tick(&g, &o);
         if (target != applied) { applied = target; dg_sync_applied(&g, target, t); last_write = t; }
-        /* A gain write is a PHY transient: ~0.4 ms of samples are garbage
-         * (settle guard; every write a short transient, PR #177). */
-        ok += usable(lv, applied) && (!last_write || t - last_write >= 400u);
+#endif
+        /* A gain write costs WRITE_COST_US of picture: the PHY transient
+         * (~0.4 ms, PR #177) plus the DC of a row visited briefly. */
+        ok += usable(lv, applied) && (!last_write || t - last_write >= WRITE_COST_US);
         clipped += snr_db(lv, applied) < -90.0;
-        above += snr_db(lv, applied) >= 3.0 && (!last_write || t - last_write >= 400u);
+        above += snr_db(lv, applied) >= 3.0 && (!last_write || t - last_write >= WRITE_COST_US);
         at_max += applied == table.max_index;
         gain_sum += applied;
     }
@@ -174,17 +185,17 @@ int main(void)
     show("mid range, moving (K 3, 30 Hz)", mid_hand);
     show("range edge, moving (K 3, 30 Hz)", edge_hand);
     show("usable edge ~3 dB C/N, moving", edge3);
-    /* V7 against the V6 baseline of the same model (V6: 93.5 / 87.3 / 94.5 %
-     * at >= 10 dB, 38.3 % above the threshold at the usable edge, 112-125
-     * writes a second on a moving carrier). */
+    /* V7 against the V6 baseline of the same model, 2 ms per write (V6:
+     * 83.4 / 77.5 / 84.4 % at >= 10 dB, 35.0 % above the threshold at the
+     * usable edge, 90-125 writes a second). */
     check("steady carrier: no gain hunting (< 5 writes/s)", close_still.writes_s < 5.0);
-    check("moving carrier: under half of V6's writes", close_hand.writes_s < 60.0 && close_rayleigh.writes_s < 60.0 &&
-          mid_hand.writes_s < 60.0);
-    check("moving carrier close in: picture SNR >= 10 dB at least as often as V6", close_hand.usable_pct >= 93.5);
-    check("Rayleigh fading: within a point of V6", close_rayleigh.usable_pct >= 86.3);
-    check("mid range: at least as often as V6", mid_hand.usable_pct >= 94.3);
+    check("moving carrier: < 25 writes/s (V6 112-125)", close_hand.writes_s < 25.0 && close_rayleigh.writes_s < 25.0 &&
+          mid_hand.writes_s < 25.0);
+    check("close in: picture SNR >= 10 dB >= 90 % (V6 83.4)", close_hand.usable_pct >= 90.0);
+    check("Rayleigh fading: >= 80 % (V6 77.5)", close_rayleigh.usable_pct >= 80.0);
+    check("mid range: >= 89 % (V6 84.4)", mid_hand.usable_pct >= 89.0);
     check("clipped <= 2 % of the time", close_hand.clipped_pct <= 2.0 && close_rayleigh.clipped_pct <= 2.0);
-    check("usable edge: above the threshold at least as often as V6", edge3.threshold_pct >= 38.3);
+    check("usable edge: above the threshold >= 37.5 % (V6 35.0)", edge3.threshold_pct >= 37.5);
     printf("%u/%u gain tracking checks passed\n", s_run - s_fail, s_run);
     return s_fail != 0;
 }

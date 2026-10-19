@@ -228,6 +228,7 @@ void receiver_level_roll(bool no_carrier)
     s_level = r;
 }
 rx_level_t receiver_level(void) { return s_level; }
+bool receiver_noise_learned(void) { return s_noise_rel > 0.0f; }
 
 int receiver_obs_cn_x10(void)
 {
