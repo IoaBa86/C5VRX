@@ -50,6 +50,9 @@ typedef struct {
     int residual_mcells[2];
 } phy_dco_result_t;
 esp_err_t phy_dco_search(bool (*measure)(int dc[2]), phy_dco_result_t *res);
+/* The same search started from given codes (a converged neighbour row) instead
+ * of the live ones: start NULL = phy_dco_search. */
+esp_err_t phy_dco_search_from(bool (*measure)(int dc[2]), const int start[2], phy_dco_result_t *res);
 /* The same codes for a row whose receiver noise is below one quantizer step:
  * the IQ is one fixed code, so the DC is found per axis by bisection on the
  * code where that fixed code flips (DC within half a cell). measured=false

@@ -271,9 +271,21 @@ static void enter_debug(uint16_t live[PBUS_BLOCKS][2])
  * milli-cells of the current lane. */
 esp_err_t phy_dco_search(bool (*measure)(int dc[2]), phy_dco_result_t *res)
 {
+    return phy_dco_search_from(measure, NULL, res);
+}
+
+/* start: the 4-bit IQ clips, so with several cells of DC the measured mean
+ * saturates and the 2x2 probe sees no slope; the steps then ran to the clamp
+ * (board, PR #228: G83 on 5805 MHz from the chip's codes, before=4.1 cells,
+ * codes 316 = base+96, residual 3.5 cells, stored as OK and used as the
+ * template of every other channel). From a neighbour row's converged codes
+ * (rows ~1 dB apart) the start is within the linear range. */
+esp_err_t phy_dco_search_from(bool (*measure)(int dc[2]), const int start[2], phy_dco_result_t *res)
+{
     memset(res, 0, sizeof(*res));
 #ifndef C5VRX_PHY_PINNED
     (void)measure;
+    (void)start;
     return ESP_ERR_NOT_SUPPORTED;
 #else
     if (!measure) return ESP_ERR_INVALID_ARG;
@@ -283,10 +295,16 @@ esp_err_t phy_dco_search(bool (*measure)(int dc[2]), phy_dco_result_t *res)
     esp_err_t result = ESP_ERR_INVALID_RESPONSE;
     int before[2] = {0, 0};
     bool debug = false;
-    if (measure(before)) {
+    if (start) {
         debug = true;
         enter_debug(live);
-        int base[2] = {live[2][1], live[3][1]}, cur[2] = {base[0], base[1]};
+        dco_apply(dco_clamp(start[0], start[0]), dco_clamp(start[1], start[1]));
+    }
+    if (measure(before)) {
+        if (!debug) { debug = true; enter_debug(live); }
+        int base[2] = {live[2][1], live[3][1]};
+        if (start) { base[0] = dco_clamp(start[0], start[0]); base[1] = dco_clamp(start[1], start[1]); }
+        int cur[2] = {base[0], base[1]};
         int best[2] = {base[0], base[1]}, best_dc[2] = {before[0], before[1]};
         int di = base[0] > 511 - DCO_PROBE ? -DCO_PROBE : DCO_PROBE;
         int dq = base[1] > 511 - DCO_PROBE ? -DCO_PROBE : DCO_PROBE;
