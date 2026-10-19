@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "cn_estimate.h"
+#include "cn_auto.h"
 #include "cn_observation.h"
 #include "esp_timer.h"
 #include "gain_map_preset.h"
@@ -322,50 +323,187 @@ void receiver_level_feed(const uint8_t *window, size_t bytes)
     }
 }
 
-/* C/N from power (rx_level.h): the probe's DC-removed power at its gain
- * row, referred to the pin with the gain model, against the noise learned
- * for this channel and filter. Blackbox session 32, IQ snapshots at the
- * edge: true C/N 14.3 / 19.5 / 8.9 dB where the envelope estimate read
- * 8.1 / 7.5 / 6.0 (the narrow filter's AM and the 4-bit envelope fluctuate
- * without any noise). That low reading put the demod on its narrowest
- * tracker with LP and kept the AFC from correcting at the edge. Converted to
- * the 20 MHz scale every consumer uses (cn_estimate.h): noise bandwidth
- * ~ the filter class + 1.6 MHz (12 MHz class: 13.6 MHz measured). */
-static volatile int32_t s_cnp_x10 = CN_UNKNOWN_X10;
-static volatile int64_t s_cnp_us;
-static volatile uint32_t s_cnp_epoch;
-static float s_cnp_ema;              /* pin power, calibration units */
-static void cn_power_update(const dg_observation_t *o, uint8_t gain, int64_t now)
+/* ---- C/N-AUTO (cn_auto.h) -------------------------------------------------
+ * The C/N every consumer reads (AFC, kp/LP ladder, profile gates, flight
+ * log), self-calibrating and with a confidence:
+ * - noise per gain row for this channel and filter: measured at startup
+ *   with no carrier (calibration.c), learned in service only on no-carrier
+ *   evidence (envelope kurtosis + level + no video for 2 s), kept in NVS;
+ * - power around each row's long-term DC (not the window mean);
+ * - M2M4 as a cross-check; envelope (cn_estimate.h) only as the fallback.
+ * Every 4th settled probe feeds it (~1.3 kHz, ~2 % CPU). */
+#define CNA_PROBE_DIV      4u
+#define CNA_EST_PROBES     16u      /* probes per estimate (~13 ms) */
+#define CNA_ABSENT_PROBES  256u     /* probes per no-carrier decision (~0.2 s) */
+#define CNA_STORE_SLOTS    6u
+#define CNA_STORE_LO       54u      /* rows kept in NVS: 54..83 */
+#define CNA_STORE_ROWS     30u
+typedef struct {
+    uint8_t version;
+    struct { uint16_t freq; int8_t code; uint8_t skirt, bw20, seq; uint16_t noise_x256[CNA_STORE_ROWS]; } slot[CNA_STORE_SLOTS];
+} cna_store_t;
+#define CNA_STORE_VERSION 1u
+static cna_store_t s_cna_store;
+static bool s_cna_store_loaded;
+static cna_noise_map_t s_cna_map;
+static uint16_t s_cna_freq;
+static rf_filter_t s_cna_filter;
+static bool s_cna_key_valid, s_cna_dirty;
+static float s_rowdc_i[CNA_ROWS], s_rowdc_q[CNA_ROWS];
+static uint16_t s_rowdc_n[CNA_ROWS];
+static cna_sums_t s_cna_acc;
+static uint8_t s_cna_acc_row = 255u;
+static uint32_t s_cna_acc_probes, s_cna_acc_clip, s_cna_div;
+static double s_abs_m2, s_abs_m4;
+static uint32_t s_abs_n;
+static uint8_t s_abs_row = 255u;
+static cna_reading_t s_cna;
+static volatile int64_t s_cna_us;
+static volatile uint32_t s_cna_epoch;
+static uint32_t s_cna_learned, s_cna_absent_rejects, s_cna_estimates;
+
+static int cna_slot_find(uint16_t freq, rf_filter_t f)
 {
-    if (gain >= RX_LEVEL_ROWS || s_obs_stuck || o->clip_pm >= 20u) return;
-    const float mean = o->pwr_x16 / 16.0f - RX_LEVEL_QUANT_CELLS2;
-    const float pin = (mean > 0.0f ? mean : 0.0f) *
-                      powf(10.0f, (float)(s_gain.model_db_q8[s_gain.table.max_index] - s_gain.model_db_q8[gain]) / 2560.0f) /
-                      RX_LEVEL_NOISE_CELLS2;
-    if (s_cnp_epoch != s_gain_epoch || now - s_cnp_us > 20000) s_cnp_ema = pin;   /* a new row: start over */
-    else s_cnp_ema += (pin - s_cnp_ema) / 8.0f;
-    const int cls = calibration_filter_class_mhz();
-    const float noise = s_noise_rel > 0.0f ? s_noise_rel : ((float)cls + 1.6f) / 13.6f;
-    const float c = s_cnp_ema - noise;
-    int32_t x10 = CN_UNKNOWN_X10;
-    if (c > 0.05f * noise) {
-        const float nbw_db = 10.0f * log10f(20.7f / ((float)cls + 1.6f));
-        x10 = (int32_t)lroundf(100.0f * log10f(c / noise) - 10.0f * nbw_db);
-        if (x10 > 300) x10 = 300;
-        if (x10 < -30) x10 = -30;
+    for (unsigned k = 0; k < CNA_STORE_SLOTS; ++k)
+        if (s_cna_store.slot[k].freq == freq && s_cna_store.slot[k].code == f.code &&
+            s_cna_store.slot[k].skirt == f.skirt && s_cna_store.slot[k].bw20 == (uint8_t)f.bw20) return (int)k;
+    return -1;
+}
+/* Keep this context's measured rows (54..83) in NVS. */
+static void cna_save(void)
+{
+    if (!s_cna_key_valid || !s_cna_dirty) return;
+    int k = cna_slot_find(s_cna_freq, s_cna_filter);
+    if (k < 0) {   /* a free or the oldest slot */
+        unsigned best = 0;
+        for (unsigned j = 0; j < CNA_STORE_SLOTS; ++j)
+            if (!s_cna_store.slot[j].freq) { best = j; break; }
+            else if ((uint8_t)(s_cna_store.slot[j].seq - s_cna_store.slot[best].seq) > 127u) best = j;
+        k = (int)best;
     }
-    s_cnp_x10 = x10;
-    s_cnp_us = now;
-    s_cnp_epoch = s_gain_epoch;
+    uint8_t top = 0;
+    for (unsigned j = 0; j < CNA_STORE_SLOTS; ++j) if ((uint8_t)(s_cna_store.slot[j].seq - top) < 128u) top = s_cna_store.slot[j].seq;
+    s_cna_store.version = CNA_STORE_VERSION;
+    s_cna_store.slot[k].freq = s_cna_freq; s_cna_store.slot[k].code = s_cna_filter.code;
+    s_cna_store.slot[k].skirt = s_cna_filter.skirt; s_cna_store.slot[k].bw20 = (uint8_t)s_cna_filter.bw20;
+    s_cna_store.slot[k].seq = (uint8_t)(top + 1u);
+    for (unsigned r = 0; r < CNA_STORE_ROWS; ++r) {
+        const unsigned row = CNA_STORE_LO + r;
+        const float v = s_cna_map.n[row] >= CNA_MIN_SAMPLES ? s_cna_map.noise[row] * 256.0f : 0.0f;
+        s_cna_store.slot[k].noise_x256[r] = (uint16_t)(v > 65535.0f ? 65535.0f : v);
+    }
+    if (blob_store("cnmap", &s_cna_store, sizeof(s_cna_store))) s_cna_dirty = false;
+}
+/* A new channel or filter: save the old map, load the new one. */
+static void cna_key_check(void)
+{
+    const rf_filter_t f = rf_filter();
+    const uint16_t freq = rf_frequency_mhz();
+    if (s_cna_key_valid && freq == s_cna_freq && f.code == s_cna_filter.code && f.skirt == s_cna_filter.skirt &&
+        f.bw20 == s_cna_filter.bw20) return;
+    cna_save();
+    if (!s_cna_store_loaded) {
+        if (!blob_load("cnmap", &s_cna_store, sizeof(s_cna_store)) || s_cna_store.version != CNA_STORE_VERSION)
+            memset(&s_cna_store, 0, sizeof(s_cna_store));
+        s_cna_store_loaded = true;
+    }
+    memset(&s_cna_map, 0, sizeof(s_cna_map));
+    memset(s_rowdc_n, 0, sizeof(s_rowdc_n));
+    s_cna_freq = freq; s_cna_filter = f; s_cna_key_valid = true; s_cna_dirty = false;
+    s_cna_acc_row = s_abs_row = 255u;
+    const int k = cna_slot_find(freq, f);
+    if (k >= 0)
+        for (unsigned r = 0; r < CNA_STORE_ROWS; ++r)
+            if (s_cna_store.slot[k].noise_x256[r]) {
+                s_cna_map.noise[CNA_STORE_LO + r] = s_cna_store.slot[k].noise_x256[r] / 256.0f;
+                s_cna_map.n[CNA_STORE_LO + r] = CNA_MIN_SAMPLES;   /* loaded: measured on an earlier boot */
+            }
+}
+void receiver_cn_noise_store(uint8_t row, float cells2)
+{
+    cna_key_check();
+    if (row >= CNA_ROWS || !(cells2 > 0.0f)) return;
+    for (unsigned k = 0; k < CNA_MIN_SAMPLES; ++k) cna_noise_learn(&s_cna_map, row, cells2, esp_timer_get_time());
+    s_cna_dirty = true;
+}
+void receiver_cn_noise_save(void) { cna_save(); }
+
+static void cna_probe(const uint8_t *sample, size_t bytes, const dg_observation_t *o, uint8_t row, int64_t now)
+{
+    if (row >= CNA_ROWS || ++s_cna_div % CNA_PROBE_DIV) return;
+    cna_key_check();
+    const bool folded = (o->rails & 3u) == 3u || (o->rails & 12u) == 12u;
+    cna_sums_t ps = {0};
+    for (size_t k = 0; k < bytes; ++k) cna_sums_add(&ps, sample[k]);
+    float pi, pq;
+    cna_mean(&ps, &pi, &pq);
+    /* The row's long-term DC: probe means of unclipped probes, slowly. */
+    if (!folded && o->clip_pm < 20u) {
+        if (!s_rowdc_n[row]) { s_rowdc_i[row] = pi; s_rowdc_q[row] = pq; }
+        else { s_rowdc_i[row] += (pi - s_rowdc_i[row]) / 32.0f; s_rowdc_q[row] += (pq - s_rowdc_q[row]) / 32.0f; }
+        if (s_rowdc_n[row] < 65535u) ++s_rowdc_n[row];
+    }
+    /* No-carrier evidence at this row. */
+    if (s_abs_row != row) { s_abs_row = row; s_abs_m2 = s_abs_m4 = 0.0; s_abs_n = 0; }
+    {
+        double m2, m4;
+        cna_moments(&ps, pi, pq, &m2, &m4);
+        s_abs_m2 += m2; s_abs_m4 += m4; ++s_abs_n;
+    }
+    if (s_abs_n >= CNA_ABSENT_PROBES) {
+        const float known = s_cna_map.n[row] >= CNA_MIN_SAMPLES ? s_cna_map.noise[row] : 0.0f;
+        const int64_t video = s_last_video_us;
+        const bool quiet_video = !video || now - video > 2000000;
+        if (quiet_video && cna_carrier_absent(s_abs_m2, s_abs_m4, s_abs_n, known)) {
+            cna_noise_learn(&s_cna_map, row, (float)(s_abs_m2 / s_abs_n), now);
+            ++s_cna_learned;
+            s_cna_dirty = true;
+        } else if (quiet_video) {
+            ++s_cna_absent_rejects;
+        }
+        s_abs_m2 = s_abs_m4 = 0.0; s_abs_n = 0;
+    }
+    /* The estimate. */
+    if (s_cna_acc_row != row) { s_cna_acc_row = row; memset(&s_cna_acc, 0, sizeof(s_cna_acc)); s_cna_acc_probes = s_cna_acc_clip = 0; }
+    cna_sums_merge(&s_cna_acc, &ps);
+    ++s_cna_acc_probes;
+    s_cna_acc_clip += folded || o->clip_pm >= 20u;
+    if (s_cna_acc_probes < CNA_EST_PROBES) return;
+    uint8_t flags = 0;
+    if (s_cna_acc_clip * 50u > s_cna_acc_probes) flags |= CNA_F_CLIPPED;     /* > 2 % of the probes */
+    float di = 0.0f, dq = 0.0f;
+    if (s_rowdc_n[row] >= 32u) { di = s_rowdc_i[row]; dq = s_rowdc_q[row]; }
+    else { cna_mean(&s_cna_acc, &di, &dq); flags |= CNA_F_DC_UNKNOWN; }
+    double m2, m4;
+    cna_moments(&s_cna_acc, di, dq, &m2, &m4);
+    float uncert;
+    const float noise = cna_noise_at(&s_cna_map, row, s_gain.model_db_q8, now, &flags, &uncert);
+    const int cls = calibration_filter_class_mhz();
+    const int env = s_obs_env_ratio_x100 > 0 ? cn_estimate_env_x10(s_obs_env_ratio_x100, cls) : CNA_UNKNOWN_X10;
+    s_cna = cna_estimate(m2, m4, noise, uncert, flags, calibration_filter_nbw_khz(), cls, env);
+    s_cna_us = now;
+    s_cna_epoch = s_gain_epoch;
+    ++s_cna_estimates;
+    s_cna_acc_row = 255u;   /* the next window starts fresh */
+}
+cna_reading_t receiver_cn_reading(void)
+{
+    const int64_t now = esp_timer_get_time();
+    cna_reading_t r = s_cna;
+    if (s_cna_epoch != s_gain_epoch || now - s_cna_us > 60000 || !receiver_active()) {
+        r.x10 = CNA_UNKNOWN_X10; r.confidence = CNA_CONF_NONE; r.source = CNA_SRC_NONE;
+    }
+    return r;
 }
 
 int receiver_obs_cn_x10(void)
 {
-    {   /* power-based when fresh on the current row (see cn_power_update) */
-        const int64_t now = esp_timer_get_time();
-        if (!s_obs_stuck && receiver_active() && s_cnp_epoch == s_gain_epoch && now - s_cnp_us <= 50000 &&
-            cn_gain_settled((uint64_t)now, (uint64_t)s_last_gain_write_us, s_gain.state == DG_SETTLE))
-            return (int)s_cnp_x10;
+    {   /* C/N-AUTO when it is confident; otherwise the envelope model below
+         * (as before), and unknown stays unknown, never low. */
+        const cna_reading_t r = receiver_cn_reading();
+        if (!s_obs_stuck && r.confidence >= CNA_CONF_OK && r.x10 != CNA_UNKNOWN_X10 &&
+            cn_gain_settled((uint64_t)esp_timer_get_time(), (uint64_t)s_last_gain_write_us, s_gain.state == DG_SETTLE))
+            return r.x10;
     }
     /* Envelope model (cn_estimate.h); a fixed IQ point has no envelope to
      * judge and read 14-20 dB in the coherence model with no VTX at all. */
@@ -584,7 +722,7 @@ static void observer_task(void *arg)
         if (cn_gain_settled((uint64_t)t0, (uint64_t)s_last_gain_write_us, s_gain.state == DG_SETTLE)) {
             dc_accumulate(&o, sizeof(sample), s_current_gain, control, phy, table);
             level_accumulate(&o, s_current_gain);
-            cn_power_update(&o, s_current_gain, t0);
+            cna_probe(sample, sizeof(sample), &o, s_current_gain, t0);
         }
         if (measure_cn) {
             ++s_cn_sequence;
@@ -647,6 +785,15 @@ void receiver_print(void)
            (unsigned long)s_gain.writes_severe, (unsigned long)s_gain.writes_moderate, (unsigned long)s_gain.writes_refused,
            (unsigned long)s_rebinds, (unsigned long)s_gain.overloads, (unsigned long)s_gain.overloads_after_write, (unsigned long)s_gain.heat_events,
            (unsigned long)s_sentinel_forwarded, (unsigned long)s_sentinel_dropped);
+    {
+        const cna_reading_t c = receiver_cn_reading();
+        unsigned measured = 0;
+        for (unsigned k = 0; k < CNA_ROWS; ++k) measured += s_cna_map.n[k] >= CNA_MIN_SAMPLES;
+        printf("CN_AUTO cn_x10=%d power_x10=%d m2m4_x10=%d confidence=%u source=%u flags=0x%02x noise_cells2=%.3f rows_with_noise=%u learned=%lu absent_rejects=%lu estimates=%lu nbw_khz=%u (self-calibrating C/N, cn_auto.h)\n",
+               c.x10, c.power_x10, c.m2m4_x10, c.confidence, c.source, c.flags, (double)c.noise_cells2, measured,
+               (unsigned long)s_cna_learned, (unsigned long)s_cna_absent_rejects, (unsigned long)s_cna_estimates,
+               calibration_filter_nbw_khz());
+    }
     printf("DC_FEED rejected_folded=%lu (observer windows reaching both rails of an axis: a folding carrier, kept out of the DC servo)\n",
            (unsigned long)s_dc_rejected_folded);
     printf("CN_OBSERVER windows=%lu period_us=%u max_age_us=%u\n", (unsigned long)s_cn_windows,

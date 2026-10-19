@@ -77,8 +77,7 @@ static void generate(gen_t *g, unsigned k, double c_cells2, double porch_hz, dou
             const int i = wrap4(r * cos(phi) + sg * gauss() + dci);
             const int q = wrap4(r * sin(phi) + sg * gauss() + dcq);
             const double x = i + 0.5, y = q + 0.5, p = x * x + y * y;
-            g->s.sx += x; g->s.sy += y; g->s.sxx += x * x; g->s.syy += y * y; g->s.sxy += x * y;
-            g->s.sxp += x * p; g->s.syp += y * p; g->s.spp += p * p; ++g->s.n;
+            cna_sums_add(&g->s, (uint8_t)(((unsigned)i & 15u) << 4 | ((unsigned)q & 15u)));   /* as the firmware */
             wx += x; wy += y; wp += p;
             g->rail += (i == -8 || i == 7 || q == -8 || q == 7);
             ++g->total;
@@ -100,7 +99,7 @@ static void measure_noise(const unsigned *rows, unsigned count)
         for (unsigned rep = 0; rep < 6u; ++rep) {
             generate(&g, rows[j], 0.0, 0.0, 0.0, 0.0, 16, 256);
             double m2, m4;
-            cna_moments(&g.s, (float)(g.s.sx / g.s.n), (float)(g.s.sy / g.s.n), &m2, &m4);
+            { float mi, mq; cna_mean(&g.s, &mi, &mq); cna_moments(&g.s, mi, mq, &m2, &m4); }
             cna_noise_learn(&s_map, rows[j], (float)m2, 1000);
         }
     }
@@ -186,12 +185,12 @@ int main(void)
             gen_t g;
             double m2, m4;
             generate(&g, 83, 0.0, -1e6, 0, 0, 96, 256);
-            cna_moments(&g.s, (float)(g.s.sx / g.s.n), (float)(g.s.sy / g.s.n), &m2, &m4);
+            { float mi, mq; cna_mean(&g.s, &mi, &mq); cna_moments(&g.s, mi, mq, &m2, &m4); }
             noise_ok = noise_ok && cna_carrier_absent(m2 * 96, m4 * 96, 96, s_map.noise[83]);
             const double noise_true = 2.0 * sigma_at(83) * sigma_at(83) + CNA_QUANT_CELLS2;
             for (int cn = -3; cn <= 0; cn += 3) {
                 generate(&g, 83, noise_true * pow(10.0, cn / 10.0), -1e6, 0, 0, 96, 256);
-                cna_moments(&g.s, (float)(g.s.sx / g.s.n), (float)(g.s.sy / g.s.n), &m2, &m4);
+                { float mi, mq; cna_mean(&g.s, &mi, &mq); cna_moments(&g.s, mi, mq, &m2, &m4); }
                 weak_rejected = weak_rejected && !cna_carrier_absent(m2 * 96, m4 * 96, 96, 0.0f);
             }
         }
@@ -230,6 +229,19 @@ int main(void)
         }
         printf("     M2M4 - power over 2-15 dB: worst %+.2f dB\n", worst_m);
         check("M2M4 agrees with power within 4 dB over 2-15 dB", fabs(worst_m) <= 4.0);
+    }
+
+    /* Noise only: no carrier, so no C/N (unknown, never a low number). */
+    {
+        gen_t g;
+        generate(&g, 80, 0.0, -1e6, 0, 0, 16, 256);
+        double m2, m4;
+        cna_moments(&g.s, 0.0f, 0.0f, &m2, &m4);
+        uint8_t flags = 0;
+        float u;
+        const float n = cna_noise_at(&s_map, 80, s_model_q8, 2000, &flags, &u);
+        const cna_reading_t r = cna_estimate(m2, m4, n, u, flags, 13600u, 12, CNA_UNKNOWN_X10);
+        check("noise only reads as no carrier (unknown), not as a low C/N", r.x10 == CNA_UNKNOWN_X10 && (r.flags & CNA_F_NO_CARRIER));
     }
 
     /* No noise map at all: never a confident number. */

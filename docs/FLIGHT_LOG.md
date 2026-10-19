@@ -80,7 +80,7 @@ What was received, so a log can be compared across VTXs and cameras.
 Written at the first carrier of a session, after every deviation measurement
 that changes the result, and on a channel change.
 
-## Per-second summary (34 bytes; 38 with the received level, 42 with the gain write reasons)
+## Per-second summary (34 bytes; 38 with the received level, 42 with the gain write reasons, 50 with C/N-AUTO)
 
 One per second while the receiver runs; ~7 hours in the ring.
 
@@ -94,6 +94,7 @@ One per second while the receiver runs; ~7 hours in the ring.
 | demodulator | profile, kp level, LP (packed), sampling-phase state and last probe excess |
 | received level | carrier at the chip pin (0.1 dBm), the noise it is measured against (dBm), flags: valid, above the noise, exact (G54+), noise learned (`main/rx_level.h`) |
 | gain write reasons | writes down (attack), writes up (release), fast-path overloads forwarded (sentinel), overloads within 5 ms of a write |
+| C/N-AUTO | power C/N, M2M4 C/N, envelope C/N (0.1 dB, -990 unknown), confidence and source, flags (`main/cn_auto.h`) |
 | environment | temperature (degC) |
 | flags | menu, scan, calibrating, paused, fault latched, flywheel active, status screen |
 

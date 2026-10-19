@@ -208,6 +208,11 @@ void receiver_level_roll(bool no_carrier);   /* 1 Hz, the supervisor (diag.c) */
 rx_level_t receiver_level(void);    /* last full second */
 bool receiver_noise_learned(void);
 void receiver_pair_sweep_toggle(void);   /* bench, console Q */
+#include "cn_auto.h"
+cna_reading_t receiver_cn_reading(void);   /* C/N-AUTO: value, confidence, source */
+void receiver_cn_noise_store(uint8_t row, float cells2);   /* startup noise map (calibration.c) */
+void receiver_cn_noise_save(void);
+unsigned calibration_filter_nbw_khz(void);   /* measured noise bandwidth of the active filter, 0 unknown */
 uint32_t receiver_sentinel_forwarded(void);
 void receiver_level_feed(const uint8_t *window, size_t bytes);   /* the menu's control windows */
 unsigned calibration_narrow_width_khz(void);   /* measured -3 dB width, 0 = none */

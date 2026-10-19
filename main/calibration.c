@@ -23,6 +23,7 @@
  * deviation, diag.c). A step that cannot run (no quiet channel, menu open,
  * ...) keeps the safe default and is tried again on the next boot. */
 #include "receiver.h"
+#include "cn_auto.h"
 #include "calibration_noise.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -534,6 +535,17 @@ int calibration_filter_class_mhz(void)
         return s_filter_cal.narrow.width_khz > 11000u ? 12 : 10;
     if (filter_setting(FILTER_WIDE, &f) && rf_filter_equal(f, now)) return 16;
     return 20;
+}
+
+/* Measured noise bandwidth of the active filter (the startup sweep), 0
+ * when unknown: C/N-AUTO converts to the 20 MHz scale with it. */
+unsigned calibration_filter_nbw_khz(void)
+{
+    rf_filter_t f, now = rf_filter();
+    if (filter_setting(FILTER_NORMAL, &f) && rf_filter_equal(f, now) && s_filter_cal.normal.valid) return s_filter_cal.normal.nbw_khz;
+    if (filter_setting(FILTER_NARROW, &f) && rf_filter_equal(f, now) && s_filter_cal.narrow.valid) return s_filter_cal.narrow.nbw_khz;
+    if (filter_setting(FILTER_WIDE, &f) && rf_filter_equal(f, now) && s_filter_cal.wide.valid) return s_filter_cal.wide.nbw_khz;
+    return s_filter_cal.calibrated_nbw_khz;
 }
 
 unsigned calibration_narrow_width_khz(void)
@@ -1582,6 +1594,56 @@ static void deviation_startup(int64_t deadline)
     profile_commit(dev);
 }
 
+/* C/N-AUTO noise map (cn_auto.h): with no carrier, the noise power of the
+ * rows 3 apart from the table maximum down to G54, ~25 ms each, every boot
+ * (also on a channel quiet now but measured before: temperature and drift).
+ * Startup only, never in flight; skipped with a carrier on the channel. */
+static void noise_map_startup(int64_t deadline)
+{
+    if (!noise_like()) { printf("CN_NOISE startup skip=carrier_or_not_quiet (map from NVS / learned later)\n"); return; }
+    if (!receiver_pause("CNMAP")) return;
+    const uint8_t restore = s_current_gain;
+    unsigned rows = 0, rejected = 0;
+    for (int g = (int)rf_gain_table()->max_index; g >= 54 && esp_timer_get_time() < deadline; g -= 3) {
+        receiver_set_gain((uint8_t)g);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        cna_sums_t s = {0};
+        uint8_t buf[PROBE_BYTES];
+        double m2s = 0.0, m4s = 0.0;
+        unsigned got = 0;
+        for (unsigned tries = 0; tries < 48u && got < 24u; ++tries) {
+            vTaskDelay(1);
+            if (!copy_probe_window(buf, NULL)) continue;
+            cna_sums_t p = {0};
+            for (unsigned k = 0; k < sizeof(buf); ++k) cna_sums_add(&p, buf[k]);
+            float mi, mq;
+            cna_mean(&p, &mi, &mq);
+            double m2, m4;
+            cna_moments(&p, mi, mq, &m2, &m4);
+            m2s += m2; m4s += m4;
+            cna_sums_merge(&s, &p);
+            ++got;
+        }
+        if (got < 8u) continue;
+        /* Noise only (Gaussian: M4 ~ 2 M2^2); a row below one 4-bit step
+         * reads ~0.25-0.5 cells^2 and is kept (cn_auto marks it
+         * quantisation-limited). */
+        const double m2 = m2s / got, kurt = (m4s / got) / (m2 * m2);
+        if (m2 >= CNA_QLIM_CELLS2 && kurt < 1.85) { ++rejected; continue; }   /* G83 noise folds a little: ~1.9 */
+        float mi, mq;
+        cna_mean(&s, &mi, &mq);
+        double M2, M4;
+        cna_moments(&s, mi, mq, &M2, &M4);
+        receiver_cn_noise_store((uint8_t)g, (float)M2);
+        ++rows;
+        printf("CN_NOISE row=%d noise_cells2=%.3f kurtosis=%.2f\n", g, M2, kurt);
+    }
+    receiver_set_gain(restore);
+    receiver_resume();
+    receiver_cn_noise_save();
+    printf("CN_NOISE startup rows=%u rejected=%u (per-row noise for C/N-AUTO)\n", rows, rejected);
+}
+
 static void calib_record(bool manual, int64_t t0);   /* flight log, below */
 #define STARTUP_BUDGET_US 120000000LL
 /* A full calibration (first boot, a new calibration generation, CALIBRATE)
@@ -1626,6 +1688,8 @@ static void startup_phase(bool manual)
         if (esp_timer_get_time() < deadline) dco_startup(manual, deadline);
         if (esp_timer_get_time() < deadline) dco_startup_profiles(manual, deadline);
         else dco_ready_note();
+        printf("STARTUP step=noise_map\n");
+        if (esp_timer_get_time() < deadline) noise_map_startup(deadline);
         printf("STARTUP step=deviation\n");
         /* Video needs a moment back on the own channel before measuring. */
         status_screen_end();

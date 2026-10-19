@@ -46,6 +46,7 @@ enum { CNA_CONF_NONE = 0, CNA_CONF_LOW = 1, CNA_CONF_OK = 2, CNA_CONF_HIGH = 3 }
 #define CNA_F_UNSETTLED       0x10u
 #define CNA_F_DC_UNKNOWN      0x20u   /* no long-term DC for the row yet */
 #define CNA_F_QUANT_LIMITED   0x40u   /* thermal noise below one 4-bit step at this row */
+#define CNA_F_NO_CARRIER      0x80u   /* power within 1 dB of the noise: no carrier to rate */
 /* Below this noise-only power (cells^2, thermal sigma ~0.5 cell per axis)
  * a row's noise reading is no noise: with sub-cell noise the samples sit
  * on the cell centres and the reading depends on where the DC falls inside
@@ -130,29 +131,53 @@ static inline bool cna_carrier_absent(double sum_m2, double sum_m4, unsigned pro
     if (m4 / (m2 * m2) < CNA_ABSENT_KURT) return false;
     if (known_noise_cells2 > 0.0f) {
         const float d = cna_db((float)m2 / known_noise_cells2);
-        if (d > 2.0f || d < -2.0f) return false;
+        /* Upward only 0.5 dB at a time: a carrier far below the noise that
+         * slipped past the kurtosis test can never creep the noise up (and
+         * the C/N down); downward up to 2 dB (a cooler chip, a new filter). */
+        if (d > 0.5f || d < -2.0f) return false;
     }
     return true;
 }
 
 /* ---- moments around a given DC ----
- * Raw sums over n samples of x, y (cells), x^2 + y^2 and (x^2 + y^2)^2, plus
- * x^2, y^2, x*y, x*p, y*p with p = x^2 + y^2; returns M2, M4 of z - dc. */
-typedef struct { double sx, sy, sxx, syy, sxy, sxp, syp, spp; uint32_t n; } cna_sums_t;
+ * Integer sums in dsp units (x = 2v + 1 for a cell value v, so a dsp unit is
+ * half a cell): cheap on the C5 (no double FPU), exact. p = x^2 + y^2 <= 450,
+ * p^2 <= 202500: a probe's sums fit easily in int64. */
+typedef struct { int64_t sx, sy, sxx, syy, sxy, sxp, syp, spp; uint32_t n; } cna_sums_t;
+static inline void cna_sums_add(cna_sums_t *s, uint8_t raw)
+{
+    const int32_t x = 2 * ((int8_t)(raw & 240u) >> 4) + 1;          /* I: high nibble */
+    const int32_t y = 2 * ((int8_t)((raw & 15u) << 4) >> 4) + 1;    /* Q: low nibble */
+    const int32_t p = x * x + y * y;
+    s->sx += x; s->sy += y; s->sxx += x * x; s->syy += y * y; s->sxy += x * y;
+    s->sxp += x * p; s->syp += y * p; s->spp += (int64_t)p * p; ++s->n;
+}
+static inline void cna_sums_merge(cna_sums_t *a, const cna_sums_t *b)
+{
+    a->sx += b->sx; a->sy += b->sy; a->sxx += b->sxx; a->syy += b->syy; a->sxy += b->sxy;
+    a->sxp += b->sxp; a->syp += b->syp; a->spp += b->spp; a->n += b->n;
+}
+/* M2 = E|z - dc|^2, M4 = E|z - dc|^4 in cells (dc in cells). */
 static inline void cna_moments(const cna_sums_t *s, float dci, float dcq, double *m2, double *m4)
 {
     const double inv = 1.0 / (double)(s->n ? s->n : 1u);
-    const double mx = s->sx * inv, my = s->sy * inv, a = dci, b = dcq;
-    const double ex2 = s->sxx * inv, ey2 = s->syy * inv, exy = s->sxy * inv;
-    const double ep = ex2 + ey2, exp_ = s->sxp * inv, eyp = s->syp * inv, ep2 = s->spp * inv;
-    /* |z - d|^2 = p - 2(a x + b y) + |d|^2 */
+    /* dsp -> cells: x/2, x^2/4, x p / 8, p^2 / 16 */
+    const double mx = 0.5 * (double)s->sx * inv, my = 0.5 * (double)s->sy * inv, a = dci, b = dcq;
+    const double ex2 = 0.25 * (double)s->sxx * inv, ey2 = 0.25 * (double)s->syy * inv, exy = 0.25 * (double)s->sxy * inv;
+    const double ep = ex2 + ey2, exp_ = 0.125 * (double)s->sxp * inv, eyp = 0.125 * (double)s->syp * inv;
+    const double ep2 = 0.0625 * (double)s->spp * inv;
     const double d2 = a * a + b * b;
     *m2 = ep - 2.0 * (a * mx + b * my) + d2;
-    /* E[(p - 2u + d2)^2], u = a x + b y */
     const double eu = a * mx + b * my;
     const double eu2 = a * a * ex2 + 2.0 * a * b * exy + b * b * ey2;
     const double epu = a * exp_ + b * eyp;
     *m4 = ep2 + 4.0 * eu2 + d2 * d2 - 4.0 * epu + 2.0 * d2 * ep - 4.0 * d2 * eu;
+}
+static inline void cna_mean(const cna_sums_t *s, float *dci, float *dcq)
+{
+    const double inv = 1.0 / (double)(s->n ? s->n : 1u);
+    *dci = (float)(0.5 * (double)s->sx * inv);
+    *dcq = (float)(0.5 * (double)s->sy * inv);
 }
 
 /* ---- the estimate ----
@@ -189,6 +214,10 @@ static inline cna_reading_t cna_estimate(double m2, double m4, float noise, floa
     if (have_power) {
         r.source = CNA_SRC_POWER;
         r.x10 = (int)lroundf(10.0f * (cn_power - to20));
+        /* Below the noise (power within 1 dB of it, C/N < -6 dB): no carrier,
+         * so no C/N. Consumers held on unknown before; a number here would
+         * read as a very weak carrier. */
+        if (cn_power < -6.0f) { r.flags |= CNA_F_NO_CARRIER; r.x10 = CNA_UNKNOWN_X10; r.confidence = CNA_CONF_NONE; return r; }
         conf = noise_uncert_db <= 1.0f ? CNA_CONF_HIGH : noise_uncert_db <= 3.0f ? CNA_CONF_OK : CNA_CONF_LOW;
         if (flags & CNA_F_NOISE_STALE) conf = conf > CNA_CONF_LOW ? conf - 1u : conf;
         /* The cross-check only where M2M4 holds: a carrier well inside the

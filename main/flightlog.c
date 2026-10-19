@@ -10,6 +10,7 @@
 #include "flightlog.h"
 #include "flightlog_format.h"
 #include "receiver.h"
+#include "cn_estimate.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -315,6 +316,7 @@ void flightlog_second(const diag_record_t *r, uint8_t gain_min, uint8_t gain_max
     control_flog_afc(&afc_off, &afc_res, &afc_corr);
     static uint32_t wa, wr, sf, oa;
     const rx_level_t lv = receiver_level();
+    const cna_reading_t cn = receiver_cn_reading();
     flog_second_t s = {
         .t_s = r->t_s, .vq_snr_x10 = vq.known ? vq.snr_x10 : 0, .vq_lines_x100 = vq.known ? vq.lines_x100 : 0,
         .cn_x10 = r->cn_x10, .video_pct = r->video_pct, .dropout = dropout,
@@ -340,6 +342,10 @@ void flightlog_second(const diag_record_t *r, uint8_t gain_min, uint8_t gain_max
         .writes_release = have ? flog_sat8(s_gain.writes_moderate - wr) : 0,
         .sentinel = have ? flog_sat8(receiver_sentinel_forwarded() - sf) : 0,
         .overloads_after_write = have ? flog_sat8(s_gain.overloads_after_write - oa) : 0,
+        .cn_power_x10 = (int16_t)cn.power_x10, .cn_m2m4_x10 = (int16_t)cn.m2m4_x10,
+        .cn_env_x10 = (int16_t)(s_obs_env_ratio_x100 > 0 ? cn_estimate_env_x10(s_obs_env_ratio_x100, calibration_filter_class_mhz())
+                                                           : -990),
+        .cn_conf_src = (uint8_t)((cn.confidence & 3u) | (cn.source << 2)), .cn_flags = cn.flags,
     };
     wa = s_gain.writes_severe; wr = s_gain.writes_moderate; sf = receiver_sentinel_forwarded(); oa = s_gain.overloads_after_write;
     gw = r->gain_writes; ov = r->overloads; sw = servo_writes; ac = afc_corr; have = true;

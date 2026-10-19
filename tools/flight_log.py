@@ -152,6 +152,13 @@ def second(p):
     d['level_exact'] = int(bool(flags & 4))
     # Why the gain moved (42-byte records).
     d['writes_attack'], d['writes_release'], d['sentinel'], d['overloads_after_write'] = (p[38], p[39], p[40], p[41]) if len(p) >= 42 else (None, None, None, None)
+    # C/N-AUTO (50-byte records): power, M2M4, envelope C/N, confidence, source, flags
+    if len(p) >= 50:
+        cp, cm, ce = struct.unpack_from('<hhh', p, 42)
+        d['cn_power_db'] = None if cp <= -990 else cp / 10
+        d['cn_m2m4_db'] = None if cm <= -990 else cm / 10
+        d['cn_env_db'] = None if ce <= -990 else ce / 10
+        d['cn_confidence'], d['cn_source'], d['cn_flags'] = p[48] & 3, p[48] >> 2, p[49]
     return d
 
 
