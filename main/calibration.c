@@ -1604,7 +1604,10 @@ static void noise_map_startup(int64_t deadline)
     if (!receiver_pause("CNMAP")) return;
     const uint8_t restore = s_current_gain;
     unsigned rows = 0, rejected = 0;
-    for (int g = (int)rf_gain_table()->max_index; g >= 54 && esp_timer_get_time() < deadline; g -= 3) {
+    /* Every row while the noise is real (it is the gain measurement of the
+     * edge rows, gain.c dg_apply_measured_gain), every 3rd below. */
+    bool fine = true;
+    for (int g = (int)rf_gain_table()->max_index; g >= 54 && esp_timer_get_time() < deadline; g -= fine ? 1 : 3) {
         receiver_set_gain((uint8_t)g);
         vTaskDelay(pdMS_TO_TICKS(20));
         cna_sums_t s = {0};
@@ -1636,6 +1639,7 @@ static void noise_map_startup(int64_t deadline)
         cna_moments(&s, mi, mq, &M2, &M4);
         receiver_cn_noise_store((uint8_t)g, (float)M2);
         ++rows;
+        if (M2 < CNA_QLIM_CELLS2) fine = false;
         printf("CN_NOISE row=%d noise_cells2=%.3f kurtosis=%.2f\n", g, M2, kurt);
     }
     receiver_set_gain(restore);

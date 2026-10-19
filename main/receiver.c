@@ -369,6 +369,7 @@ static cna_reading_t s_cna;
 static volatile int64_t s_cna_us;
 static volatile uint32_t s_cna_epoch;
 static uint32_t s_cna_learned, s_cna_absent_rejects, s_cna_estimates;
+static volatile bool s_cna_gain_dirty;
 
 static int cna_slot_find(uint16_t freq, rf_filter_t f)
 {
@@ -419,6 +420,7 @@ static void cna_key_check(void)
     memset(s_rowdc_n, 0, sizeof(s_rowdc_n));
     s_cna_freq = freq; s_cna_filter = f; s_cna_key_valid = true; s_cna_dirty = false;
     s_cna_acc_row = s_abs_row = 255u;
+    s_cna_gain_dirty = true;
     const int k = cna_slot_find(freq, f);
     if (k >= 0)
         for (unsigned r = 0; r < CNA_STORE_ROWS; ++r)
@@ -434,7 +436,23 @@ void receiver_cn_noise_store(uint8_t row, float cells2)
     for (unsigned k = 0; k < CNA_MIN_SAMPLES; ++k) cna_noise_learn(&s_cna_map, row, cells2, esp_timer_get_time());
     s_cna_dirty = true;
 }
-void receiver_cn_noise_save(void) { cna_save(); }
+void receiver_cn_noise_save(void) { cna_save(); s_cna_gain_dirty = true; }
+
+/* The noise map is a gain measurement too (receiver noise is a constant
+ * input): rows whose thermal noise is well above the 4-bit step (>= 0.5
+ * cells^2) give the gain core and the dBm meter their real gain
+ * (dg_apply_measured_gain). Applied by the observer task, the core's only
+ * writer, after every map change and every re-bind. */
+static unsigned s_gain_rows_measured;
+static void cna_apply_gain(void)
+{
+    float th[DG_STATES] = {0};
+    for (unsigned k = 0; k < DG_STATES && k < CNA_ROWS; ++k) {
+        const float t = s_cna_map.n[k] >= CNA_MIN_SAMPLES ? s_cna_map.noise[k] - CNA_QUANT_CELLS2 : 0.0f;
+        th[k] = t >= 0.5f ? t : 0.0f;
+    }
+    s_gain_rows_measured = dg_apply_measured_gain(&s_gain, th);
+}
 
 static void cna_probe(const uint8_t *sample, size_t bytes, const dg_observation_t *o, uint8_t row, int64_t now)
 {
@@ -669,11 +687,13 @@ static void observer_task(void *arg)
             s_gain.current_gain != s_current_gain || !dg_map_matches(&s_gain, rf_gain_table(), &context)) {
             ++s_rebinds;
             gain_map_bind(&context, control, phy, table);
+            s_cna_gain_dirty = true;   /* the bind rebuilt the model gains */
             seen_control = control;
             seen_table = table;
             seen_phy = phy;
             was_active = true;
         }
+        if (s_cna_gain_dirty) { s_cna_gain_dirty = false; cna_key_check(); cna_apply_gain(); }
         if (__sync_bool_compare_and_swap(&s_overload_state, 2u, 1u)) {
             __sync_synchronize();
             dg_observation_t o = s_overload;
@@ -802,6 +822,8 @@ void receiver_print(void)
                (unsigned long)s_cna_learned, (unsigned long)s_cna_absent_rejects, (unsigned long)s_cna_estimates,
                calibration_filter_nbw_khz());
     }
+    printf("GAIN_TABLE measured_rows=%u g83_g72_db=%.2f (top rows from the receiver-noise map; the rest the model, joined)\n",
+           s_gain_rows_measured, (s_gain.model_db_q8[s_gain.table.max_index] - s_gain.model_db_q8[72]) / 256.0);
     printf("GAIN_REFUSED generation=%lu busy=%lu control=%lu inactive=%lu actuator_lock=%lu rf_set_gain=%lu (writes the core wanted but the PHY did not take, by reason)\n",
            (unsigned long)s_refuse[0], (unsigned long)s_refuse[1], (unsigned long)s_refuse[2], (unsigned long)s_refuse[3],
            (unsigned long)s_refuse[4], (unsigned long)s_refuse[5]);

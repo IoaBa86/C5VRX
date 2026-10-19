@@ -183,6 +183,12 @@ dg_observation_t dg_measure(const uint8_t *samples, size_t bytes,
 dg_observation_t dg_measure_gain(const uint8_t *samples, size_t bytes,
                                  const uint8_t phase8_lut[256], uint64_t observed_us);
 uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o);
+/* Measured gain per row (KEEL-1 steps, rx_level): thermal_cells2[k] > 0 for
+ * rows whose receiver noise was measured well above the 4-bit step; their
+ * gain becomes the measured one (relative to the highest such row, which
+ * keeps its model value); rows below the lowest measured one follow the
+ * model, shifted to join it. Rebuilds the home rows. Returns rows set. */
+unsigned dg_apply_measured_gain(direct_gain_t *g, const float thermal_cells2[DG_STATES]);
 void dg_sync_applied(direct_gain_t *g, uint8_t gain, uint64_t write_us);
 /* A write the PHY did not take: the core is back on the real gain, no settle. */
 void dg_write_refused(direct_gain_t *g, uint8_t actual_gain);

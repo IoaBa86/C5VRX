@@ -4,6 +4,7 @@
  * the V6 carrier memory described in gain.h. */
 #include "gain.h"
 #include "direct_gain_v3_lut.h"
+#include <math.h>
 #include <string.h>
 
 /* A Q4 cell represents the half-integer position n+0.5. The lookup is built
@@ -988,6 +989,44 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
     ++g->holds;
     if (!no_carrier) g->last_healthy_us = now;
     return g->current_gain;
+}
+
+/* Board, pair sweep on receiver noise (PR #228): the fine steps of the top
+ * rows are 1.0 dB (model 0.83) and the G78/G77 baseband step 0.93 dB (model
+ * 1.85); G83 -> G72 is 11.2 dB (model 10.2). Receiver noise is a constant
+ * input, so its power per row is the row's real gain. */
+unsigned dg_apply_measured_gain(direct_gain_t *g, const float thermal_cells2[DG_STATES])
+{
+    if (!g || !thermal_cells2) return 0u;
+    int top = -1, low = -1;
+    for (int k = (int)g->table.max_index; k >= 0; --k)
+        if (thermal_cells2[k] > 0.0f) { if (top < 0) top = k; low = k; }
+    if (top < 0 || top == low) return 0u;
+    int16_t q8[DG_STATES];
+    memcpy(q8, g->model_db_q8, sizeof(q8));
+    unsigned set = 0;
+    for (int k = low; k <= top; ++k) {
+        if (thermal_cells2[k] <= 0.0f) continue;
+        const float rel = 10.0f * log10f(thermal_cells2[k] / thermal_cells2[top]);
+        q8[k] = (int16_t)(g->model_db_q8[top] + (int)lroundf(rel * 256.0f));
+        ++set;
+    }
+    /* Unmeasured rows between measured ones: linear in the row (the board
+     * measured ~1 dB a row through the baseband steps the model makes 1.85
+     * dB; following the model's shape kept those wrong steps). */
+    for (int k = low; k <= top; ++k) {
+        if (thermal_cells2[k] > 0.0f) continue;
+        int a = k - 1, b = k + 1;
+        while (a > low && thermal_cells2[a] <= 0.0f) --a;
+        while (b < top && thermal_cells2[b] <= 0.0f) ++b;
+        q8[k] = (int16_t)(q8[a] + (q8[b] - q8[a]) * (k - a) / (b - a));
+    }
+    /* Below the lowest measured row: the model, joined to it. */
+    const int shift = q8[low] - g->model_db_q8[low];
+    for (int k = 0; k < low; ++k) q8[k] = (int16_t)(g->model_db_q8[k] + shift);
+    memcpy(g->model_db_q8, q8, sizeof(q8));
+    keel_build(g);
+    return set;
 }
 
 void dg_write_refused(direct_gain_t *g, uint8_t actual_gain)

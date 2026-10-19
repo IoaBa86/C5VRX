@@ -169,7 +169,7 @@ class GainMapContextTest(unittest.TestCase):
             binary = Path(folder) / "test"
             subprocess.run([os.environ.get("CC", "cc"), "-O2", "-std=c11", "-Wall", "-Wextra", "-Werror",
                             "-I", str(ROOT / "main"), str(source), str(ROOT / "main/gain.c"),
-                            str(ROOT / "main/arc_phy.c"), "-o", str(binary)], check=True)
+                            str(ROOT / "main/arc_phy.c"), "-o", str(binary), "-lm"], check=True)
             subprocess.run([str(binary)], check=True)
 
 
