@@ -187,7 +187,6 @@ static void attack_record(const dg_observation_t *o, uint8_t source, uint8_t fro
 }
 static void gain_map_bind(const dg_map_context_t *context, uint32_t control, uint32_t phy, uint32_t table)
 {
-    ++s_rebinds;
     dg_reset_context(&s_gain, rf_gain_table(), s_current_gain, context);
     /* Every import checks the current transfer context and complete table,
      * including after A -> B -> A. A stored map for A remains available
@@ -522,6 +521,7 @@ static void observer_task(void *arg)
         if (s_paused) continue;
         if (!was_active || control != seen_control || table != seen_table || phy != seen_phy ||
             s_gain.current_gain != s_current_gain || !dg_map_matches(&s_gain, rf_gain_table(), &context)) {
+            ++s_rebinds;
             gain_map_bind(&context, control, phy, table);
             seen_control = control;
             seen_table = table;
