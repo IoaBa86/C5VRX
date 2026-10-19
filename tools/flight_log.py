@@ -37,7 +37,7 @@ PROFILES = ['DEFAULT', 'MATCHED', 'NARROW', 'WIDE']
 RX_STATES = ['', 'ACQUIRE', 'TRACK', 'EDGE', 'RECOVER', 'FAULT', 'OWNED']
 RX_REASONS = ['none', 'no_carrier', 'weak_signal', 'dc_clipping', 'overload', 'dc_residual', 'sync_loss_with_rf',
               'owned', 'fault', 'low_picture_snr']
-TRIGGERS = {1: 'dropout', 2: 'vq_drop', 3: 'first_carrier', 4: 'periodic', 5: 'overload'}
+TRIGGERS = {1: 'dropout', 2: 'vq_drop', 3: 'first_carrier', 4: 'periodic', 5: 'overload', 6: 'edge', 7: 'recover'}
 
 
 def crc32(data, crc=0):

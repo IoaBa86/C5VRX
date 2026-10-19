@@ -263,7 +263,7 @@ void receiver_dc_reset_all(void)
     taskEXIT_CRITICAL(&s_dc_acc_lock);
 }
 
-static uint32_t s_sat_one_sided, s_sat_two_sided, s_sat_run;
+static uint32_t s_sat_one_sided, s_sat_two_sided, s_sat_score;
 
 static void tick_cb(void *arg)
 {
@@ -372,9 +372,12 @@ static void observer_task(void *arg)
             const bool both = (o.rails & 3u) == 3u || (o.rails & 12u) == 12u;
             if (both) ++s_sat_two_sided; else ++s_sat_one_sided;
             if (o.clip_pm >= 100u && dg_one_sided(&o)) calibration_dc_urgent();   /* real clipping, not a touch */
-            if (++s_sat_run == 50u) flightlog_snapshot_request(FLOG_SNAP_OVERLOAD);   /* a burst, ~10 ms */
+            /* A leaky count, not a run: with oscillating gain the saturated
+             * windows alternate and a run of 50 never came (blackbox
+             * session 13: 7549 overloads, no snapshot). */
+            if (both && (s_sat_score += 16u) > 400u) { s_sat_score = 0; flightlog_snapshot_request(FLOG_SNAP_OVERLOAD); }
         } else {
-            s_sat_run = 0;
+            s_sat_score -= s_sat_score >> 5;
         }
         const dg_map_context_t after_context = map_context();
         if (phy != phy_generation() || phy_busy() || gain_epoch != s_gain_epoch || control != s_control_epoch ||

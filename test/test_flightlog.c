@@ -120,6 +120,10 @@ int main(void)
         check("a dropout replaces the least important, oldest", flog_snap_victim(important, seq, used, 4, FLOG_SNAP_DROPOUT) == 2);
         uint8_t drops[4] = {FLOG_SNAP_DROPOUT, FLOG_SNAP_DROPOUT, FLOG_SNAP_DROPOUT, FLOG_SNAP_DROPOUT};
         check("all dropouts: the oldest dropout goes", flog_snap_victim(drops, seq, used, 4, FLOG_SNAP_DROPOUT) == 0);
+        check("an edge snapshot ranks with a dropout, above a picture drop",
+              flog_snap_priority(FLOG_SNAP_EDGE) == flog_snap_priority(FLOG_SNAP_DROPOUT) &&
+              flog_snap_priority(FLOG_SNAP_EDGE) > flog_snap_priority(FLOG_SNAP_VQ_DROP) &&
+              flog_snap_priority(FLOG_SNAP_RECOVER) == flog_snap_priority(FLOG_SNAP_DROPOUT));
     }
     printf("%u/%u flight log checks passed\n", s_run - s_fail, s_run);
     return s_fail != 0;
