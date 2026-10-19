@@ -1178,3 +1178,29 @@ at the pin.
     hunting. Above G54 (one RF stage) the model holds.
 - **Next:** measure every RF stage with the VTX at ~0.3 m and ~8 m, give the
   gain core a measured per-row table, and repeat the session.
+
+## KEEL-1 on the board: what the logs showed and fixed (2026-10-19/20)
+
+Blackbox sessions 24-34, walking with a VTX. Each item was found in the
+per-second log or the new evidence records, then fixed at its cause.
+
+| finding | cause | fix |
+| --- | --- | --- |
+| 255 writes/s at the edge | the 64-sample sentinel forwarded noise rail touches as overloads | gross saturation only |
+| wrong gains, '255' seconds | AFC steps and refused writes reset the whole core; counters wrapped | keep core state on the same receiver; resync refused writes |
+| rows with 2-3 cells DC after carrier changes | folding windows fed the DC servo | windows reaching both rails are kept out |
+| gain 7-10 dB low at the edge | overloads with clean snapshots; a 9 dB step and 1 s memory each | no saturation evidence across a write; 3 dB steps; 300 ms memory |
+| demod on its narrowest tracker with LP, no AFC at the edge | the envelope C/N read 3-12 dB low (snapshots: 14-19 dB true) | C/N from power against the learned noise per filter |
+| VTX MATCHED screen in flight | status screen at the startup profile switch | the live switch, no screen |
+| folds ~41 ms after a release (P50 ~55) | releases too optimistic for slow (walking) fades or a table step larger than the model | learned headroom per row: +3 dB per folded release, decays 1 dB / 2 s |
+
+**Evidence in the blackbox now:**
+- every step down with its window (FLOG_E_ATTACK);
+- per second: writes down and up, sentinel forwards, overloads within 5 ms
+  of a write, the received level and its noise;
+- in T: refused writes, rebinds, heat events.
+
+**Still open (needs a VTX):**
+- The pair sweep at ~10 m to measure the real steps of G40-G83 (the model
+  holds over G29-G39 only).
+- A walk with this build.

@@ -356,6 +356,7 @@ bool dg_map_matches(const direct_gain_t *g, const arc_gain_table_t *table, const
 #ifndef KEEL_LATTICE_Q8
 #define KEEL_LATTICE_Q8 768   /* 3 dB */
 #endif
+static bool magic_ok_early(const direct_gain_t *g) { return g->magic == DG_MAGIC; }
 static void keel_build(direct_gain_t *g)
 {
     g->keel_rows = 0;
@@ -385,7 +386,8 @@ static uint8_t keel_pick(const direct_gain_t *g, uint8_t from, int delta_q8)
     bool found = false;
     for (unsigned k = 0; k < g->keel_rows; ++k) {
         const uint8_t r = g->keel_row[k];
-        if (g->model_db_q8[r] <= want && (delta_q8 > 0 ? r >= from : r < from)) { best = r; found = true; }
+        const int need = g->model_db_q8[r] + (delta_q8 > 0 && r > from ? (int)g->heat_q8[r] : 0);
+        if (need <= want && (delta_q8 > 0 ? r >= from : r < from)) { best = r; found = true; }
     }
     if (found) return best;
     return delta_q8 > 0 ? from : g->keel_row[0];
@@ -427,6 +429,10 @@ void dg_reset_context(direct_gain_t *g, const arc_gain_table_t *table, uint8_t c
                    keep_down = g->down_after_us, keep_folded_until = g->folded_until_us,
                    keep_sat_since = g->saturated_since_us;
     const bool keep_far = g->far_run, keep_sat = g->saturated_run;
+    uint16_t keep_heat[DG_STATES];
+    memcpy(keep_heat, g->heat_q8, sizeof(keep_heat));
+    const uint64_t keep_heat_us = g->heat_us;
+    const uint32_t c_heat = magic_ok_early(g) ? g->heat_events : 0u;
     const dg_observation_t keep_last = g->last_tracking;
     const bool magic_ok = g->magic == DG_MAGIC;
     const uint32_t c_writes = magic_ok ? g->writes : 0u, c_mod = magic_ok ? g->writes_moderate : 0u,
@@ -465,7 +471,10 @@ void dg_reset_context(direct_gain_t *g, const arc_gain_table_t *table, uint8_t c
         g->folded_row = keep_folded_row; g->folded_until_us = keep_folded_until;
         g->saturated_run = keep_sat; g->saturated_since_us = keep_sat_since;
         g->last_tracking = keep_last;
+        memcpy(g->heat_q8, keep_heat, sizeof(keep_heat));
+        g->heat_us = keep_heat_us;
     }
+    g->heat_events = c_heat;
     g->relative_power_q10[g->current_gain] = 1024u;
     g->confidence[g->current_gain] = 1u;
     g->uncertainty_pm[g->current_gain] = 50u;
@@ -504,6 +513,7 @@ void dg_reset(direct_gain_t *g, const arc_gain_table_t *table, uint8_t current_g
     memset(&g->last_tracking, 0, sizeof(g->last_tracking));
     g->writes = g->writes_moderate = g->writes_severe = g->overloads = g->holds = 0;
     g->bursts_ignored = g->one_sided_clips = g->writes_refused = g->overloads_after_write = 0;
+    memset(g->heat_q8, 0, sizeof(g->heat_q8)); g->heat_us = 0; g->released_row = 0; g->heat_events = 0;
 }
 
 unsigned dg_export_map(const direct_gain_t *g, dg_map_blob_t *blob)
@@ -747,7 +757,7 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
 #ifndef DG7_HOLD_US
 #define DG7_HOLD_US 16000u   /* peak memory (KEEL-1; V7 used 48 ms) */
 #endif
-#define DG7_BUCKET_US    2000u
+#define DG7_BUCKET_US (DG7_HOLD_US / 32u)   /* the memory always spans 32 buckets */
 /* Far below the release level (6 dB) for this long, judged on the newest
  * peaks only, a weaker carrier is no multipath null any more: release then
  * instead of after the full memory. A -22 / -12 dB step behind an obstacle
@@ -757,6 +767,12 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
  * (-76..-88 dBm): the gain left a row when a fade peak folded and came back
  * 16 ms later, 255 writes a second between G61 and G79. After an attack the
  * row that folded stays out of reach this long. */
+#ifndef DG7_HEAT_STEP_Q8
+#define DG7_HEAT_STEP_Q8   768u       /* +3 dB per folded release into a row */
+#endif
+#define DG7_HEAT_MAX_Q8    3072u      /* at most 12 dB */
+#define DG7_HEAT_WINDOW_US 150000u    /* a fold this soon after a release counts */
+#define DG7_HEAT_DECAY_US  2000000u   /* -1 dB every 2 s */
 #ifndef DG7_FOLD_MEMORY_US
 #define DG7_FOLD_MEMORY_US 300000u
 #endif
@@ -844,6 +860,11 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
     g->last_tracking = *o;
     const uint64_t now = o->observed_us;
     if (!g->peak_since_us) dg7_peak_reset(g, now);
+    if (!g->heat_us || now < g->heat_us) g->heat_us = now;
+    else if (now - g->heat_us >= DG7_HEAT_DECAY_US) {
+        g->heat_us = now;
+        for (unsigned k = 0; k < DG_STATES; ++k) g->heat_q8[k] = g->heat_q8[k] > 256u ? (uint16_t)(g->heat_q8[k] - 256u) : 0u;
+    }
     const bool one_sided = o->clip_pm >= 100 && dg_one_sided(o);
     if (one_sided) ++g->one_sided_clips;
     const bool saturated = o->clip_pm >= 100 && !dg_one_sided(o);
@@ -906,6 +927,17 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
         /* Attack memory: the row that folded stays out of reach for a while. */
         g->folded_row = g->current_gain;
         g->folded_until_us = now + DG7_FOLD_MEMORY_US;
+        /* Learned headroom (KEEL-1): a release that folds within 150 ms was
+         * too optimistic for this row, whatever the reason (a table step
+         * larger than the model, a fading pattern, an antenna). Blackbox
+         * session 34, walking: the attacks were real folds a median 41 ms
+         * after a release, P50 ~55 against a target P95 of 30. */
+        if (g->released_row == g->current_gain && now - g->released_us < DG7_HEAT_WINDOW_US) {
+            const unsigned h = g->heat_q8[g->current_gain] + DG7_HEAT_STEP_Q8;
+            g->heat_q8[g->current_gain] = (uint16_t)(h > DG7_HEAT_MAX_Q8 ? DG7_HEAT_MAX_Q8 : h);
+            ++g->heat_events;
+        }
+        g->released_row = 0;
         ++g->writes_severe;
         return start_write(g, o, &prior, target);
     }
@@ -936,6 +968,8 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
             if (target > g->current_gain) {
                 g->far_run = far;
                 g->up_after_us = now + DG7_UP_GAP_US;
+                g->released_row = target;
+                g->released_us = now;
                 ++g->writes_moderate;
                 return start_write(g, o, &prior, target);
             }

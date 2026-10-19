@@ -140,6 +140,13 @@ typedef struct {
     uint64_t folded_until_us;
     uint32_t writes_refused;      /* writes the PHY did not take (receiver.c apply_target) */
     uint32_t overloads_after_write;   /* overloads within 5 ms of the last write (transient suspects) */
+    /* KEEL-1 learned headroom: extra dB (Q8) a release into a row needs
+     * after releases into it folded; decays. Per row, self-learned. */
+    uint16_t heat_q8[DG_STATES];
+    uint64_t heat_us;                 /* last decay */
+    uint8_t released_row;             /* the row the last release went to */
+    uint64_t released_us;
+    uint32_t heat_events;
     uint32_t magic;
 } direct_gain_t;
 

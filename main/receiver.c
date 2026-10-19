@@ -643,9 +643,9 @@ void receiver_print(void)
         printf("RX_LEVEL unknown probes=%lu clipped_pm=%u\n", (unsigned long)lv.probes, lv.clipped_pm);
     printf("GAIN_SAT one_sided=%lu two_sided=%lu to_dc_servo=%lu (saturated observer windows: one rail per axis = DC-pushed, both = large signal; one-sided ones go to the DC servo, not the gain)\n",
            (unsigned long)s_sat_one_sided, (unsigned long)s_sat_two_sided, (unsigned long)s_gain.one_sided_clips);
-    printf("GAIN_WRITES attack=%lu release=%lu refused=%lu rebinds=%lu overloads=%lu overloads_after_write=%lu sentinel_forwarded=%lu sentinel_dropped=%lu (why the gain moved; rebinds keep the core's memory on the same receiver; sentinel = 64-sample fast path, gross saturation only)\n",
+    printf("GAIN_WRITES attack=%lu release=%lu refused=%lu rebinds=%lu overloads=%lu overloads_after_write=%lu heat_events=%lu sentinel_forwarded=%lu sentinel_dropped=%lu (why the gain moved; rebinds keep the core's memory on the same receiver; sentinel = 64-sample fast path, gross saturation only)\n",
            (unsigned long)s_gain.writes_severe, (unsigned long)s_gain.writes_moderate, (unsigned long)s_gain.writes_refused,
-           (unsigned long)s_rebinds, (unsigned long)s_gain.overloads, (unsigned long)s_gain.overloads_after_write,
+           (unsigned long)s_rebinds, (unsigned long)s_gain.overloads, (unsigned long)s_gain.overloads_after_write, (unsigned long)s_gain.heat_events,
            (unsigned long)s_sentinel_forwarded, (unsigned long)s_sentinel_dropped);
     printf("DC_FEED rejected_folded=%lu (observer windows reaching both rails of an axis: a folding carrier, kept out of the DC servo)\n",
            (unsigned long)s_dc_rejected_folded);

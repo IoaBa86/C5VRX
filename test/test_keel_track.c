@@ -40,6 +40,9 @@ unsigned char phy_param[2048];
 #ifndef WRITE_COST_US
 #define WRITE_COST_US 2000u
 #endif
+#ifndef FOLD_COST_US
+#define FOLD_COST_US 4000u   /* a folded moment costs ~a few lines of picture and sync */
+#endif
 #ifndef DC_TAU_US
 #define DC_TAU_US 100000.0
 #endif
@@ -199,7 +202,7 @@ static result_t run(const scenario_t *sc, uint32_t seed)
     fading_init(seed * 31u + 7u);
     dg_reset(&g, &table, table.max_index);
     g.learn_enabled = true;
-    uint64_t t = 1000, last_write = 0;
+    uint64_t t = 1000, last_write = 0, last_fold = 0;
     unsigned applied = g.current_gain;
     const unsigned settle_ticks = 5000u, ticks = 25000u;   /* 1 s settle, 5 s measured */
     unsigned ok = 0;
@@ -218,8 +221,12 @@ static result_t run(const scenario_t *sc, uint32_t seed)
         const uint8_t target = dg_tick(&g, &o);
         if (target != applied) { applied = target; dg_sync_applied(&g, target, t); last_write = t; s_last_write_us = t; }
         else if (!last_write || t - last_write >= 400u) s_dwell[applied] += TICK_US;   /* the servo learns settled rows */
+        /* A fold tears the picture for longer than its own samples: lines and
+         * sync go (board, session 34: "why does the video almost drop out"). */
+        if (snr_db(lv, applied) < -90.0) last_fold = t;
         if (n >= settle_ticks) {
-            const bool fresh = !last_write || t - last_write >= WRITE_COST_US;
+            const bool fresh = (!last_write || t - last_write >= WRITE_COST_US) &&
+                               (!last_fold || t - last_fold >= FOLD_COST_US);
             ok += fresh && snr_db(lv, applied) >= sc->threshold_db;
             dc_sum += dc_cells(applied);
         }
@@ -255,6 +262,12 @@ int main(void)
          * at G83, still 255 writes down and up in a second. */
         {"walk-out 18 dB C/N (K 3, 10 Hz)", edge18, 10, 3, 0, 10, 2},
         {"walk-out 18 dB C/N, Rayleigh 10 Hz", edge18, 10, 0, 0, 10, 2},
+        /* Blackbox session 34 (walking): attacks were real folds a median
+         * 41 ms after a release; walking fades peak every 100-500 ms. */
+        {"walking 18 dB C/N (K 3, 2 Hz)", edge18, 2, 3, 0, 10, 2},
+        {"walking 18 dB C/N, Rayleigh 5 Hz", edge18, 5, 0, 0, 10, 2},
+        {"walking 6 dB C/N (K 3, 2 Hz)", edge6, 2, 3, 0, 3, 2},
+        {"close, walking Rayleigh 2 Hz", close, 2, 0, 0, 10, 1},
     };
     const unsigned n = sizeof(sc) / sizeof(sc[0]);
     double score = 0, weights = 0, writes = 0, edge_writes = 0, edge3_usable = 0;
