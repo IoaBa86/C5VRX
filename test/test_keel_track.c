@@ -197,6 +197,11 @@ static result_t run(const scenario_t *sc, uint32_t seed)
         double lv = sc->level_db + fading_db(t, sc->doppler, sc->k);
         if (sc->step_db != 0 && n >= settle_ticks + ticks / 2u) lv = sc->step_db <= -300 ? -300 : lv + sc->step_db;
         dg_observation_t o = observe(lv, applied, t);
+#ifdef AFC_RESET_US
+        /* An AFC step every AFC_RESET_US: the firmware re-binds the core
+         * (same receiver, offset changed). */
+        if (n && n % (AFC_RESET_US / TICK_US) == 0) dg_reset_context(&g, &table, (uint8_t)applied, NULL);
+#endif
         const uint8_t target = dg_tick(&g, &o);
         if (target != applied) { applied = target; dg_sync_applied(&g, target, t); last_write = t; }
         else if (!last_write || t - last_write >= 400u) s_dwell[applied] += TICK_US;   /* the servo learns settled rows */
@@ -215,7 +220,7 @@ int main(void)
     const double top = s_db[table.max_index];
     const double close = 20.0 * log10(4.5) - s_db[28], mid = 20.0 * log10(4.5) - s_db[60];
     const double edge0 = 20.0 * log10(2.8) - top, edge3 = 20.0 * log10(3.9) - top, edge6 = 20.0 * log10(5.5) - top;
-    const double edge10 = 20.0 * log10(8.7) - top;
+    const double edge10 = 20.0 * log10(8.7) - top, edge18 = 20.0 * log10(21.9) - top;
     const scenario_t sc[] = {
         {"close, walking (K 10, 5 Hz)", close, 5, 10, 0, 10, 1},
         {"close, moving (K 3, 30 Hz)", close, 30, 3, 0, 10, 1},
@@ -233,6 +238,10 @@ int main(void)
          * the carrier peaks fold at G83 and KEEL-1 wrote 255 times a second. */
         {"walk-out 10 dB C/N (K 3, 10 Hz)", edge10, 10, 3, 0, 3, 2},
         {"walk-out 10 dB C/N, Rayleigh 10 Hz", edge10, 10, 0, 0, 3, 2},
+        /* Blackbox session 29 (sentinel fixed): -80..-70 dBm, C/N ~15-20 dB
+         * at G83, still 255 writes down and up in a second. */
+        {"walk-out 18 dB C/N (K 3, 10 Hz)", edge18, 10, 3, 0, 10, 2},
+        {"walk-out 18 dB C/N, Rayleigh 10 Hz", edge18, 10, 0, 0, 10, 2},
     };
     const unsigned n = sizeof(sc) / sizeof(sc[0]);
     double score = 0, weights = 0, writes = 0, edge_writes = 0, edge3_usable = 0;

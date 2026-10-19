@@ -413,6 +413,26 @@ void dg_reset_context(direct_gain_t *g, const arc_gain_table_t *table, uint8_t c
     const uint8_t anchor_gain = g->anchor_gain;
     const uint64_t anchor_us = g->anchor_us, carrier_us = g->carrier_us, last_healthy_us = g->last_healthy_us;
     const uint32_t anchor_returns = same_receiver ? g->anchor_returns : 0u, climbs = same_receiver ? g->climbs : 0u;
+    /* KEEL-1 state survives the same resets. Board, blackbox session 29:
+     * every AFC step (it changes the offset, part of the map context) and
+     * every refused write reset the whole core, peak memory and attack
+     * memory included, and a core without memory chose again at once: the
+     * wrong gains at the edge the model never showed. The counters always
+     * survive (a reset zeroed them, and the flight log's per-second
+     * differences wrapped to 255). */
+    uint8_t keep_peak[sizeof(g->peak_p95)];
+    memcpy(keep_peak, g->peak_p95, sizeof(keep_peak));
+    const uint8_t keep_peak_i = g->peak_i, keep_folded_row = g->folded_row;
+    const uint64_t keep_peak_since = g->peak_since_us, keep_peak_bucket = g->peak_bucket_us, keep_up = g->up_after_us,
+                   keep_down = g->down_after_us, keep_folded_until = g->folded_until_us,
+                   keep_sat_since = g->saturated_since_us;
+    const bool keep_far = g->far_run, keep_sat = g->saturated_run;
+    const dg_observation_t keep_last = g->last_tracking;
+    const bool magic_ok = g->magic == DG_MAGIC;
+    const uint32_t c_writes = magic_ok ? g->writes : 0u, c_mod = magic_ok ? g->writes_moderate : 0u,
+                   c_sev = magic_ok ? g->writes_severe : 0u, c_ovl = magic_ok ? g->overloads : 0u,
+                   c_holds = magic_ok ? g->holds : 0u, c_bursts = magic_ok ? g->bursts_ignored : 0u,
+                   c_one = magic_ok ? g->one_sided_clips : 0u, c_ref = magic_ok ? g->writes_refused : 0u;
     bool keep = g->magic == DG_MAGIC && g->learned && table && same_table(&g->table, table) &&
                 g->map_context_valid == (context != NULL) &&
                 (!context || dg_map_context_equal(&g->map_context, &wanted)) &&
@@ -434,6 +454,16 @@ void dg_reset_context(direct_gain_t *g, const arc_gain_table_t *table, uint8_t c
     keel_build(g);
     g->current_gain = (uint8_t)clamp_i(current_gain, 20, g->table.max_index);
     g->target_gain = g->current_gain;
+    g->writes = c_writes; g->writes_moderate = c_mod; g->writes_severe = c_sev; g->overloads = c_ovl;
+    g->holds = c_holds; g->bursts_ignored = c_bursts; g->one_sided_clips = c_one; g->writes_refused = c_ref;
+    if (same_receiver) {
+        memcpy(g->peak_p95, keep_peak, sizeof(keep_peak));
+        g->peak_i = keep_peak_i; g->peak_since_us = keep_peak_since; g->peak_bucket_us = keep_peak_bucket;
+        g->up_after_us = keep_up; g->down_after_us = keep_down; g->far_run = keep_far;
+        g->folded_row = keep_folded_row; g->folded_until_us = keep_folded_until;
+        g->saturated_run = keep_sat; g->saturated_since_us = keep_sat_since;
+        g->last_tracking = keep_last;
+    }
     g->relative_power_q10[g->current_gain] = 1024u;
     g->confidence[g->current_gain] = 1u;
     g->uncertainty_pm[g->current_gain] = 50u;
@@ -462,6 +492,16 @@ void dg_reset(direct_gain_t *g, const arc_gain_table_t *table, uint8_t current_g
         context = g->map_context;
         dg_reset_context(g, table, current_gain, &context);
     } else dg_reset_context(g, table, current_gain, NULL);
+    /* A fresh start (no firmware caller; host tests restart their clock):
+     * no KEEL-1 memory or counters from before, unlike a re-bind. */
+    if (!g) return;
+    memset(g->peak_p95, 0, sizeof(g->peak_p95));
+    g->peak_i = 0; g->peak_since_us = g->peak_bucket_us = g->up_after_us = g->down_after_us = 0;
+    g->far_run = false; g->folded_row = 0; g->folded_until_us = 0;
+    g->saturated_run = false; g->saturated_since_us = 0;
+    memset(&g->last_tracking, 0, sizeof(g->last_tracking));
+    g->writes = g->writes_moderate = g->writes_severe = g->overloads = g->holds = 0;
+    g->bursts_ignored = g->one_sided_clips = g->writes_refused = 0;
 }
 
 unsigned dg_export_map(const direct_gain_t *g, dg_map_blob_t *blob)
@@ -904,6 +944,15 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
     ++g->holds;
     if (!no_carrier) g->last_healthy_us = now;
     return g->current_gain;
+}
+
+void dg_write_refused(direct_gain_t *g, uint8_t actual_gain)
+{
+    if (!g || g->current_gain == actual_gain) return;
+    g->current_gain = actual_gain;
+    g->target_gain = actual_gain;
+    g->state = DG_HOLD;
+    ++g->writes_refused;
 }
 
 void dg_sync_applied(direct_gain_t *g, uint8_t gain, uint64_t write_us)

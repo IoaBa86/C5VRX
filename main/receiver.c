@@ -161,8 +161,10 @@ unsigned receiver_export_gain_map(dg_map_blob_t *blob)
     return n;
 }
 
+static uint32_t s_rebinds;
 static void gain_map_bind(const dg_map_context_t *context, uint32_t control, uint32_t phy, uint32_t table)
 {
+    ++s_rebinds;
     dg_reset_context(&s_gain, rf_gain_table(), s_current_gain, context);
     /* Every import checks the current transfer context and complete table,
      * including after A -> B -> A. A stored map for A remains available
@@ -215,16 +217,23 @@ void receiver_set_gain(uint8_t gain)
 
 static void apply_target(uint8_t target, uint32_t control, uint32_t phy)
 {
-    if (phy != phy_generation() || phy_busy() || control != s_control_epoch || !receiver_active()) return;
+    /* Every refused write puts the core back on the real gain: left ahead of
+     * the hardware, the next probe saw a mismatch and reset the whole core
+     * (blackbox session 29). */
+    if (phy != phy_generation() || phy_busy() || control != s_control_epoch || !receiver_active()) {
+        dg_write_refused(&s_gain, s_current_gain);
+        return;
+    }
     if (target == s_current_gain) return;
     const arc_gain_table_t *t = rf_gain_table();
     if (target < 2u) target = 2u;
     if (target > t->max_index) target = t->max_index;
     /* A task preemption between the first check and the write must not let
      * another PHY owner change the analog state underneath this write. */
-    if (!phy_try_actuator(phy)) return;
+    if (!phy_try_actuator(phy)) { dg_write_refused(&s_gain, s_current_gain); return; }
     if (control != s_control_epoch || !receiver_active()) {
         phy_end_actuator();
+        dg_write_refused(&s_gain, s_current_gain);
         return;
     }
     /* A busy or changed PHY must not leave software ahead of hardware. */
@@ -548,8 +557,9 @@ void receiver_print(void)
         printf("RX_LEVEL unknown probes=%lu clipped_pm=%u\n", (unsigned long)lv.probes, lv.clipped_pm);
     printf("GAIN_SAT one_sided=%lu two_sided=%lu to_dc_servo=%lu (saturated observer windows: one rail per axis = DC-pushed, both = large signal; one-sided ones go to the DC servo, not the gain)\n",
            (unsigned long)s_sat_one_sided, (unsigned long)s_sat_two_sided, (unsigned long)s_gain.one_sided_clips);
-    printf("GAIN_WRITES attack=%lu release=%lu overloads=%lu sentinel_forwarded=%lu sentinel_dropped=%lu (why the gain moved; sentinel = 64-sample fast path, gross saturation only)\n",
-           (unsigned long)s_gain.writes_severe, (unsigned long)s_gain.writes_moderate, (unsigned long)s_gain.overloads,
+    printf("GAIN_WRITES attack=%lu release=%lu refused=%lu rebinds=%lu overloads=%lu sentinel_forwarded=%lu sentinel_dropped=%lu (why the gain moved; rebinds keep the core's memory on the same receiver; sentinel = 64-sample fast path, gross saturation only)\n",
+           (unsigned long)s_gain.writes_severe, (unsigned long)s_gain.writes_moderate, (unsigned long)s_gain.writes_refused,
+           (unsigned long)s_rebinds, (unsigned long)s_gain.overloads,
            (unsigned long)s_sentinel_forwarded, (unsigned long)s_sentinel_dropped);
     printf("DC_FEED rejected_folded=%lu (observer windows reaching both rails of an axis: a folding carrier, kept out of the DC servo)\n",
            (unsigned long)s_dc_rejected_folded);
