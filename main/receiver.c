@@ -238,12 +238,18 @@ void receiver_set_gain(uint8_t gain)
     ++s_gain_epoch;
 }
 
+/* Why gain writes were refused (T: GAIN_REFUSED), counted only when the
+ * core wanted another gain: 947 refusals in a 4-minute walk (session 32)
+ * and no way to tell who held the PHY. */
+static uint32_t s_refuse[6];   /* generation, busy, control, inactive, actuator lock, rf_set_gain */
 static void apply_target(uint8_t target, uint32_t control, uint32_t phy)
 {
     /* Every refused write puts the core back on the real gain: left ahead of
      * the hardware, the next probe saw a mismatch and reset the whole core
      * (blackbox session 29). */
     if (phy != phy_generation() || phy_busy() || control != s_control_epoch || !receiver_active()) {
+        if (target != s_current_gain)
+            ++s_refuse[phy != phy_generation() ? 0 : phy_busy() ? 1 : control != s_control_epoch ? 2 : 3];
         dg_write_refused(&s_gain, s_current_gain);
         return;
     }
@@ -253,14 +259,16 @@ static void apply_target(uint8_t target, uint32_t control, uint32_t phy)
     if (target > t->max_index) target = t->max_index;
     /* A task preemption between the first check and the write must not let
      * another PHY owner change the analog state underneath this write. */
-    if (!phy_try_actuator(phy)) { dg_write_refused(&s_gain, s_current_gain); return; }
+    if (!phy_try_actuator_wait(phy, 1)) { ++s_refuse[4]; dg_write_refused(&s_gain, s_current_gain); return; }   /* <= 1 ms */
     if (control != s_control_epoch || !receiver_active()) {
         phy_end_actuator();
+        ++s_refuse[control != s_control_epoch ? 2 : 3];
         dg_write_refused(&s_gain, s_current_gain);
         return;
     }
     /* A busy or changed PHY must not leave software ahead of hardware. */
     if (!rf_set_gain(target, phy)) {
+        ++s_refuse[5];
         dg_sync_applied(&s_gain, s_current_gain, (uint64_t)esp_timer_get_time());
         phy_end_actuator();
         return;
@@ -794,6 +802,9 @@ void receiver_print(void)
                (unsigned long)s_cna_learned, (unsigned long)s_cna_absent_rejects, (unsigned long)s_cna_estimates,
                calibration_filter_nbw_khz());
     }
+    printf("GAIN_REFUSED generation=%lu busy=%lu control=%lu inactive=%lu actuator_lock=%lu rf_set_gain=%lu (writes the core wanted but the PHY did not take, by reason)\n",
+           (unsigned long)s_refuse[0], (unsigned long)s_refuse[1], (unsigned long)s_refuse[2], (unsigned long)s_refuse[3],
+           (unsigned long)s_refuse[4], (unsigned long)s_refuse[5]);
     printf("DC_FEED rejected_folded=%lu (observer windows reaching both rails of an axis: a folding carrier, kept out of the DC servo)\n",
            (unsigned long)s_dc_rejected_folded);
     printf("CN_OBSERVER windows=%lu period_us=%u max_age_us=%u\n", (unsigned long)s_cn_windows,

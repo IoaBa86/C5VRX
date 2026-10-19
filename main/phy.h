@@ -15,6 +15,7 @@ uint32_t phy_generation(void);
 bool phy_busy(void);
 /* Non-blocking gain/offset ownership without a new generation. */
 bool phy_try_actuator(uint32_t expected_generation);
+bool phy_try_actuator_wait(uint32_t expected_generation, uint32_t wait_ticks);   /* bounded wait for the lock */
 void phy_end_actuator(void);
 /* Receive observers invalidate buffered evidence BEFORE a physical change.
  * Hook must be nonblocking, allocation-free, and must not acquire PHY ownership.

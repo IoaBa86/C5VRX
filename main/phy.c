@@ -75,6 +75,24 @@ bool phy_try_actuator(uint32_t expected_generation)
     return valid;
 }
 
+/* The same, waiting up to `wait_ticks` for the lock: the gain write would
+ * otherwise bounce off the sync flywheel's tick, which holds the lock for
+ * its whole tick (board: 16 % of gain writes refused during a sweep, 0.2 %
+ * with the flywheel off). The generation check after taking it is
+ * unchanged. */
+bool phy_try_actuator_wait(uint32_t expected_generation, uint32_t wait_ticks)
+{
+    portENTER_CRITICAL(&s_mux);
+    if (!s_lock) s_lock = xSemaphoreCreateRecursiveMutexStatic(&s_lock_storage);
+    portEXIT_CRITICAL(&s_mux);
+    if (xSemaphoreTakeRecursive(s_lock, wait_ticks) != pdTRUE) return false;
+    portENTER_CRITICAL(&s_mux);
+    bool valid = !s_depth && s_generation == expected_generation;
+    portEXIT_CRITICAL(&s_mux);
+    if (!valid) lock_give();
+    return valid;
+}
+
 void phy_end_actuator(void) { lock_give(); }
 
 #ifdef C5VRX_PHY_PINNED
