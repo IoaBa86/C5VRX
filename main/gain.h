@@ -43,6 +43,7 @@ typedef struct {
     uint16_t env_ratio_x100; /* DC-removed envelope mean^2/var of |z|^2, x100 (noise 100) */
     uint8_t centered;        /* judged around the window DC (DC-dominated, gain.c) */
     int32_t sum_i, sum_q;    /* sums of 2v+1 per axis (dsp units): the probe DC for the servo */
+    uint8_t rails;           /* rails reached: bit 0 I-8, 1 I+7, 2 Q-8, 3 Q+7 */
     uint64_t observed_us;
 } dg_observation_t;
 
@@ -65,6 +66,17 @@ typedef struct {
  * back into the FLOOR rows and looped: ~1400 writes and hundreds of
  * overloads a second with the VTX off (board walk 3, 2026-10-13). The DC
  * of the FLOOR rows has to be corrected in the DCO path instead. */
+/* Clipping on one rail per axis only: the cloud pushed against a rail by DC
+ * (or the slow DC wobble), not a carrier too large for the window, which
+ * reaches both rails of an axis. Lowering the gain for it is the wrong
+ * action: the DC servo removes it, and the gain drop cost 10-20 steps in
+ * bursts of 255+ writes a second (board blackbox 2026-10-19). rails == 0 is
+ * unknown (an observation without rail evidence) and keeps the old rule. */
+static inline bool dg_one_sided(const dg_observation_t *o)
+{
+    return o->rails && (o->rails & 3u) != 3u && (o->rails & 12u) != 12u;
+}
+
 #define DG_STUCK_PM      400u
 #define DG_STUCK_SPAN    2u
 static inline bool dg_stuck(const dg_observation_t *o)
@@ -91,6 +103,7 @@ typedef struct {
     uint8_t stable_windows;
     uint64_t write_us;
     uint32_t writes, holds, verified, learned, overloads;
+    uint32_t one_sided_clips;     /* clipped windows not counted as overload (dg_one_sided) */
     bool overload_recovery;       /* staged recovery after an overload drop */
     int8_t last_write_dir;        /* anti-hunt: direction reversals */
     uint8_t reversals;

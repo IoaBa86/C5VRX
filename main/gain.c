@@ -173,6 +173,7 @@ static dg_observation_t measure(const uint8_t *samples, size_t bytes,
     r.repeat_pm = bytes > 1u ? (uint16_t)(repeats * 1000u / (bytes - 1u)) : 0;
     r.sum_i = cx;
     r.sum_q = cy;
+    r.rails = (uint8_t)((i_seen & 1u) | ((i_seen >> 14) & 2u) | ((q_seen & 1u) << 2) | ((q_seen >> 12) & 8u));
     int di, dq;
     if (!dg_stuck(&r) && dc_dominated(cx, cy, 4ull * cp - 2ull * bytes, bytes, &di, &dq)) {
         memset(hist, 0, sizeof(hist));
@@ -674,7 +675,8 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
     dg_observation_t prior = g->last_tracking;
     g->last_tracking = *o;
     bool no_carrier = o->p50 <= 4 && o->origin_pm >= 650 && o->coherence < 20;
-    bool saturated = o->clip_pm >= 100 || o->p95 >= 95;
+    bool saturated = (o->clip_pm >= 100 && !dg_one_sided(o)) || o->p95 >= 95;
+    if (o->clip_pm >= 100 && dg_one_sided(o)) ++g->one_sided_clips;
     if (!no_carrier) g->carrier_us = o->observed_us;
     /* V6: a carrier clipping above its remembered gain returns to it at
      * once (see DG6_CLIMB_STEP). At or below it, V5's burst gate and
