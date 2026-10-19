@@ -151,7 +151,7 @@ def second(p):
     d['level_above_noise'] = int(bool(flags & 2))
     d['level_exact'] = int(bool(flags & 4))
     # Why the gain moved (42-byte records).
-    d['writes_attack'], d['writes_release'], d['sentinel'] = (p[38], p[39], p[40]) if len(p) >= 42 else (None, None, None)
+    d['writes_attack'], d['writes_release'], d['sentinel'], d['overloads_after_write'] = (p[38], p[39], p[40], p[41]) if len(p) >= 42 else (None, None, None, None)
     return d
 
 

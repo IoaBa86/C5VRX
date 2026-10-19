@@ -313,7 +313,7 @@ void flightlog_second(const diag_record_t *r, uint8_t gain_min, uint8_t gain_max
     calibration_flog_live(dc, off, &servo_writes, &sph, &temp);
     int16_t afc_off, afc_res;
     control_flog_afc(&afc_off, &afc_res, &afc_corr);
-    static uint32_t wa, wr, sf;
+    static uint32_t wa, wr, sf, oa;
     const rx_level_t lv = receiver_level();
     flog_second_t s = {
         .t_s = r->t_s, .vq_snr_x10 = vq.known ? vq.snr_x10 : 0, .vq_lines_x100 = vq.known ? vq.lines_x100 : 0,
@@ -339,8 +339,9 @@ void flightlog_second(const diag_record_t *r, uint8_t gain_min, uint8_t gain_max
         .writes_attack = have ? flog_sat8(s_gain.writes_severe - wa) : 0,
         .writes_release = have ? flog_sat8(s_gain.writes_moderate - wr) : 0,
         .sentinel = have ? flog_sat8(receiver_sentinel_forwarded() - sf) : 0,
+        .overloads_after_write = have ? flog_sat8(s_gain.overloads_after_write - oa) : 0,
     };
-    wa = s_gain.writes_severe; wr = s_gain.writes_moderate; sf = receiver_sentinel_forwarded();
+    wa = s_gain.writes_severe; wr = s_gain.writes_moderate; sf = receiver_sentinel_forwarded(); oa = s_gain.overloads_after_write;
     gw = r->gain_writes; ov = r->overloads; sw = servo_writes; ac = afc_corr; have = true;
     uint8_t p[FLOG_SECOND_LEN];
     flog_pack_second(&s, p);

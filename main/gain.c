@@ -432,7 +432,8 @@ void dg_reset_context(direct_gain_t *g, const arc_gain_table_t *table, uint8_t c
     const uint32_t c_writes = magic_ok ? g->writes : 0u, c_mod = magic_ok ? g->writes_moderate : 0u,
                    c_sev = magic_ok ? g->writes_severe : 0u, c_ovl = magic_ok ? g->overloads : 0u,
                    c_holds = magic_ok ? g->holds : 0u, c_bursts = magic_ok ? g->bursts_ignored : 0u,
-                   c_one = magic_ok ? g->one_sided_clips : 0u, c_ref = magic_ok ? g->writes_refused : 0u;
+                   c_one = magic_ok ? g->one_sided_clips : 0u, c_ref = magic_ok ? g->writes_refused : 0u,
+                   c_oaw = magic_ok ? g->overloads_after_write : 0u;
     bool keep = g->magic == DG_MAGIC && g->learned && table && same_table(&g->table, table) &&
                 g->map_context_valid == (context != NULL) &&
                 (!context || dg_map_context_equal(&g->map_context, &wanted)) &&
@@ -456,6 +457,7 @@ void dg_reset_context(direct_gain_t *g, const arc_gain_table_t *table, uint8_t c
     g->target_gain = g->current_gain;
     g->writes = c_writes; g->writes_moderate = c_mod; g->writes_severe = c_sev; g->overloads = c_ovl;
     g->holds = c_holds; g->bursts_ignored = c_bursts; g->one_sided_clips = c_one; g->writes_refused = c_ref;
+    g->overloads_after_write = c_oaw;
     if (same_receiver) {
         memcpy(g->peak_p95, keep_peak, sizeof(keep_peak));
         g->peak_i = keep_peak_i; g->peak_since_us = keep_peak_since; g->peak_bucket_us = keep_peak_bucket;
@@ -501,7 +503,7 @@ void dg_reset(direct_gain_t *g, const arc_gain_table_t *table, uint8_t current_g
     g->saturated_run = false; g->saturated_since_us = 0;
     memset(&g->last_tracking, 0, sizeof(g->last_tracking));
     g->writes = g->writes_moderate = g->writes_severe = g->overloads = g->holds = 0;
-    g->bursts_ignored = g->one_sided_clips = g->writes_refused = 0;
+    g->bursts_ignored = g->one_sided_clips = g->writes_refused = g->overloads_after_write = 0;
 }
 
 unsigned dg_export_map(const direct_gain_t *g, dg_map_blob_t *blob)
@@ -756,7 +758,7 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
  * 16 ms later, 255 writes a second between G61 and G79. After an attack the
  * row that folded stays out of reach this long. */
 #ifndef DG7_FOLD_MEMORY_US
-#define DG7_FOLD_MEMORY_US 1000000u
+#define DG7_FOLD_MEMORY_US 300000u
 #endif
 #ifndef DG7_FAR_HOLD_US
 #define DG7_FAR_HOLD_US 16000u
@@ -782,7 +784,7 @@ _Static_assert(DG7_HOLD_US / DG7_BUCKET_US <= 32u, "peak memory: 32 buckets (gai
 #define DG7_SAT_US 1000u
 #endif
 #ifndef DG7_SAT_DROP_DB
-#define DG7_SAT_DROP_DB 9
+#define DG7_SAT_DROP_DB 3   /* one home row; lasting saturation steps again after DG7_DOWN_GAP_US (V6 used 9) */
 #endif
 
 /* The table step closest to the model gain of `from` plus delta (dB Q8). */
@@ -849,7 +851,14 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
     if (!no_carrier) g->carrier_us = now;
     /* A write is still settling: its transient is no evidence. */
     if (g->state == DG_SETTLE) {
-        if (now <= g->write_us || now - g->write_us < settle_guard_us(g)) return g->current_gain;
+        if (now <= g->write_us || now - g->write_us < settle_guard_us(g)) {
+            /* The write's transient is no saturation evidence either: a run
+             * begun on it must not mature across the settle into an overload
+             * (blackbox session 32: 3-19 overloads a second at -80..-70 dBm,
+             * every overload snapshot clean). */
+            g->saturated_run = false;
+            return g->current_gain;
+        }
         uint64_t elapsed = now - g->write_us;
         if (elapsed < 65535u) {
             uint16_t *settle = &g->settle_us[g->transition];
@@ -871,6 +880,7 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
             attack = true;
             delta = -DG7_SAT_DROP_DB * 256;
             ++g->overloads;
+            if (now - g->write_us < 5000u) ++g->overloads_after_write;
         } else {
             ++g->bursts_ignored;
         }

@@ -99,9 +99,22 @@ static int wrap4(double x)
     const int c = (int)floor(x);
     return ((c + 8) & 15) - 8;
 }
+/* A gain write is a PHY transient: WRITE_TRANSIENT_US of garbage across
+ * the whole 4-bit window after it (the board's overload snapshots were clean
+ * a few ms later; the overloads came from the transient). */
+static uint64_t s_last_write_us;
 static dg_observation_t observe_samples(double level_db, unsigned k, uint64_t t)
 {
     uint8_t b[256];
+#ifdef WRITE_TRANSIENT_US
+    if (s_last_write_us && t - s_last_write_us < WRITE_TRANSIENT_US) {
+        for (unsigned n = 0; n < 256u; ++n) {
+            s_nseed = s_nseed * 1664525u + 1013904223u;
+            b[n] = (uint8_t)(s_nseed >> 24);
+        }
+        return dg_measure_gain(b, sizeof(b), c5vrx_phase8_gain_lut, t);
+    }
+#endif
     const double r = radius(level_db, k), sigma = noise_radius(k) / sqrt(2.0), d = dc_cells(k);
     const double di = d * cos(s_dca[k]), dq = d * sin(s_dca[k]);
     for (unsigned n = 0; n < 256u; ++n) {
@@ -203,7 +216,7 @@ static result_t run(const scenario_t *sc, uint32_t seed)
         if (n && n % (AFC_RESET_US / TICK_US) == 0) dg_reset_context(&g, &table, (uint8_t)applied, NULL);
 #endif
         const uint8_t target = dg_tick(&g, &o);
-        if (target != applied) { applied = target; dg_sync_applied(&g, target, t); last_write = t; }
+        if (target != applied) { applied = target; dg_sync_applied(&g, target, t); last_write = t; s_last_write_us = t; }
         else if (!last_write || t - last_write >= 400u) s_dwell[applied] += TICK_US;   /* the servo learns settled rows */
         if (n >= settle_ticks) {
             const bool fresh = !last_write || t - last_write >= WRITE_COST_US;

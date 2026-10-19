@@ -186,7 +186,7 @@ typedef struct {
     uint8_t writes_attack;   /* gain writes down (folding or saturation), this second, saturating */
     uint8_t writes_release;  /* gain writes up */
     uint8_t sentinel;        /* fast-path overloads forwarded to the gain core */
-    uint8_t spare;
+    uint8_t overloads_after_write;   /* overloads within 5 ms of a gain write (transient suspects) */
 } flog_second_t;
 #define FLOG_LEVEL_UNKNOWN (-32768)
 
@@ -214,7 +214,7 @@ static inline void flog_pack_second(const flog_second_t *s, uint8_t p[FLOG_SECON
     p[33] = s->rx_state;
     flog_put16(p + 34, (uint16_t)s->level_dbm_x10);
     p[36] = (uint8_t)s->noise_dbm; p[37] = s->level_flags;
-    p[38] = s->writes_attack; p[39] = s->writes_release; p[40] = s->sentinel; p[41] = s->spare;
+    p[38] = s->writes_attack; p[39] = s->writes_release; p[40] = s->sentinel; p[41] = s->overloads_after_write;
 }
 
 static inline bool flog_unpack_second(const uint8_t *p, uint8_t len, flog_second_t *s)
@@ -240,7 +240,7 @@ static inline bool flog_unpack_second(const uint8_t *p, uint8_t len, flog_second
     s->writes_attack = len >= 42u ? p[38] : 0;
     s->writes_release = len >= 42u ? p[39] : 0;
     s->sentinel = len >= 42u ? p[40] : 0;
-    s->spare = len >= 42u ? p[41] : 0;
+    s->overloads_after_write = len >= 42u ? p[41] : 0;
     return true;
 }
 

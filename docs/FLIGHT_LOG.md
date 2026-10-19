@@ -93,7 +93,7 @@ One per second while the receiver runs; ~7 hours in the ring.
 | AFC | offset applied (kHz), porch residual (kHz), corrections |
 | demodulator | profile, kp level, LP (packed), sampling-phase state and last probe excess |
 | received level | carrier at the chip pin (0.1 dBm), the noise it is measured against (dBm), flags: valid, above the noise, exact (G54+), noise learned (`main/rx_level.h`) |
-| gain write reasons | writes down (attack), writes up (release), fast-path overloads forwarded (sentinel) |
+| gain write reasons | writes down (attack), writes up (release), fast-path overloads forwarded (sentinel), overloads within 5 ms of a write |
 | environment | temperature (degC) |
 | flags | menu, scan, calibrating, paused, fault latched, flywheel active, status screen |
 

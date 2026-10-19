@@ -139,6 +139,7 @@ typedef struct {
     uint8_t folded_row;           /* the row the last attack left (gain.c, KEEL-1 attack memory) */
     uint64_t folded_until_us;
     uint32_t writes_refused;      /* writes the PHY did not take (receiver.c apply_target) */
+    uint32_t overloads_after_write;   /* overloads within 5 ms of the last write (transient suspects) */
     uint32_t magic;
 } direct_gain_t;
 

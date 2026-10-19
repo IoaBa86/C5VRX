@@ -395,6 +395,8 @@ static void sentinel_task(void *arg)
         if (!receiver_active() || s_overload_state || s_rx_dma_ch < 0 || s_rx_node_count < 2) continue;
         uint32_t gain_epoch = s_gain_epoch, control = s_control_epoch, phy = phy_generation();
         if (!copy_sentinel_window(sample) || gain_epoch != s_gain_epoch) continue;
+        /* A gain write's transient is no overload (blackbox session 32). */
+        if (esp_timer_get_time() - s_last_gain_write_us < 2000) continue;
         dg_observation_t o = dg_measure_gain(sample, sizeof(sample), c5vrx_phase8_gain_lut,
                                         (uint64_t)esp_timer_get_time());
         /* Only gross saturation: both rails of an axis in half the window.
@@ -557,9 +559,9 @@ void receiver_print(void)
         printf("RX_LEVEL unknown probes=%lu clipped_pm=%u\n", (unsigned long)lv.probes, lv.clipped_pm);
     printf("GAIN_SAT one_sided=%lu two_sided=%lu to_dc_servo=%lu (saturated observer windows: one rail per axis = DC-pushed, both = large signal; one-sided ones go to the DC servo, not the gain)\n",
            (unsigned long)s_sat_one_sided, (unsigned long)s_sat_two_sided, (unsigned long)s_gain.one_sided_clips);
-    printf("GAIN_WRITES attack=%lu release=%lu refused=%lu rebinds=%lu overloads=%lu sentinel_forwarded=%lu sentinel_dropped=%lu (why the gain moved; rebinds keep the core's memory on the same receiver; sentinel = 64-sample fast path, gross saturation only)\n",
+    printf("GAIN_WRITES attack=%lu release=%lu refused=%lu rebinds=%lu overloads=%lu overloads_after_write=%lu sentinel_forwarded=%lu sentinel_dropped=%lu (why the gain moved; rebinds keep the core's memory on the same receiver; sentinel = 64-sample fast path, gross saturation only)\n",
            (unsigned long)s_gain.writes_severe, (unsigned long)s_gain.writes_moderate, (unsigned long)s_gain.writes_refused,
-           (unsigned long)s_rebinds, (unsigned long)s_gain.overloads,
+           (unsigned long)s_rebinds, (unsigned long)s_gain.overloads, (unsigned long)s_gain.overloads_after_write,
            (unsigned long)s_sentinel_forwarded, (unsigned long)s_sentinel_dropped);
     printf("DC_FEED rejected_folded=%lu (observer windows reaching both rails of an axis: a folding carrier, kept out of the DC servo)\n",
            (unsigned long)s_dc_rejected_folded);
