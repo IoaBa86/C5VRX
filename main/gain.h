@@ -133,6 +133,20 @@ typedef struct {
     uint8_t peak_i;
     uint64_t peak_since_us, peak_bucket_us, up_after_us, down_after_us;
     bool far_run;                 /* releasing a carrier that stays far below (gain.c) */
+    /* KEEL-1 (gain.c): the home rows the gain may use, ascending. */
+    uint8_t keel_row[DG_STATES];
+    uint8_t keel_rows;
+    uint8_t folded_row;           /* the row the last attack left (gain.c, KEEL-1 attack memory) */
+    uint64_t folded_until_us;
+    uint32_t writes_refused;      /* writes the PHY did not take (receiver.c apply_target) */
+    uint32_t overloads_after_write;   /* overloads within 5 ms of the last write (transient suspects) */
+    /* KEEL-1 learned headroom: extra dB (Q8) a release into a row needs
+     * after releases into it folded; decays. Per row, self-learned. */
+    uint16_t heat_q8[DG_STATES];
+    uint64_t heat_us;                 /* last decay */
+    uint8_t released_row;             /* the row the last release went to */
+    uint64_t released_us;
+    uint32_t heat_events;
     uint32_t magic;
 } direct_gain_t;
 
@@ -170,3 +184,5 @@ dg_observation_t dg_measure_gain(const uint8_t *samples, size_t bytes,
                                  const uint8_t phase8_lut[256], uint64_t observed_us);
 uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o);
 void dg_sync_applied(direct_gain_t *g, uint8_t gain, uint64_t write_us);
+/* A write the PHY did not take: the core is back on the real gain, no settle. */
+void dg_write_refused(direct_gain_t *g, uint8_t actual_gain);

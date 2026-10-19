@@ -1115,3 +1115,92 @@ known distance and power against free space; FPV channel by channel).
 dB lost before the chip. For example, 25 mW with 2 dBi each side over 10 m at
 5.8 GHz is ~-50 dBm. To stay in the exact range (below about -67 dBm at G54),
 test far enough away or at the lowest VTX power.
+
+## KEEL-1: the gain on 3 dB home rows (2026-10-19)
+
+The successor of Direct Gain V7.
+
+**Cause.** Every gain row has its own DC, and the live servo learns a row
+only while the gain stays on it. A gain that visits many rows briefly keeps
+landing on stale DC. Blackbox session 13 at the edge:
+- DC above 1 cell gave 15-25 % video, below 0.5 cell 35-40 %;
+- a steady gain gave 75 % video, V6 hopping 28 %.
+
+**Design.** The V7 peak AGC, restricted to home rows 3 dB apart from the
+table maximum down. A release only goes to the next home row that fits under
+the target, so there is no hunting between rows. The peak memory is 16 ms:
+the rows do the steadying.
+
+**Search harness.** `test/test_keel_track.c`:
+- 12 scenarios: close / mid / edge, K 0-10, 5-80 Hz, a -12 dB obstacle;
+- DC per row shrinks with settled dwell;
+- each write costs 2 ms of picture;
+- score = usable %, edge weighted twice.
+
+| servo time constant | V6 | V7 | KEEL-1 |
+| --- | ---: | ---: | ---: |
+| 0.1 s | 52.5 | 56.1 | 57.9 |
+| 0.3 s | 49.9 | 51.6 | 56.4 |
+| 1 s | 44.0 | 41.6 | 52.6 |
+| 3 s | 37.2 | 34.3 | 46.3 |
+
+At the usable edge KEEL-1 settles on one row: 0-2.5 writes a second, 40 %
+against V7's 38 % above threshold. With a slow servo, V7 did worse than V6:
+it used fewer writes but over more rows.
+
+**Open.**
+- The real per-row servo time is not measured; the blackbox (DC, gain,
+  writes and dBm per second) will say.
+- Board, VTX off: G83 with the owner `keel1`. Carrier and flight test pending.
+
+**CI.** A host-test line `cc ... && ./t` let a failed compile pass, because
+`-e` ignores failures inside an `&&` list. Each compile is now its own line.
+
+## First KEEL-1 board session and the real RF stage gains (2026-10-19)
+
+Blackbox session 24: KEEL-1, VTX close, hand on the antenna, -25..-56 dBm
+at the pin.
+
+- **Close in the gain hunted:** G7-G61 within a second, 255 writes and
+  overloads in about half the seconds, picture SNR 0-8 dB at C/N >= 20 dB.
+- **After the carrier arrived or left at G79/G83:**
+  - those rows held 2-3 cells of DC (IQ snapshots);
+  - the picture was gone for 19 s.
+  - Cause: observer windows with the carrier folding fed the DC servo. Fixed
+    by keeping windows that reach both rails of an axis out of the servo
+    (T: `DC_FEED rejected_folded`).
+- **The model's RF stage steps are wrong:**
+  - IQ snapshots at fixed gains (`research/gain_step_measure.py`), VTX at
+    ~2 m: G42 -> G36 (RF stage 5 -> 4) is about -13.5 dB, the model says
+    -3.3 dB.
+  - An overload snapshot at G2 read ~10 dB above the model.
+  - Close in KEEL-1 (and V6/V7) computed steps with the wrong size: the
+    hunting. Above G54 (one RF stage) the model holds.
+- **Next:** measure every RF stage with the VTX at ~0.3 m and ~8 m, give the
+  gain core a measured per-row table, and repeat the session.
+
+## KEEL-1 on the board: what the logs showed and fixed (2026-10-19/20)
+
+Blackbox sessions 24-34, walking with a VTX. Each item was found in the
+per-second log or the new evidence records, then fixed at its cause.
+
+| finding | cause | fix |
+| --- | --- | --- |
+| 255 writes/s at the edge | the 64-sample sentinel forwarded noise rail touches as overloads | gross saturation only |
+| wrong gains, '255' seconds | AFC steps and refused writes reset the whole core; counters wrapped | keep core state on the same receiver; resync refused writes |
+| rows with 2-3 cells DC after carrier changes | folding windows fed the DC servo | windows reaching both rails are kept out |
+| gain 7-10 dB low at the edge | overloads with clean snapshots; a 9 dB step and 1 s memory each | no saturation evidence across a write; 3 dB steps; 300 ms memory |
+| demod on its narrowest tracker with LP, no AFC at the edge | the envelope C/N read 3-12 dB low (snapshots: 14-19 dB true) | C/N from power against the learned noise per filter |
+| VTX MATCHED screen in flight | status screen at the startup profile switch | the live switch, no screen |
+| folds ~41 ms after a release (P50 ~55) | releases too optimistic for slow (walking) fades or a table step larger than the model | learned headroom per row: +3 dB per folded release, decays 1 dB / 2 s |
+
+**Evidence in the blackbox now:**
+- every step down with its window (FLOG_E_ATTACK);
+- per second: writes down and up, sentinel forwards, overloads within 5 ms
+  of a write, the received level and its noise;
+- in T: refused writes, rebinds, heat events.
+
+**Still open (needs a VTX):**
+- The pair sweep at ~10 m to measure the real steps of G40-G83 (the model
+  holds over G29-G39 only).
+- A walk with this build.

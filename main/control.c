@@ -304,6 +304,8 @@ static void command(int c, unsigned *menu_idle)
     }
     switch (c) {
     case 'G': receiver_set_gain_mode(receiver_gain_mode_next(receiver_gain_mode()), true); break;
+    /* Bench: the real gain step of every table row pair (receiver.c). */
+    case 'Q': receiver_pair_sweep_toggle(); break;
     case 'U': transport_sync_flywheel_toggle(); break;
     case 'o': if (s_menu_active) menu_close(); else (void)menu_open_checked(); break;
     case 'e': menu_close(); break;  /* idempotent web-menu EXIT */

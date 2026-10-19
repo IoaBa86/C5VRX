@@ -1,4 +1,4 @@
-/* C5VRX-5 by Twotoz and the C5VRX contributors: Direct Gain core (V7 decision: peak AGC; measurement and map from V3-V6).
+/* C5VRX-5 by Twotoz and the C5VRX contributors: gain core. Decision: KEEL-1 (the V7 peak AGC on 3 dB home rows); measurement and map from Direct Gain V3-V6.
  * Ported from legacy/c5vrx4/main/direct_gain_v3.c (PR #190) with the fixed-lane,
  * staged-recovery, boost-off configuration that ran on the board (V5), plus
  * the V6 carrier memory described in gain.h. */
@@ -335,6 +335,64 @@ bool dg_map_matches(const direct_gain_t *g, const arc_gain_table_t *table, const
     return g && g->magic == DG_MAGIC && g->map_context_valid &&
            dg_map_context_equal(&g->map_context, context) && same_table(&g->table, table);
 }
+/* ---- KEEL-1: home rows ---------------------------------------------------
+ * Every gain row has its own DC, and the live servo learns a row only while
+ * the gain stays on it. A gain that visits many rows briefly keeps landing on
+ * rows with stale DC (blackbox session 13 at the edge: DC > 1 cell with 15-25 %
+ * video, < 0.5 cell with 35-40 %; a steady gain 75 % against 28 % hopping).
+ * KEEL-1 uses only home rows KEEL_LATTICE_Q8 apart from the table maximum
+ * down: few rows, each visited often enough for the servo, and a write only
+ * when the level moved a whole home step. 0 = every row (V7 behaviour).
+ *
+ * Chosen in test/test_keel_track.c (12 scenarios: close / mid / edge, K 0-10,
+ * 5-80 Hz, a -12 dB obstacle; DC per row shrinking with dwell; each write
+ * 2 ms of picture): home rows 3 dB apart with a 16 ms peak memory. Score
+ * (usable %, edge weighted twice) for a servo time constant of 0.1 / 0.3 /
+ * 1 / 3 s: KEEL-1 57.9 / 56.4 / 52.6 / 46.3, V7 (every row, 48 ms) 56.1 /
+ * 51.6 / 41.6 / 34.3, V6 52.5 / 49.9 / 44.0 / 37.2. V7 visited so many rows
+ * that a slow servo left it worse than V6; home rows 2.5 dB apart scored
+ * 2-3 points lower, 3.5 dB about equal. The real servo time per row is not
+ * measured: the blackbox (dc per second, gain, writes) will say. */
+#ifndef KEEL_LATTICE_Q8
+#define KEEL_LATTICE_Q8 768   /* 3 dB */
+#endif
+static bool magic_ok_early(const direct_gain_t *g) { return g->magic == DG_MAGIC; }
+static void keel_build(direct_gain_t *g)
+{
+    g->keel_rows = 0;
+    if (KEEL_LATTICE_Q8 <= 0) return;
+    const unsigned top = g->table.max_index;
+    uint8_t rows[DG_STATES];
+    unsigned n = 0;
+    rows[n++] = (uint8_t)top;
+    for (int want = g->model_db_q8[top] - KEEL_LATTICE_Q8; want >= g->model_db_q8[2]; want -= KEEL_LATTICE_Q8) {
+        unsigned best = 2;
+        for (unsigned k = 2; k < rows[n - 1u]; ++k)
+            if (abs_i(g->model_db_q8[k] - want) < abs_i(g->model_db_q8[best] - want)) best = k;
+        if (best < rows[n - 1u] && g->model_db_q8[rows[n - 1u]] - g->model_db_q8[best] >= KEEL_LATTICE_Q8 / 2)
+            rows[n++] = (uint8_t)best;
+    }
+    for (unsigned k = 0; k < n; ++k) g->keel_row[k] = rows[n - 1u - k];   /* ascending */
+    g->keel_rows = (uint8_t)n;
+}
+
+/* The highest home row whose model gain is at most that of `from` plus
+ * delta (a quarter dB of slack). Up: `from` itself when no higher home row
+ * fits. Down: the lowest home row when none fits. */
+static uint8_t keel_pick(const direct_gain_t *g, uint8_t from, int delta_q8)
+{
+    const int want = g->model_db_q8[from] + delta_q8 + 64;
+    uint8_t best = 0;
+    bool found = false;
+    for (unsigned k = 0; k < g->keel_rows; ++k) {
+        const uint8_t r = g->keel_row[k];
+        const int need = g->model_db_q8[r] + (delta_q8 > 0 && r > from ? (int)g->heat_q8[r] : 0);
+        if (need <= want && (delta_q8 > 0 ? r >= from : r < from)) { best = r; found = true; }
+    }
+    if (found) return best;
+    return delta_q8 > 0 ? from : g->keel_row[0];
+}
+
 
 void dg_reset_context(direct_gain_t *g, const arc_gain_table_t *table, uint8_t current_gain,
                       const dg_map_context_t *context)
@@ -357,6 +415,31 @@ void dg_reset_context(direct_gain_t *g, const arc_gain_table_t *table, uint8_t c
     const uint8_t anchor_gain = g->anchor_gain;
     const uint64_t anchor_us = g->anchor_us, carrier_us = g->carrier_us, last_healthy_us = g->last_healthy_us;
     const uint32_t anchor_returns = same_receiver ? g->anchor_returns : 0u, climbs = same_receiver ? g->climbs : 0u;
+    /* KEEL-1 state survives the same resets. Board, blackbox session 29:
+     * every AFC step (it changes the offset, part of the map context) and
+     * every refused write reset the whole core, peak memory and attack
+     * memory included, and a core without memory chose again at once: the
+     * wrong gains at the edge the model never showed. The counters always
+     * survive (a reset zeroed them, and the flight log's per-second
+     * differences wrapped to 255). */
+    uint8_t keep_peak[sizeof(g->peak_p95)];
+    memcpy(keep_peak, g->peak_p95, sizeof(keep_peak));
+    const uint8_t keep_peak_i = g->peak_i, keep_folded_row = g->folded_row;
+    const uint64_t keep_peak_since = g->peak_since_us, keep_peak_bucket = g->peak_bucket_us, keep_up = g->up_after_us,
+                   keep_down = g->down_after_us, keep_folded_until = g->folded_until_us,
+                   keep_sat_since = g->saturated_since_us;
+    const bool keep_far = g->far_run, keep_sat = g->saturated_run;
+    uint16_t keep_heat[DG_STATES];
+    memcpy(keep_heat, g->heat_q8, sizeof(keep_heat));
+    const uint64_t keep_heat_us = g->heat_us;
+    const uint32_t c_heat = magic_ok_early(g) ? g->heat_events : 0u;
+    const dg_observation_t keep_last = g->last_tracking;
+    const bool magic_ok = g->magic == DG_MAGIC;
+    const uint32_t c_writes = magic_ok ? g->writes : 0u, c_mod = magic_ok ? g->writes_moderate : 0u,
+                   c_sev = magic_ok ? g->writes_severe : 0u, c_ovl = magic_ok ? g->overloads : 0u,
+                   c_holds = magic_ok ? g->holds : 0u, c_bursts = magic_ok ? g->bursts_ignored : 0u,
+                   c_one = magic_ok ? g->one_sided_clips : 0u, c_ref = magic_ok ? g->writes_refused : 0u,
+                   c_oaw = magic_ok ? g->overloads_after_write : 0u;
     bool keep = g->magic == DG_MAGIC && g->learned && table && same_table(&g->table, table) &&
                 g->map_context_valid == (context != NULL) &&
                 (!context || dg_map_context_equal(&g->map_context, &wanted)) &&
@@ -375,8 +458,23 @@ void dg_reset_context(direct_gain_t *g, const arc_gain_table_t *table, uint8_t c
         bits_q8 += (unsigned)((((t->bb_code + 1u) << 8) >> (bits_q8 >> 8)) - 256u);   /* linear between powers of two */
         g->model_db_q8[k] = (int16_t)(6 * 256 * (int)t->rf_stage + 6 * (int)bits_q8 + 212 * (5 - (int)t->fine_code));
     }
+    keel_build(g);
     g->current_gain = (uint8_t)clamp_i(current_gain, 20, g->table.max_index);
     g->target_gain = g->current_gain;
+    g->writes = c_writes; g->writes_moderate = c_mod; g->writes_severe = c_sev; g->overloads = c_ovl;
+    g->holds = c_holds; g->bursts_ignored = c_bursts; g->one_sided_clips = c_one; g->writes_refused = c_ref;
+    g->overloads_after_write = c_oaw;
+    if (same_receiver) {
+        memcpy(g->peak_p95, keep_peak, sizeof(keep_peak));
+        g->peak_i = keep_peak_i; g->peak_since_us = keep_peak_since; g->peak_bucket_us = keep_peak_bucket;
+        g->up_after_us = keep_up; g->down_after_us = keep_down; g->far_run = keep_far;
+        g->folded_row = keep_folded_row; g->folded_until_us = keep_folded_until;
+        g->saturated_run = keep_sat; g->saturated_since_us = keep_sat_since;
+        g->last_tracking = keep_last;
+        memcpy(g->heat_q8, keep_heat, sizeof(keep_heat));
+        g->heat_us = keep_heat_us;
+    }
+    g->heat_events = c_heat;
     g->relative_power_q10[g->current_gain] = 1024u;
     g->confidence[g->current_gain] = 1u;
     g->uncertainty_pm[g->current_gain] = 50u;
@@ -405,6 +503,17 @@ void dg_reset(direct_gain_t *g, const arc_gain_table_t *table, uint8_t current_g
         context = g->map_context;
         dg_reset_context(g, table, current_gain, &context);
     } else dg_reset_context(g, table, current_gain, NULL);
+    /* A fresh start (no firmware caller; host tests restart their clock):
+     * no KEEL-1 memory or counters from before, unlike a re-bind. */
+    if (!g) return;
+    memset(g->peak_p95, 0, sizeof(g->peak_p95));
+    g->peak_i = 0; g->peak_since_us = g->peak_bucket_us = g->up_after_us = g->down_after_us = 0;
+    g->far_run = false; g->folded_row = 0; g->folded_until_us = 0;
+    g->saturated_run = false; g->saturated_since_us = 0;
+    memset(&g->last_tracking, 0, sizeof(g->last_tracking));
+    g->writes = g->writes_moderate = g->writes_severe = g->overloads = g->holds = 0;
+    g->bursts_ignored = g->one_sided_clips = g->writes_refused = g->overloads_after_write = 0;
+    memset(g->heat_q8, 0, sizeof(g->heat_q8)); g->heat_us = 0; g->released_row = 0; g->heat_events = 0;
 }
 
 unsigned dg_export_map(const direct_gain_t *g, dg_map_blob_t *blob)
@@ -646,14 +755,27 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
 #define DG7_RELEASE_P95 26u      /* one step under the target: above the noise peaks at G83 (P95 15-19) */
 #endif
 #ifndef DG7_HOLD_US
-#define DG7_HOLD_US 48000u   /* peak memory */
+#define DG7_HOLD_US 16000u   /* peak memory (KEEL-1; V7 used 48 ms) */
 #endif
-#define DG7_BUCKET_US    2000u
+#define DG7_BUCKET_US (DG7_HOLD_US / 32u)   /* the memory always spans 32 buckets */
 /* Far below the release level (6 dB) for this long, judged on the newest
  * peaks only, a weaker carrier is no multipath null any more: release then
  * instead of after the full memory. A -22 / -12 dB step behind an obstacle
  * recovers in 22 / 14 ms, not 54 / 46 (test_gain_fade); 12 ms released on
  * Rician nulls (close in 89.8 %), 20-32 ms cost the steps 26-38 ms. */
+/* Attack memory (KEEL-1): blackbox session 28, walking to the edge
+ * (-76..-88 dBm): the gain left a row when a fade peak folded and came back
+ * 16 ms later, 255 writes a second between G61 and G79. After an attack the
+ * row that folded stays out of reach this long. */
+#ifndef DG7_HEAT_STEP_Q8
+#define DG7_HEAT_STEP_Q8   768u       /* +3 dB per folded release into a row */
+#endif
+#define DG7_HEAT_MAX_Q8    3072u      /* at most 12 dB */
+#define DG7_HEAT_WINDOW_US 150000u    /* a fold this soon after a release counts */
+#define DG7_HEAT_DECAY_US  2000000u   /* -1 dB every 2 s */
+#ifndef DG7_FOLD_MEMORY_US
+#define DG7_FOLD_MEMORY_US 300000u
+#endif
 #ifndef DG7_FAR_HOLD_US
 #define DG7_FAR_HOLD_US 16000u
 #endif
@@ -678,12 +800,13 @@ _Static_assert(DG7_HOLD_US / DG7_BUCKET_US <= 32u, "peak memory: 32 buckets (gai
 #define DG7_SAT_US 1000u
 #endif
 #ifndef DG7_SAT_DROP_DB
-#define DG7_SAT_DROP_DB 9
+#define DG7_SAT_DROP_DB 3   /* one home row; lasting saturation steps again after DG7_DOWN_GAP_US (V6 used 9) */
 #endif
 
 /* The table step closest to the model gain of `from` plus delta (dB Q8). */
 static uint8_t dg7_index_for(const direct_gain_t *g, uint8_t from, int delta_q8)
 {
+    if (g->keel_rows) return keel_pick(g, from, delta_q8);
     const int want = g->model_db_q8[from] + delta_q8;
     unsigned best = from;
     int best_err = 1 << 30;
@@ -737,6 +860,11 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
     g->last_tracking = *o;
     const uint64_t now = o->observed_us;
     if (!g->peak_since_us) dg7_peak_reset(g, now);
+    if (!g->heat_us || now < g->heat_us) g->heat_us = now;
+    else if (now - g->heat_us >= DG7_HEAT_DECAY_US) {
+        g->heat_us = now;
+        for (unsigned k = 0; k < DG_STATES; ++k) g->heat_q8[k] = g->heat_q8[k] > 256u ? (uint16_t)(g->heat_q8[k] - 256u) : 0u;
+    }
     const bool one_sided = o->clip_pm >= 100 && dg_one_sided(o);
     if (one_sided) ++g->one_sided_clips;
     const bool saturated = o->clip_pm >= 100 && !dg_one_sided(o);
@@ -744,7 +872,14 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
     if (!no_carrier) g->carrier_us = now;
     /* A write is still settling: its transient is no evidence. */
     if (g->state == DG_SETTLE) {
-        if (now <= g->write_us || now - g->write_us < settle_guard_us(g)) return g->current_gain;
+        if (now <= g->write_us || now - g->write_us < settle_guard_us(g)) {
+            /* The write's transient is no saturation evidence either: a run
+             * begun on it must not mature across the settle into an overload
+             * (blackbox session 32: 3-19 overloads a second at -80..-70 dBm,
+             * every overload snapshot clean). */
+            g->saturated_run = false;
+            return g->current_gain;
+        }
         uint64_t elapsed = now - g->write_us;
         if (elapsed < 65535u) {
             uint16_t *settle = &g->settle_us[g->transition];
@@ -766,6 +901,7 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
             attack = true;
             delta = -DG7_SAT_DROP_DB * 256;
             ++g->overloads;
+            if (now - g->write_us < 5000u) ++g->overloads_after_write;
         } else {
             ++g->bursts_ignored;
         }
@@ -783,11 +919,25 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
         if (now < g->down_after_us) return g->current_gain;
         uint8_t target = dg7_index_for(g, g->current_gain, delta);
         if (target >= g->current_gain) target = g->current_gain > 2u ? (uint8_t)(g->current_gain - 1u) : 2u;
-        if (target + DG7_DOWN_MAX < g->current_gain) target = (uint8_t)(g->current_gain - DG7_DOWN_MAX);
+        if (!g->keel_rows && target + DG7_DOWN_MAX < g->current_gain) target = (uint8_t)(g->current_gain - DG7_DOWN_MAX);
         g->saturated_run = false;
         g->down_after_us = now + DG7_DOWN_GAP_US;
         g->up_after_us = now + DG7_HOLD_US;
         g->far_run = false;
+        /* Attack memory: the row that folded stays out of reach for a while. */
+        g->folded_row = g->current_gain;
+        g->folded_until_us = now + DG7_FOLD_MEMORY_US;
+        /* Learned headroom (KEEL-1): a release that folds within 150 ms was
+         * too optimistic for this row, whatever the reason (a table step
+         * larger than the model, a fading pattern, an antenna). Blackbox
+         * session 34, walking: the attacks were real folds a median 41 ms
+         * after a release, P50 ~55 against a target P95 of 30. */
+        if (g->released_row == g->current_gain && now - g->released_us < DG7_HEAT_WINDOW_US) {
+            const unsigned h = g->heat_q8[g->current_gain] + DG7_HEAT_STEP_Q8;
+            g->heat_q8[g->current_gain] = (uint16_t)(h > DG7_HEAT_MAX_Q8 ? DG7_HEAT_MAX_Q8 : h);
+            ++g->heat_events;
+        }
+        g->released_row = 0;
         ++g->writes_severe;
         return start_write(g, o, &prior, target);
     }
@@ -802,20 +952,51 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
     if (level < DG7_RELEASE_P95 && now - g->peak_since_us >= need &&
         now >= g->up_after_us && g->current_gain < g->table.max_index) {
         delta = (power_db_q8(DG7_TARGET_P95) - power_db_q8(level ? level : 1u)) * (far ? 100 : DG7_STEP_PCT) / 100;
-        g->far_run = far;
         uint8_t target = dg7_index_for(g, g->current_gain, delta);
-        if (target <= g->current_gain) target = (uint8_t)(g->current_gain + 1u);
-        const unsigned up_max = far ? 2u * DG7_UP_MAX : DG7_UP_MAX;
-        if (target > g->current_gain + up_max) target = (uint8_t)(g->current_gain + up_max);
-        if (target > g->table.max_index) target = g->table.max_index;
-        g->up_after_us = now + DG7_UP_GAP_US;
-        ++g->writes_moderate;
-        return start_write(g, o, &prior, target);
+        /* KEEL-1 attack memory: never straight back into the row that just
+         * folded (unless the carrier is far below: gone weaker). */
+        if (!far && now < g->folded_until_us && target >= g->folded_row) {
+            uint8_t below = g->current_gain;
+            for (unsigned k = 0; k < g->keel_rows; ++k)
+                if (g->keel_row[k] < g->folded_row && g->keel_row[k] > below) below = g->keel_row[k];
+            if (!g->keel_rows) below = g->folded_row > 0u ? (uint8_t)(g->folded_row - 1u) : 0u;
+            target = below;
+        }
+        if (g->keel_rows) {
+            /* KEEL-1: the next home row only when it fits under the target;
+             * otherwise stay (no write, no hunting between home rows). */
+            if (target > g->current_gain) {
+                g->far_run = far;
+                g->up_after_us = now + DG7_UP_GAP_US;
+                g->released_row = target;
+                g->released_us = now;
+                ++g->writes_moderate;
+                return start_write(g, o, &prior, target);
+            }
+        } else {
+            g->far_run = far;
+            if (target <= g->current_gain) target = (uint8_t)(g->current_gain + 1u);
+            const unsigned up_max = far ? 2u * DG7_UP_MAX : DG7_UP_MAX;
+            if (target > g->current_gain + up_max) target = (uint8_t)(g->current_gain + up_max);
+            if (target > g->table.max_index) target = g->table.max_index;
+            g->up_after_us = now + DG7_UP_GAP_US;
+            ++g->writes_moderate;
+            return start_write(g, o, &prior, target);
+        }
     }
     g->state = DG_HOLD;
     ++g->holds;
     if (!no_carrier) g->last_healthy_us = now;
     return g->current_gain;
+}
+
+void dg_write_refused(direct_gain_t *g, uint8_t actual_gain)
+{
+    if (!g || g->current_gain == actual_gain) return;
+    g->current_gain = actual_gain;
+    g->target_gain = actual_gain;
+    g->state = DG_HOLD;
+    ++g->writes_refused;
 }
 
 void dg_sync_applied(direct_gain_t *g, uint8_t gain, uint64_t write_us)

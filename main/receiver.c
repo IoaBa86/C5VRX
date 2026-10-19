@@ -3,6 +3,7 @@
  * context/age validation. Bound a continuously runnable observer batch so
  * IDLE/calibration get time even if notifications accumulate. */
 #include "receiver.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "cn_estimate.h"
@@ -34,7 +35,7 @@ uint8_t receiver_gain_mode(void) { return s_gain_mode; }
 
 void receiver_set_gain_mode(uint8_t mode, bool save)
 {
-    if (mode != GAIN_MODE_AUTO && mode != GAIN_MODE_MAX && (mode < 20u || mode > ARC_VENDOR_GAIN_MAX)) return;
+    if (mode != GAIN_MODE_AUTO && mode != GAIN_MODE_MAX && (mode < 2u || mode > ARC_VENDOR_GAIN_MAX)) return;
     s_gain_mode = mode;
     if (save) settings_save_gain_mode(mode);
     if (save) flightlog_event(FLOG_E_GAIN_MODE, &mode, 1);
@@ -57,9 +58,55 @@ const char *receiver_gain_mode_name(uint8_t mode, char *buf, unsigned size)
     return buf;
 }
 
+/* Bench (console Q): the real gain step between neighbouring table rows.
+ * The gain alternates between rows hi and hi-1 every PAIR_SWITCH_OBS
+ * observations (~5 ms), so both see the same carrier however it fades, and
+ * the ratio of their mean probe powers is the real step. Each pair runs
+ * PAIR_OBS observations (~1 s), then hi moves down one row, G83 to G3.
+ * Probes within 600 us of a write, clipping or folding are left out. One
+ * GPAIR line per pair; research/gain_step_measure.py chains them. */
+#define PAIR_SWITCH_OBS 25u
+#define PAIR_OBS        5000u
+static volatile bool s_pair_active;
+static uint8_t s_pair_hi;
+static uint32_t s_pair_obs, s_pair_n[2], s_pair_skip[2];
+static uint64_t s_pair_sum[2];
+static int64_t s_pair_last_write_us;
+static uint8_t s_pair_last_gain;
+void receiver_pair_sweep_toggle(void)
+{
+    if (s_pair_active) { s_pair_active = false; printf("GPAIR stopped\n"); return; }
+    s_pair_hi = rf_gain_table()->max_index;
+    s_pair_obs = 0;
+    memset(s_pair_n, 0, sizeof(s_pair_n)); memset(s_pair_skip, 0, sizeof(s_pair_skip)); memset(s_pair_sum, 0, sizeof(s_pair_sum));
+    s_pair_active = true;
+    printf("GPAIR start hi=%u (keep the VTX still; ~%u s)\n", s_pair_hi, (unsigned)s_pair_hi);
+}
+static uint8_t pair_decision(const dg_observation_t *o)
+{
+    const int64_t now = esp_timer_get_time();
+    if (s_current_gain != s_pair_last_gain) { s_pair_last_gain = s_current_gain; s_pair_last_write_us = now; }
+    const int side = s_current_gain == s_pair_hi ? 0 : s_current_gain == (uint8_t)(s_pair_hi - 1u) ? 1 : -1;
+    if (side >= 0) {
+        const bool folded = (o->rails & 3u) == 3u || (o->rails & 12u) == 12u;
+        if (now - s_pair_last_write_us < 600 || o->clip_pm >= 20u || folded) ++s_pair_skip[side];
+        else { s_pair_sum[side] += o->pwr_x16; ++s_pair_n[side]; }
+    }
+    if (++s_pair_obs >= PAIR_OBS) {
+        printf("GPAIR hi=%u lo=%u sum_hi=%llu n_hi=%lu skip_hi=%lu sum_lo=%llu n_lo=%lu skip_lo=%lu\n", s_pair_hi,
+               s_pair_hi - 1u, (unsigned long long)s_pair_sum[0], (unsigned long)s_pair_n[0], (unsigned long)s_pair_skip[0],
+               (unsigned long long)s_pair_sum[1], (unsigned long)s_pair_n[1], (unsigned long)s_pair_skip[1]);
+        s_pair_obs = 0;
+        memset(s_pair_n, 0, sizeof(s_pair_n)); memset(s_pair_skip, 0, sizeof(s_pair_skip)); memset(s_pair_sum, 0, sizeof(s_pair_sum));
+        if (--s_pair_hi < 3u) { s_pair_active = false; printf("GPAIR done\n"); return s_current_gain; }
+    }
+    return (s_pair_obs / PAIR_SWITCH_OBS) & 1u ? (uint8_t)(s_pair_hi - 1u) : s_pair_hi;
+}
+
 /* Fixed modes bypass the controller; apply_target clamps to the live table. */
 static uint8_t gain_decision(const dg_observation_t *o)
 {
+    if (s_pair_active) return pair_decision(o);
     const uint8_t mode = s_gain_mode;
     if (mode == GAIN_MODE_AUTO) return dg_tick(&s_gain, o);
     const uint8_t target = mode == GAIN_MODE_MAX ? rf_gain_table()->max_index : mode;
@@ -115,6 +162,29 @@ unsigned receiver_export_gain_map(dg_map_blob_t *blob)
     return n;
 }
 
+static int64_t s_attack_prev_write_us;   /* the write before the attack's (attack_record) */
+static uint32_t s_rebinds;
+/* Evidence for every step down (FLOG_E_ATTACK, at most 4 a second): what
+ * the gain core saw when it went down, at that moment, not a snapshot
+ * milliseconds later (blackbox session 32: every overload snapshot was
+ * clean). Bytes: source (0 observer, 1 sentinel), from, to, saturated run
+ * (1) or folding (0), us since the last write / 10 (u16), P95, clip per
+ * mille / 4, rails, P50. */
+static void attack_record(const dg_observation_t *o, uint8_t source, uint8_t from, uint32_t severe_before)
+{
+    static int64_t window_us;
+    static unsigned in_window;
+    if (s_gain.writes_severe == severe_before || s_current_gain >= from) return;
+    const int64_t now = esp_timer_get_time();
+    if (now - window_us >= 1000000) { window_us = now; in_window = 0; }
+    if (++in_window > 4u) return;
+    const int64_t since = s_gain_epoch ? (int64_t)o->observed_us - s_attack_prev_write_us : 0;
+    const uint32_t since10 = since < 0 ? 0u : since / 10 > 65535 ? 65535u : (uint32_t)(since / 10);
+    const uint8_t d[10] = {source, from, s_current_gain, (uint8_t)(s_gain.saturated_run ? 1u : 0u),
+                           (uint8_t)since10, (uint8_t)(since10 >> 8), o->p95, (uint8_t)(o->clip_pm / 4u > 255u ? 255u : o->clip_pm / 4u),
+                           o->rails, o->p50};
+    flightlog_event(FLOG_E_ATTACK, d, sizeof(d));
+}
 static void gain_map_bind(const dg_map_context_t *context, uint32_t control, uint32_t phy, uint32_t table)
 {
     dg_reset_context(&s_gain, rf_gain_table(), s_current_gain, context);
@@ -169,16 +239,23 @@ void receiver_set_gain(uint8_t gain)
 
 static void apply_target(uint8_t target, uint32_t control, uint32_t phy)
 {
-    if (phy != phy_generation() || phy_busy() || control != s_control_epoch || !receiver_active()) return;
+    /* Every refused write puts the core back on the real gain: left ahead of
+     * the hardware, the next probe saw a mismatch and reset the whole core
+     * (blackbox session 29). */
+    if (phy != phy_generation() || phy_busy() || control != s_control_epoch || !receiver_active()) {
+        dg_write_refused(&s_gain, s_current_gain);
+        return;
+    }
     if (target == s_current_gain) return;
     const arc_gain_table_t *t = rf_gain_table();
     if (target < 2u) target = 2u;
     if (target > t->max_index) target = t->max_index;
     /* A task preemption between the first check and the write must not let
      * another PHY owner change the analog state underneath this write. */
-    if (!phy_try_actuator(phy)) return;
+    if (!phy_try_actuator(phy)) { dg_write_refused(&s_gain, s_current_gain); return; }
     if (control != s_control_epoch || !receiver_active()) {
         phy_end_actuator();
+        dg_write_refused(&s_gain, s_current_gain);
         return;
     }
     /* A busy or changed PHY must not leave software ahead of hardware. */
@@ -201,6 +278,7 @@ static portMUX_TYPE s_lvl_lock = portMUX_INITIALIZER_UNLOCKED;
 static rx_level_t s_level;
 static float s_noise_rel;          /* learned noise, calibration units; 0 = not yet */
 static uint16_t s_noise_freq;
+static rf_filter_t s_noise_filter;   /* the noise belongs to this filter too (NARROW reads lower) */
 static void level_accumulate(const dg_observation_t *o, uint8_t gain)
 {
     if (gain >= RX_LEVEL_ROWS || s_obs_stuck) return;
@@ -217,7 +295,11 @@ void receiver_level_roll(bool no_carrier)
     memcpy(sum, s_lvl_sum, sizeof(sum)); memcpy(n, s_lvl_n, sizeof(n)); clipped = s_lvl_clipped;
     memset(s_lvl_sum, 0, sizeof(s_lvl_sum)); memset(s_lvl_n, 0, sizeof(s_lvl_n)); s_lvl_clipped = 0;
     taskEXIT_CRITICAL(&s_lvl_lock);
-    if (s_noise_freq != rf_frequency_mhz()) { s_noise_freq = rf_frequency_mhz(); s_noise_rel = 0.0f; }
+    const rf_filter_t f = rf_filter();
+    if (s_noise_freq != rf_frequency_mhz() || f.code != s_noise_filter.code || f.skirt != s_noise_filter.skirt ||
+        f.bw20 != s_noise_filter.bw20) {
+        s_noise_freq = rf_frequency_mhz(); s_noise_filter = f; s_noise_rel = 0.0f;
+    }
     rx_level_t r = rx_level_compute(sum, n, clipped, s_gain.model_db_q8, s_gain.table.max_index, s_noise_rel);
     /* Learn the noise with no carrier at the table maximum, inside -3..+4 dB
      * of the calibration (a carrier the supervisor missed stays out). */
@@ -240,8 +322,51 @@ void receiver_level_feed(const uint8_t *window, size_t bytes)
     }
 }
 
+/* C/N from power (rx_level.h): the probe's DC-removed power at its gain
+ * row, referred to the pin with the gain model, against the noise learned
+ * for this channel and filter. Blackbox session 32, IQ snapshots at the
+ * edge: true C/N 14.3 / 19.5 / 8.9 dB where the envelope estimate read
+ * 8.1 / 7.5 / 6.0 (the narrow filter's AM and the 4-bit envelope fluctuate
+ * without any noise). That low reading put the demod on its narrowest
+ * tracker with LP and kept the AFC from correcting at the edge. Converted to
+ * the 20 MHz scale every consumer uses (cn_estimate.h): noise bandwidth
+ * ~ the filter class + 1.6 MHz (12 MHz class: 13.6 MHz measured). */
+static volatile int32_t s_cnp_x10 = CN_UNKNOWN_X10;
+static volatile int64_t s_cnp_us;
+static volatile uint32_t s_cnp_epoch;
+static float s_cnp_ema;              /* pin power, calibration units */
+static void cn_power_update(const dg_observation_t *o, uint8_t gain, int64_t now)
+{
+    if (gain >= RX_LEVEL_ROWS || s_obs_stuck || o->clip_pm >= 20u) return;
+    const float mean = o->pwr_x16 / 16.0f - RX_LEVEL_QUANT_CELLS2;
+    const float pin = (mean > 0.0f ? mean : 0.0f) *
+                      powf(10.0f, (float)(s_gain.model_db_q8[s_gain.table.max_index] - s_gain.model_db_q8[gain]) / 2560.0f) /
+                      RX_LEVEL_NOISE_CELLS2;
+    if (s_cnp_epoch != s_gain_epoch || now - s_cnp_us > 20000) s_cnp_ema = pin;   /* a new row: start over */
+    else s_cnp_ema += (pin - s_cnp_ema) / 8.0f;
+    const int cls = calibration_filter_class_mhz();
+    const float noise = s_noise_rel > 0.0f ? s_noise_rel : ((float)cls + 1.6f) / 13.6f;
+    const float c = s_cnp_ema - noise;
+    int32_t x10 = CN_UNKNOWN_X10;
+    if (c > 0.05f * noise) {
+        const float nbw_db = 10.0f * log10f(20.7f / ((float)cls + 1.6f));
+        x10 = (int32_t)lroundf(100.0f * log10f(c / noise) - 10.0f * nbw_db);
+        if (x10 > 300) x10 = 300;
+        if (x10 < -30) x10 = -30;
+    }
+    s_cnp_x10 = x10;
+    s_cnp_us = now;
+    s_cnp_epoch = s_gain_epoch;
+}
+
 int receiver_obs_cn_x10(void)
 {
+    {   /* power-based when fresh on the current row (see cn_power_update) */
+        const int64_t now = esp_timer_get_time();
+        if (!s_obs_stuck && receiver_active() && s_cnp_epoch == s_gain_epoch && now - s_cnp_us <= 50000 &&
+            cn_gain_settled((uint64_t)now, (uint64_t)s_last_gain_write_us, s_gain.state == DG_SETTLE))
+            return (int)s_cnp_x10;
+    }
     /* Envelope model (cn_estimate.h); a fixed IQ point has no envelope to
      * judge and read 14-20 dB in the coherence model with no VTX at all. */
     uint32_t seq = s_cn_sequence;
@@ -263,6 +388,7 @@ int receiver_obs_cn_x10(void)
  * rows; the servo restarts a row whose codes it changed. The observer is
  * the only writer. */
 typedef struct { int64_t si, sq; uint32_t samples; } dc_row_acc_t;
+static uint32_t s_dc_rejected_folded;   /* windows kept out of the DC means (both rails) */
 static dc_row_acc_t s_dc_rows[ARC_VENDOR_GAIN_MAX + 1u];
 static uint32_t s_dc_rows_control, s_dc_rows_phy, s_dc_rows_table;
 static portMUX_TYPE s_dc_acc_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -270,6 +396,14 @@ static void dc_accumulate(const dg_observation_t *o, size_t bytes, uint8_t gain,
                           uint32_t table)
 {
     if (gain > ARC_VENDOR_GAIN_MAX) return;
+    /* A window that reaches both rails of an axis holds a carrier folding
+     * through the 4-bit window: its mean is no DC. Blackbox session 24 (VTX
+     * close, a hand on the antenna): such windows at G79/G83, as the carrier
+     * arrived or left before the gain moved, walked those rows' trims by up
+     * to 88 codes; the rows then sat at 2-3 cells of DC (IQ snapshots) and
+     * the picture was gone for 19 s. One rail per axis is the DC itself and
+     * still counts. */
+    if ((o->rails & 3u) == 3u || (o->rails & 12u) == 12u) { ++s_dc_rejected_folded; return; }
     taskENTER_CRITICAL(&s_dc_acc_lock);
     if (s_dc_rows_control != control || s_dc_rows_phy != phy || s_dc_rows_table != table) {
         memset(s_dc_rows, 0, sizeof(s_dc_rows));
@@ -320,6 +454,8 @@ static void tick_cb(void *arg)
 
 /* 64 bytes from the middle of the newest completed descriptor every 200 us:
  * a clipped envelope requests the observer's emergency path at once. */
+static uint32_t s_sentinel_forwarded, s_sentinel_dropped;
+uint32_t receiver_sentinel_forwarded(void) { return s_sentinel_forwarded; }
 static void sentinel_task(void *arg)
 {
     (void)arg;
@@ -329,10 +465,20 @@ static void sentinel_task(void *arg)
         if (!receiver_active() || s_overload_state || s_rx_dma_ch < 0 || s_rx_node_count < 2) continue;
         uint32_t gain_epoch = s_gain_epoch, control = s_control_epoch, phy = phy_generation();
         if (!copy_sentinel_window(sample) || gain_epoch != s_gain_epoch) continue;
+        /* A gain write's transient is no overload (blackbox session 32). */
+        if (esp_timer_get_time() - s_last_gain_write_us < 2000) continue;
         dg_observation_t o = dg_measure_gain(sample, sizeof(sample), c5vrx_phase8_gain_lut,
                                         (uint64_t)esp_timer_get_time());
-        if (o.clip_pm < 125u && o.p95 < 95u) continue;
+        /* Only gross saturation: both rails of an axis in half the window.
+         * A 64-sample window (1.6 us) of a weak carrier touches the rails on
+         * noise peaks; forwarding that as an overload made the gain leave a
+         * row and climb back, 255 writes a second walking out to the edge
+         * (blackbox session 28; the 200 us observer and the 1 ms saturation
+         * rule of the gain core see the real overloads). */
+        const bool two_sided = (o.rails & 3u) == 3u || (o.rails & 12u) == 12u;
+        if (!two_sided || o.clip_pm < 500u) { if (o.clip_pm >= 125u || o.p95 >= 95u) ++s_sentinel_dropped; continue; }
         if (control != s_control_epoch || phy != phy_generation() || phy_busy()) continue;
+        ++s_sentinel_forwarded;
         if (!__sync_bool_compare_and_swap(&s_overload_state, 0u, 1u)) continue;
         s_overload = o;
         s_overload_gain_epoch = gain_epoch;
@@ -375,6 +521,7 @@ static void observer_task(void *arg)
         if (s_paused) continue;
         if (!was_active || control != seen_control || table != seen_table || phy != seen_phy ||
             s_gain.current_gain != s_current_gain || !dg_map_matches(&s_gain, rf_gain_table(), &context)) {
+            ++s_rebinds;
             gain_map_bind(&context, control, phy, table);
             seen_control = control;
             seen_table = table;
@@ -388,7 +535,13 @@ static void observer_task(void *arg)
                            s_overload_control_epoch == control && s_overload_phy == phy &&
                            (uint64_t)esp_timer_get_time() - o.observed_us <= 1000u;
             __sync_lock_release(&s_overload_state);
-            if (current) apply_target(gain_decision(&o), control, phy);
+            if (current) {
+                const uint32_t severe = s_gain.writes_severe;
+                const uint8_t from = s_current_gain;
+                s_attack_prev_write_us = s_last_gain_write_us;
+                apply_target(gain_decision(&o), control, phy);
+                attack_record(&o, 1u, from, severe);
+            }
             continue;
         }
         uint32_t gain_epoch = s_gain_epoch;
@@ -431,6 +584,7 @@ static void observer_task(void *arg)
         if (cn_gain_settled((uint64_t)t0, (uint64_t)s_last_gain_write_us, s_gain.state == DG_SETTLE)) {
             dc_accumulate(&o, sizeof(sample), s_current_gain, control, phy, table);
             level_accumulate(&o, s_current_gain);
+            cn_power_update(&o, s_current_gain, t0);
         }
         if (measure_cn) {
             ++s_cn_sequence;
@@ -445,7 +599,13 @@ static void observer_task(void *arg)
          * by the AFC within the last 500 ms (never from receiver noise). */
         const int64_t video = s_last_video_us;
         s_gain.learn_enabled = video != 0 && t0 - video < 500000;
-        apply_target(gain_decision(&o), control, phy);
+        {
+            const uint32_t severe = s_gain.writes_severe;
+            const uint8_t from = s_current_gain;
+            s_attack_prev_write_us = s_last_gain_write_us;
+            apply_target(gain_decision(&o), control, phy);
+            attack_record(&o, 0u, from, severe);
+        }
         uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
         if (us > s_obs_us_max) s_obs_us_max = us;
         ++s_obs_windows;
@@ -483,6 +643,12 @@ void receiver_print(void)
         printf("RX_LEVEL unknown probes=%lu clipped_pm=%u\n", (unsigned long)lv.probes, lv.clipped_pm);
     printf("GAIN_SAT one_sided=%lu two_sided=%lu to_dc_servo=%lu (saturated observer windows: one rail per axis = DC-pushed, both = large signal; one-sided ones go to the DC servo, not the gain)\n",
            (unsigned long)s_sat_one_sided, (unsigned long)s_sat_two_sided, (unsigned long)s_gain.one_sided_clips);
+    printf("GAIN_WRITES attack=%lu release=%lu refused=%lu rebinds=%lu overloads=%lu overloads_after_write=%lu heat_events=%lu sentinel_forwarded=%lu sentinel_dropped=%lu (why the gain moved; rebinds keep the core's memory on the same receiver; sentinel = 64-sample fast path, gross saturation only)\n",
+           (unsigned long)s_gain.writes_severe, (unsigned long)s_gain.writes_moderate, (unsigned long)s_gain.writes_refused,
+           (unsigned long)s_rebinds, (unsigned long)s_gain.overloads, (unsigned long)s_gain.overloads_after_write, (unsigned long)s_gain.heat_events,
+           (unsigned long)s_sentinel_forwarded, (unsigned long)s_sentinel_dropped);
+    printf("DC_FEED rejected_folded=%lu (observer windows reaching both rails of an axis: a folding carrier, kept out of the DC servo)\n",
+           (unsigned long)s_dc_rejected_folded);
     printf("CN_OBSERVER windows=%lu period_us=%u max_age_us=%u\n", (unsigned long)s_cn_windows,
            CN_OBSERVE_PERIOD_US, CN_OBSERVE_MAX_AGE_US);
     char mode[16];
@@ -492,7 +658,7 @@ void receiver_print(void)
            "map_imports=%lu preset_imports=%lu "
            "obs_windows=%lu obs_us_max=%lu\n",
            s_paused ? "paused" :
-           s_gain_mode == GAIN_MODE_AUTO ? "direct_gain_v7" : "manual",
+           s_gain_mode == GAIN_MODE_AUTO ? "keel1" : "manual",
            receiver_gain_mode_name(s_gain_mode, mode, sizeof(mode)),
            s_current_gain, (unsigned)s_gain.state, s_obs_p50, s_obs_p95, s_obs_coherence, s_obs_env_ratio_x100,
            (unsigned)s_obs_stuck, receiver_obs_cn_x10(),

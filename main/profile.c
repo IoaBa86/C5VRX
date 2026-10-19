@@ -348,24 +348,21 @@ void profile_commit(int dev_x100)
     if (p == PROFILE_DEFAULT) {
         s_reason = dev_x100 >= DEV_WIDE_MIN ? "no_wide_filter" : dev_x100 > DEV_KP060_MAX ? "measured_default_vtx" :
                    "no_narrow_filter";
-        if (s_profile != PROFILE_DEFAULT) {
-            status_screen("VTX MEASURED", "DEFAULT PROFILE", profile_name(PROFILE_DEFAULT), 100);
-            (void)profile_set(PROFILE_DEFAULT);
-            vTaskDelay(pdMS_TO_TICKS(800));
-            status_screen_end();
-        }
+        /* No status screen: the picture stays (operator: "VTX MATCHED" in
+         * flight). The live switch applies it right after startup. */
+        if (s_profile != PROFILE_DEFAULT) { s_switch_pending = PROFILE_DEFAULT; live_apply(); }
     } else if (profile_narrowing(p, s_profile) && !narrow_ready(p)) {
         /* The deviation counts (ladder class); the narrow filter waits for a
          * centred carrier and its own DC table, and comes from the live
          * switch once both hold. */
         s_reason = s_afc_locked ? "narrow_awaits_dc_table" : "narrow_awaits_afc_lock";
     } else {
-        char line[48];
-        snprintf(line, sizeof(line), "VTX DEVIATION %d.%02d", dev_x100 / 100, dev_x100 % 100);
-        status_screen("VTX MATCHED", line, profile_name(p), 100);
-        s_reason = profile_set(p) ? "measured_this_boot" : "narrow_filter_not_applied";
-        vTaskDelay(pdMS_TO_TICKS(1200));
-        status_screen_end();
+        /* Silently, through the live switch (verified restart, no status
+         * screen): the "VTX MATCHED" screen took the picture for over a
+         * second, also when the VTX came on with the quad already up. */
+        s_reason = "measured_this_boot";
+        s_switch_pending = p;
+        live_apply();
     }
     printf("PROFILE channel=%s deviation_x100=%d profile=%s reason=%s\n", rf_channel()->name, dev_x100,
            s_names[s_profile], s_reason);

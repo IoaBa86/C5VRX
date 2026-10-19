@@ -53,6 +53,7 @@ enum {
     FLOG_E_CHANNEL = 1, FLOG_E_PROFILE = 2, FLOG_E_KP = 3, FLOG_E_CAL_START = 4, FLOG_E_CAL_END = 5,
     FLOG_E_DC_CAL_NEEDED = 6, FLOG_E_GAIN_MODE = 7, FLOG_E_MENU = 8, FLOG_E_FAULT = 9,
     FLOG_E_DROPOUT = 10, FLOG_E_RECOVERED = 11, FLOG_E_SNAPSHOT = 12, FLOG_E_DROPPED = 13,
+    FLOG_E_ATTACK = 14,   /* the window that made the gain step down (receiver.c) */
 };
 
 enum { FLOG_SNAP_DROPOUT = 1, FLOG_SNAP_VQ_DROP = 2, FLOG_SNAP_FIRST_CARRIER = 3, FLOG_SNAP_PERIODIC = 4, FLOG_SNAP_OVERLOAD = 5,
@@ -158,7 +159,8 @@ static inline bool flog_block_closed(const uint8_t *block)
 }
 
 /* Per-second summary payload (FLOG_T_SECOND), 34 bytes in format 1, 38
- * with the received level (readers take 34 and up). */
+ * with the received level, 42 with the gain write reasons (readers take 34
+ * and up). */
 typedef struct {
     uint32_t t_s;
     int16_t vq_snr_x10;      /* VIDEO_Q, 0 = no line */
@@ -182,10 +184,14 @@ typedef struct {
     int16_t level_dbm_x10;   /* carrier at the chip pin (rx_level.h), FLOG_LEVEL_UNKNOWN if none */
     int8_t noise_dbm;        /* the noise it is measured against, dBm */
     uint8_t level_flags;     /* bit 0 valid, 1 above the noise, 2 exact (G54+), 3 noise learned */
+    uint8_t writes_attack;   /* gain writes down (folding or saturation), this second, saturating */
+    uint8_t writes_release;  /* gain writes up */
+    uint8_t sentinel;        /* fast-path overloads forwarded to the gain core */
+    uint8_t overloads_after_write;   /* overloads within 5 ms of a gain write (transient suspects) */
 } flog_second_t;
 #define FLOG_LEVEL_UNKNOWN (-32768)
 
-#define FLOG_SECOND_LEN 38u
+#define FLOG_SECOND_LEN 42u
 #define FLOG_SECOND_LEN_V1 34u
 
 static inline uint8_t flog_sat8(uint32_t v) { return (uint8_t)(v > 255u ? 255u : v); }
@@ -209,6 +215,7 @@ static inline void flog_pack_second(const flog_second_t *s, uint8_t p[FLOG_SECON
     p[33] = s->rx_state;
     flog_put16(p + 34, (uint16_t)s->level_dbm_x10);
     p[36] = (uint8_t)s->noise_dbm; p[37] = s->level_flags;
+    p[38] = s->writes_attack; p[39] = s->writes_release; p[40] = s->sentinel; p[41] = s->overloads_after_write;
 }
 
 static inline bool flog_unpack_second(const uint8_t *p, uint8_t len, flog_second_t *s)
@@ -231,6 +238,10 @@ static inline bool flog_unpack_second(const uint8_t *p, uint8_t len, flog_second
     s->level_dbm_x10 = len >= 38u ? (int16_t)flog_get16(p + 34) : (int16_t)FLOG_LEVEL_UNKNOWN;
     s->noise_dbm = len >= 38u ? (int8_t)p[36] : 0;
     s->level_flags = len >= 38u ? p[37] : 0;
+    s->writes_attack = len >= 42u ? p[38] : 0;
+    s->writes_release = len >= 42u ? p[39] : 0;
+    s->sentinel = len >= 42u ? p[40] : 0;
+    s->overloads_after_write = len >= 42u ? p[41] : 0;
     return true;
 }
 

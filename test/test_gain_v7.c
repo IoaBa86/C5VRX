@@ -108,6 +108,30 @@ int main(void)
         legacy.rails = 0;      /* no rail evidence: the old rule */
         CHECK(!dg_one_sided(&legacy) && dg_one_sided(&dc) && !dg_one_sided(&big), "rail classification");
     }
+    {   /* Blackbox session 29: an AFC step (offset only) or a refused write
+         * reset the whole core; its memory and counters must survive. */
+        static direct_gain_t h;
+        dg_reset_context(&h, &table, 60, &c);
+        uint64_t u = 5000;
+        for (int k = 0; k < 8; ++k, u += 200) step(&h, folded(u));        /* an attack: G60 folds */
+        const uint8_t folded_row = h.folded_row;
+        const uint64_t until = h.folded_until_us;
+        const uint32_t writes = h.writes, overloads = h.overloads;
+        dg_map_context_t afc = c;
+        afc.offset_khz = 250;                                              /* the AFC moved */
+        dg_reset_context(&h, &table, h.current_gain, &afc);
+        CHECK(h.folded_row == folded_row && h.folded_until_us == until && h.writes == writes && h.overloads == overloads,
+              "an AFC step keeps the attack memory and the counters (row %u/%u, writes %lu/%lu)", h.folded_row, folded_row,
+              (unsigned long)h.writes, (unsigned long)writes);
+        dg_map_context_t other = c;
+        other.freq_mhz = 5845;                                             /* another channel */
+        dg_reset_context(&h, &table, h.current_gain, &other);
+        CHECK(h.folded_until_us == 0 && h.writes == writes, "a channel change forgets the memory, keeps the counters");
+        const uint8_t real = h.current_gain;
+        h.current_gain = (uint8_t)(real + 3u);                             /* the core wrote, the PHY refused */
+        dg_write_refused(&h, real);
+        CHECK(h.current_gain == real && h.state == DG_HOLD && h.writes_refused == 1, "a refused write puts the core back");
+    }
     printf("%s: %u checks, %u failures\n", s_fail ? "FAIL" : "PASS", s_run, s_fail);
     return s_fail ? 1 : 0;
 }

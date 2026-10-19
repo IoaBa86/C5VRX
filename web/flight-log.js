@@ -17,7 +17,7 @@ const MAGIC_BLOCK = 0x424c3543;
 const MAGIC_SNAP = 0x534c3543;
 
 export const EVENTS = { 1: 'channel', 2: 'profile', 3: 'kp', 4: 'cal_start', 5: 'cal_end', 6: 'dc_cal_needed',
-  7: 'gain_mode', 8: 'menu', 9: 'fault', 10: 'dropout', 11: 'recovered', 12: 'snapshot', 13: 'dropped' };
+  7: 'gain_mode', 8: 'menu', 9: 'fault', 10: 'dropout', 11: 'recovered', 12: 'snapshot', 13: 'dropped', 14: 'attack' };
 export const DROPOUT = ['CALIBRATION_OR_PHY', 'FAST_EVIDENCE_LOSS', 'AT_RF_FLOOR', 'DEMOD_CLIFF', 'UNKNOWN'];
 export const SPHASE = ['unverified', 'settled', 'drifted', 'unsettled', 'noise_limited', 'probe_failed'];
 export const PROFILES = ['DEFAULT', 'MATCHED', 'NARROW', 'WIDE'];
@@ -148,6 +148,11 @@ export function decodeSecond(p) {
     // Received level at the chip pin (main/rx_level.h), 38-byte records only.
     level: null, noise: null, levelExact: false
   };
+  // Why the gain moved (42-byte records only).
+  s.writesAttack = p.length >= 42 ? p[38] : null;
+  s.writesRelease = p.length >= 42 ? p[39] : null;
+  s.sentinel = p.length >= 42 ? p[40] : null;
+  s.overloadsAfterWrite = p.length >= 42 ? p[41] : null;
   if (p.length >= 38 && (p[37] & 1) && d.getInt16(34, true) !== -32768) {
     s.level = d.getInt16(34, true) / 10;
     s.noise = d.getInt8(36);
@@ -249,7 +254,7 @@ export function summarize(session) {
 export function secondsCsv(session) {
   const keys = ['t', 'snr', 'lines', 'cn', 'video', 'dropoutCategory', 'gainMin', 'gain', 'gainMax', 'clip', 'gainWrites',
     'overloads', 'dcI', 'dcQ', 'offI', 'offQ', 'servo', 'afcOffset', 'afcResidual', 'afcSteps', 'profile', 'kp', 'lp',
-    'sphase', 'temp', 'flags', 'rxState', 'rxReason', 'level', 'noise', 'levelExact'];
+    'sphase', 'temp', 'flags', 'rxState', 'rxReason', 'level', 'noise', 'levelExact', 'writesAttack', 'writesRelease', 'sentinel', 'overloadsAfterWrite'];
   const rows = session.seconds.map((s) => keys.map((k) => (s[k] === null || s[k] === undefined ? '' : typeof s[k] === 'number' ? +s[k].toFixed(3) : s[k])).join(','));
   return [keys.join(','), ...rows].join('\n') + '\n';
 }

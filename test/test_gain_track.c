@@ -189,8 +189,11 @@ int main(void)
      * 83.4 / 77.5 / 84.4 % at >= 10 dB, 35.0 % above the threshold at the
      * usable edge, 90-125 writes a second). */
     check("steady carrier: no gain hunting (< 5 writes/s)", close_still.writes_s < 5.0);
-    check("moving carrier: < 25 writes/s (V6 112-125)", close_hand.writes_s < 25.0 && close_rayleigh.writes_s < 25.0 &&
-          mid_hand.writes_s < 25.0);
+    /* KEEL-1 writes between a few home rows whose DC the servo keeps clean
+     * (test_keel_track.c); at the edge it settles on one. */
+    check("moving carrier: < 40 writes/s (V6 112-125)", close_hand.writes_s < 40.0 && close_rayleigh.writes_s < 40.0 &&
+          mid_hand.writes_s < 40.0);
+    check("usable edge: steady (< 3 writes/s)", edge3.writes_s < 3.0);
     check("close in: picture SNR >= 10 dB >= 90 % (V6 83.4)", close_hand.usable_pct >= 90.0);
     check("Rayleigh fading: >= 80 % (V6 77.5)", close_rayleigh.usable_pct >= 80.0);
     check("mid range: >= 89 % (V6 84.4)", mid_hand.usable_pct >= 89.0);
