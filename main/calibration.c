@@ -1483,6 +1483,9 @@ static void drift_service(void)
         s_servo_ctx.control = s_control_epoch; s_servo_ctx.reloads = s_dco_reloads;
         s_servo_ctx.freq = rf_frequency_mhz(); s_servo_ctx.key = live_filter_key();
     }
+    /* Another channel's table: load this channel's (or its template) now
+     * instead of skipping until something else does. */
+    if (s_dco.freq != rf_frequency_mhz() && quiet_owner()) dco_select();
     if (s_dco.freq != rf_frequency_mhz()) { ++s_servo_skip[1]; return; }
     for (unsigned r = s_dco.lo; r <= s_dco.hi && r <= ARC_VENDOR_GAIN_MAX; ++r) {
         const uint8_t g = (uint8_t)r;
@@ -1813,13 +1816,21 @@ static void calibration_task(void *arg)
     rf_set_post_gain_hook(dco_post_gain);
     printf("STARTUP task up\n");
     startup_phase(false);
+    int64_t periodic_us = 0;
     for (;;) {
         if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250))) {
-            /* Woken for DC: only the servo, the rest keeps its 250 ms pace. */
+            /* Woken for DC: the servo now, and the rest still at its 250 ms
+             * pace. The urgent wakes used to skip it altogether: after a
+             * channel change the old DC table pushed the noise onto a rail,
+             * one-sided clipping woke the servo every 100 ms, dco_service()
+             * never ran to load the new channel's table, and the servo skipped
+             * the foreign table: no DC correction until the next boot (board,
+             * PR #228: A1 -> A2/A3, every probe clipped for minutes). */
             ++s_dc_urgent_wakes;
             drift_service();
-            continue;
+            if (esp_timer_get_time() - periodic_us < 250000) continue;
         }
+        periodic_us = esp_timer_get_time();
         if (s_manual_requested && !s_menu_active) { s_manual_requested = false; startup_phase(true); continue; }
         if (s_lane_requested && !s_menu_active) { s_lane_requested = false; lane_compare(); continue; }
         dco_service();
