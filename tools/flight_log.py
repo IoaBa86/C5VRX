@@ -150,6 +150,8 @@ def second(p):
     d['noise_dbm'] = noise if flags & 1 else None
     d['level_above_noise'] = int(bool(flags & 2))
     d['level_exact'] = int(bool(flags & 4))
+    # Why the gain moved (42-byte records).
+    d['writes_attack'], d['writes_release'], d['sentinel'] = (p[38], p[39], p[40]) if len(p) >= 42 else (None, None, None)
     return d
 
 

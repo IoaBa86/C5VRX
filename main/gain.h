@@ -136,6 +136,8 @@ typedef struct {
     /* KEEL-1 (gain.c): the home rows the gain may use, ascending. */
     uint8_t keel_row[DG_STATES];
     uint8_t keel_rows;
+    uint8_t folded_row;           /* the row the last attack left (gain.c, KEEL-1 attack memory) */
+    uint64_t folded_until_us;
     uint32_t magic;
 } direct_gain_t;
 

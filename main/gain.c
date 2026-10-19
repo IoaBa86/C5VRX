@@ -711,6 +711,13 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
  * instead of after the full memory. A -22 / -12 dB step behind an obstacle
  * recovers in 22 / 14 ms, not 54 / 46 (test_gain_fade); 12 ms released on
  * Rician nulls (close in 89.8 %), 20-32 ms cost the steps 26-38 ms. */
+/* Attack memory (KEEL-1): blackbox session 28, walking to the edge
+ * (-76..-88 dBm): the gain left a row when a fade peak folded and came back
+ * 16 ms later, 255 writes a second between G61 and G79. After an attack the
+ * row that folded stays out of reach this long. */
+#ifndef DG7_FOLD_MEMORY_US
+#define DG7_FOLD_MEMORY_US 1000000u
+#endif
 #ifndef DG7_FAR_HOLD_US
 #define DG7_FAR_HOLD_US 16000u
 #endif
@@ -846,6 +853,9 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
         g->down_after_us = now + DG7_DOWN_GAP_US;
         g->up_after_us = now + DG7_HOLD_US;
         g->far_run = false;
+        /* Attack memory: the row that folded stays out of reach for a while. */
+        g->folded_row = g->current_gain;
+        g->folded_until_us = now + DG7_FOLD_MEMORY_US;
         ++g->writes_severe;
         return start_write(g, o, &prior, target);
     }
@@ -861,6 +871,15 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
         now >= g->up_after_us && g->current_gain < g->table.max_index) {
         delta = (power_db_q8(DG7_TARGET_P95) - power_db_q8(level ? level : 1u)) * (far ? 100 : DG7_STEP_PCT) / 100;
         uint8_t target = dg7_index_for(g, g->current_gain, delta);
+        /* KEEL-1 attack memory: never straight back into the row that just
+         * folded (unless the carrier is far below: gone weaker). */
+        if (!far && now < g->folded_until_us && target >= g->folded_row) {
+            uint8_t below = g->current_gain;
+            for (unsigned k = 0; k < g->keel_rows; ++k)
+                if (g->keel_row[k] < g->folded_row && g->keel_row[k] > below) below = g->keel_row[k];
+            if (!g->keel_rows) below = g->folded_row > 0u ? (uint8_t)(g->folded_row - 1u) : 0u;
+            target = below;
+        }
         if (g->keel_rows) {
             /* KEEL-1: the next home row only when it fits under the target;
              * otherwise stay (no write, no hunting between home rows). */

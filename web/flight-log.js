@@ -148,6 +148,10 @@ export function decodeSecond(p) {
     // Received level at the chip pin (main/rx_level.h), 38-byte records only.
     level: null, noise: null, levelExact: false
   };
+  // Why the gain moved (42-byte records only).
+  s.writesAttack = p.length >= 42 ? p[38] : null;
+  s.writesRelease = p.length >= 42 ? p[39] : null;
+  s.sentinel = p.length >= 42 ? p[40] : null;
   if (p.length >= 38 && (p[37] & 1) && d.getInt16(34, true) !== -32768) {
     s.level = d.getInt16(34, true) / 10;
     s.noise = d.getInt8(36);
@@ -249,7 +253,7 @@ export function summarize(session) {
 export function secondsCsv(session) {
   const keys = ['t', 'snr', 'lines', 'cn', 'video', 'dropoutCategory', 'gainMin', 'gain', 'gainMax', 'clip', 'gainWrites',
     'overloads', 'dcI', 'dcQ', 'offI', 'offQ', 'servo', 'afcOffset', 'afcResidual', 'afcSteps', 'profile', 'kp', 'lp',
-    'sphase', 'temp', 'flags', 'rxState', 'rxReason', 'level', 'noise', 'levelExact'];
+    'sphase', 'temp', 'flags', 'rxState', 'rxReason', 'level', 'noise', 'levelExact', 'writesAttack', 'writesRelease', 'sentinel'];
   const rows = session.seconds.map((s) => keys.map((k) => (s[k] === null || s[k] === undefined ? '' : typeof s[k] === 'number' ? +s[k].toFixed(3) : s[k])).join(','));
   return [keys.join(','), ...rows].join('\n') + '\n';
 }

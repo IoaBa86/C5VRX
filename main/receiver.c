@@ -375,6 +375,8 @@ static void tick_cb(void *arg)
 
 /* 64 bytes from the middle of the newest completed descriptor every 200 us:
  * a clipped envelope requests the observer's emergency path at once. */
+static uint32_t s_sentinel_forwarded, s_sentinel_dropped;
+uint32_t receiver_sentinel_forwarded(void) { return s_sentinel_forwarded; }
 static void sentinel_task(void *arg)
 {
     (void)arg;
@@ -386,8 +388,16 @@ static void sentinel_task(void *arg)
         if (!copy_sentinel_window(sample) || gain_epoch != s_gain_epoch) continue;
         dg_observation_t o = dg_measure_gain(sample, sizeof(sample), c5vrx_phase8_gain_lut,
                                         (uint64_t)esp_timer_get_time());
-        if (o.clip_pm < 125u && o.p95 < 95u) continue;
+        /* Only gross saturation: both rails of an axis in half the window.
+         * A 64-sample window (1.6 us) of a weak carrier touches the rails on
+         * noise peaks; forwarding that as an overload made the gain leave a
+         * row and climb back, 255 writes a second walking out to the edge
+         * (blackbox session 28; the 200 us observer and the 1 ms saturation
+         * rule of the gain core see the real overloads). */
+        const bool two_sided = (o.rails & 3u) == 3u || (o.rails & 12u) == 12u;
+        if (!two_sided || o.clip_pm < 500u) { if (o.clip_pm >= 125u || o.p95 >= 95u) ++s_sentinel_dropped; continue; }
         if (control != s_control_epoch || phy != phy_generation() || phy_busy()) continue;
+        ++s_sentinel_forwarded;
         if (!__sync_bool_compare_and_swap(&s_overload_state, 0u, 1u)) continue;
         s_overload = o;
         s_overload_gain_epoch = gain_epoch;
@@ -538,6 +548,9 @@ void receiver_print(void)
         printf("RX_LEVEL unknown probes=%lu clipped_pm=%u\n", (unsigned long)lv.probes, lv.clipped_pm);
     printf("GAIN_SAT one_sided=%lu two_sided=%lu to_dc_servo=%lu (saturated observer windows: one rail per axis = DC-pushed, both = large signal; one-sided ones go to the DC servo, not the gain)\n",
            (unsigned long)s_sat_one_sided, (unsigned long)s_sat_two_sided, (unsigned long)s_gain.one_sided_clips);
+    printf("GAIN_WRITES attack=%lu release=%lu overloads=%lu sentinel_forwarded=%lu sentinel_dropped=%lu (why the gain moved; sentinel = 64-sample fast path, gross saturation only)\n",
+           (unsigned long)s_gain.writes_severe, (unsigned long)s_gain.writes_moderate, (unsigned long)s_gain.overloads,
+           (unsigned long)s_sentinel_forwarded, (unsigned long)s_sentinel_dropped);
     printf("DC_FEED rejected_folded=%lu (observer windows reaching both rails of an axis: a folding carrier, kept out of the DC servo)\n",
            (unsigned long)s_dc_rejected_folded);
     printf("CN_OBSERVER windows=%lu period_us=%u max_age_us=%u\n", (unsigned long)s_cn_windows,

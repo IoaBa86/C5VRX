@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "gain.h"
+#include "phase8_gain_lut.h"
 
 unsigned char phy_param[2048];
 
@@ -51,7 +52,7 @@ unsigned char phy_param[2048];
 
 static direct_gain_t g;
 static arc_gain_table_t table;
-static double s_db[DG_STATES], s_dc0[DG_STATES], s_dwell[DG_STATES];
+static double s_db[DG_STATES], s_dc0[DG_STATES], s_dca[DG_STATES], s_dwell[DG_STATES];
 static uint32_t s_seed = 7;
 static double urand(void) { s_seed = s_seed * 1664525u + 1013904223u; return (s_seed >> 8) / 16777216.0; }
 
@@ -67,7 +68,7 @@ static void build_model(void)
 static void dc_reset(uint32_t seed)
 {
     s_seed = seed;
-    for (unsigned k = 0; k < DG_STATES; ++k) { s_dc0[k] = DC0_CELLS * (0.5 + urand()); s_dwell[k] = 0; }
+    for (unsigned k = 0; k < DG_STATES; ++k) { s_dc0[k] = DC0_CELLS * (0.5 + urand()); s_dca[k] = 6.2831853 * urand(); s_dwell[k] = 0; }
 }
 static double dc_cells(unsigned k)
 {
@@ -77,8 +78,48 @@ static double dc_cells(unsigned k)
 static double radius(double level_db, unsigned k) { return level_db <= -200 ? 0 : pow(10.0, (level_db + s_db[k]) / 20.0); }
 static double noise_radius(unsigned k) { return 1.95 * sqrt(2.0) * pow(10.0, (s_db[k] - s_db[table.max_index]) / 20.0); }
 
+/* Per-probe statistics from real samples (default): 256 samples of an FM
+ * carrier (porch -1 MHz, +-1.5 MHz video at the line rate) plus complex
+ * Gaussian receiver noise plus the row's DC, through the ultrafine 4-bit
+ * lane (it wraps, it does not clip), measured by the firmware's own
+ * dg_measure_gain(). A weak carrier's P95 and folding flicker from probe to
+ * probe as on the board; the analytic model (-DANALYTIC_OBS) is smooth and
+ * missed the 255 writes a second of blackbox session 28. */
+static uint32_t s_nseed = 12345u;
+static double s_phi;
+static double gauss(void)
+{
+    double u1, u2;
+    do { s_nseed = s_nseed * 1664525u + 1013904223u; u1 = (s_nseed >> 8) / 16777216.0; } while (u1 <= 0.0);
+    s_nseed = s_nseed * 1664525u + 1013904223u; u2 = (s_nseed >> 8) / 16777216.0;
+    return sqrt(-2.0 * log(u1)) * cos(6.2831853 * u2);
+}
+static int wrap4(double x)
+{
+    const int c = (int)floor(x);
+    return ((c + 8) & 15) - 8;
+}
+static dg_observation_t observe_samples(double level_db, unsigned k, uint64_t t)
+{
+    uint8_t b[256];
+    const double r = radius(level_db, k), sigma = noise_radius(k) / sqrt(2.0), d = dc_cells(k);
+    const double di = d * cos(s_dca[k]), dq = d * sin(s_dca[k]);
+    for (unsigned n = 0; n < 256u; ++n) {
+        const double ts = (double)t * 1e-6 + n / 40e6;
+        const double f = -1.0e6 + 1.5e6 * sin(6.2831853 * 15734.0 * ts);
+        s_phi += 6.2831853 * f / 40e6;
+        const int i = wrap4(r * cos(s_phi) + sigma * gauss() + di);
+        const int q = wrap4(r * sin(s_phi) + sigma * gauss() + dq);
+        b[n] = (uint8_t)(((unsigned)i & 15u) << 4 | ((unsigned)q & 15u));
+    }
+    return dg_measure_gain(b, sizeof(b), c5vrx_phase8_gain_lut, t);
+}
+
 static dg_observation_t observe(double level_db, unsigned k, uint64_t t)
 {
+#ifndef ANALYTIC_OBS
+    return observe_samples(level_db, k, t);
+#endif
     dg_observation_t o;
     memset(&o, 0, sizeof(o));
     o.observed_us = t;
@@ -174,6 +215,7 @@ int main(void)
     const double top = s_db[table.max_index];
     const double close = 20.0 * log10(4.5) - s_db[28], mid = 20.0 * log10(4.5) - s_db[60];
     const double edge0 = 20.0 * log10(2.8) - top, edge3 = 20.0 * log10(3.9) - top, edge6 = 20.0 * log10(5.5) - top;
+    const double edge10 = 20.0 * log10(8.7) - top;
     const scenario_t sc[] = {
         {"close, walking (K 10, 5 Hz)", close, 5, 10, 0, 10, 1},
         {"close, moving (K 3, 30 Hz)", close, 30, 3, 0, 10, 1},
@@ -187,6 +229,10 @@ int main(void)
         {"edge 3 dB C/N, Rayleigh", edge3, 30, 0, 0, 3, 2},
         {"edge 0 dB C/N (K 3, 30 Hz)", edge0, 30, 3, 0, 3, 2},
         {"edge 3 dB C/N, walking (K 10, 5 Hz)", edge3, 5, 10, 0, 3, 2},
+        /* Blackbox session 28, walking out: -76..-88 dBm, C/N 8-12 dB, where
+         * the carrier peaks fold at G83 and KEEL-1 wrote 255 times a second. */
+        {"walk-out 10 dB C/N (K 3, 10 Hz)", edge10, 10, 3, 0, 3, 2},
+        {"walk-out 10 dB C/N, Rayleigh 10 Hz", edge10, 10, 0, 0, 3, 2},
     };
     const unsigned n = sizeof(sc) / sizeof(sc[0]);
     double score = 0, weights = 0, writes = 0, edge_writes = 0, edge3_usable = 0;
@@ -199,16 +245,18 @@ int main(void)
         printf("     %-38s usable %5.1f%%  writes %5.1f/s  DC %.2f cells\n", sc[k].name, a.usable_pct, a.writes_s, a.mean_dc);
         printf("S,%u,%.2f,%.2f,%.3f\n", k, a.usable_pct, a.writes_s, a.mean_dc);
         score += sc[k].weight * a.usable_pct; weights += sc[k].weight; writes += a.writes_s / n;
-        if (k >= 8u) edge_writes += a.writes_s / (n - 8u);   /* the 3 dB and 0 dB edge scenarios */
+        if (k >= 8u && k < 12u) edge_writes += a.writes_s / 4.0;   /* the 3 dB and 0 dB edge scenarios */
+        if (k >= 12u) printf("     (walk-out writes %.1f/s)\n", a.writes_s);
         if (k == 8u) edge3_usable = a.usable_pct;
     }
     printf("SCORE %.2f (weighted usable %%; edge counts twice), writes %.1f/s\n", score / weights, writes);
 #ifndef NO_CHECKS
-    /* KEEL-1 against the sweep (servo 0.1 s): V7 56.1, V6 52.5. */
+    /* KEEL-1 against the sample-based model (V7: score 62.3, edge 3 dB
+     * 39.6 %, walk-out 10-13 writes/s; V6 58.8). */
     unsigned fail = 0;
-    if (score / weights < 57.0) { printf("FAIL score %.2f < 57 (V7 56.1)\n", score / weights); ++fail; }
+    if (score / weights < 62.8) { printf("FAIL score %.2f < 62.8 (V7 62.3)\n", score / weights); ++fail; }
     if (edge_writes > 3.0) { printf("FAIL edge writes %.1f/s > 3\n", edge_writes); ++fail; }
-    if (edge3_usable < 39.0) { printf("FAIL edge 3 dB usable %.1f < 39 %%\n", edge3_usable); ++fail; }
+    if (edge3_usable < 38.0) { printf("FAIL edge 3 dB usable %.1f < 38 %%\n", edge3_usable); ++fail; }
     printf("%s: KEEL-1 checks\n", fail ? "FAIL" : "PASS");
     return fail != 0;
 #else
