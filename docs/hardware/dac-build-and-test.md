@@ -73,6 +73,29 @@ through those pads.
 
 The DAC needs no supply of its own; the XIAO powers everything from USB-C.
 
+## Example build
+
+![Perfboard DAC build, close-up](dac-build-closeup.jpg)
+
+A perfboard build by JulienChagnon. The resistors for D7 to D9 sit on one
+side of the XIAO and those for D4 to D6 on the other. Each group is joined
+by a solder trace, and the red jumper connects the two groups into a single
+VIDEO node. The 200 Ω load runs diagonally from the node to a ground point
+shared with the XIAO GND and the shield of the video lead.
+
+![The same build with its RCA video lead and a 5.8 GHz antenna](dac-build-overview.jpg)
+
+The video lead ends in an RCA plug, and a 5.8 GHz antenna is fitted to the
+XIAO's U.FL connector.
+
+Here the XIAO is mounted upside down, which is why the pin labels and BAT
+pads are visible. It works, with two caveats. The BOOT and RESET buttons
+face the board, so the menu is driven from the USB console or the web
+flasher (`o`, `n`, `x`, `Z`) instead of the BOOT button. And the parts on
+the XIAO's underside rest against the perfboard pads, so check 3V3 and VBUS
+for shorts to GND before the first power-up, or put a layer of Kapton tape
+under the module. Mounting the XIAO component side up avoids both.
+
 ## Connecting a display
 
 The VIDEO wire goes to the video contact of the display input, ground to its
