@@ -276,7 +276,6 @@ void diag_toggle_stream(void);          /* console R */
 void settings_load(void);
 void settings_save(void);
 void settings_save_output(unsigned level); /* only after verified output application */
-void settings_save_gain_mode(uint8_t mode);
 void settings_save_flywheel(bool on);
 bool blob_load(const char *key, void *data, size_t size);
 bool blob_store(const char *key, const void *data, size_t size);

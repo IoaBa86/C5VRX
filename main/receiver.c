@@ -34,14 +34,17 @@ static const uint8_t s_gain_modes[] = {GAIN_MODE_AUTO, GAIN_MODE_MAX, 78, 72, 66
 
 uint8_t receiver_gain_mode(void) { return s_gain_mode; }
 
-void receiver_set_gain_mode(uint8_t mode, bool save)
+/* The gain mode is never stored: every boot starts AUTO (operator decision
+ * 2026-10-20). A fixed gain pressed once used to survive every reboot and
+ * cost tens of dB of range without a warning. user: an operator change
+ * (logged in the flight log). */
+void receiver_set_gain_mode(uint8_t mode, bool user)
 {
     if (mode != GAIN_MODE_AUTO && mode != GAIN_MODE_MAX && (mode < 2u || mode > ARC_VENDOR_GAIN_MAX)) return;
     s_gain_mode = mode;
-    if (save) settings_save_gain_mode(mode);
-    if (save) flightlog_event(FLOG_E_GAIN_MODE, &mode, 1);
+    if (user) flightlog_event(FLOG_E_GAIN_MODE, &mode, 1);
     char buf[16];
-    printf("GAIN mode=%s %s\n", receiver_gain_mode_name(mode, buf, sizeof(buf)), save ? "saved=1" : "boot_restore=saved");
+    printf("GAIN mode=%s (until the next boot; every boot starts AUTO)\n", receiver_gain_mode_name(mode, buf, sizeof(buf)));
 }
 
 uint8_t receiver_gain_mode_next(uint8_t mode)
