@@ -576,7 +576,9 @@ function receiverValues(v) {
     scan: v.scan,
     kpMode: v.kpMode,
     liveProfile: v.liveProfile === undefined ? '' : v.liveProfile ? 'ON' : 'OFF · REPORT ONLY',
-    profile: v.profile
+    profile: v.profile,
+    dac: !v.dacStep ? '' : v.dacStep === 'PATTERN' ? 'TEST PATTERN ON SCREEN'
+      : `${v.dacStep}${v.dacStep === 'NONE' || v.dacStep === 'ALL' ? '' : ' ONLY'} · EXPECT ${v.dacExpect} mV`
   };
 }
 

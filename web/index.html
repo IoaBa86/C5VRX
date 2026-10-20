@@ -224,6 +224,7 @@
                 <button type="button" role="tab" id="menu-output" aria-controls="pane-output" aria-selected="false" tabindex="-1" data-menu="output">OUTPUT</button>
                 <button type="button" role="tab" id="menu-gain" aria-controls="pane-gain" aria-selected="false" tabindex="-1" data-menu="gain">GAIN</button>
                 <button type="button" role="tab" id="menu-flywheel" aria-controls="pane-flywheel" aria-selected="false" tabindex="-1" data-menu="flywheel">FLYWHEEL</button>
+                <button type="button" role="tab" id="menu-dac" aria-controls="pane-dac" aria-selected="false" tabindex="-1" data-menu="dac">DAC TEST</button>
                 <button type="button" role="tab" id="menu-exit" aria-controls="pane-exit" aria-selected="false" tabindex="-1" data-menu="exit">EXIT</button>
               </div>
               <div class="receiver-content">
@@ -275,6 +276,12 @@
                   <dl class="readouts"><div><dt>Requested</dt><dd data-value="flywheel">—</dd></div><div><dt>Output active</dt><dd data-value="flywheelActive">—</dd></div></dl>
                   <p class="hint">Saved ON/OFF; default ON. A saved ON or OFF restores at boot. Experimental: compare the actual camera and monitor on the ground. Requested ON does not mean output is active or the monitor is locked. Requires firmware advertising U in its help.</p>
                   <button type="button" class="command-button" data-command="U" data-hint="Toggle the saved sync flywheel. Test on the ground; monitor-lock improvement is unproved." disabled>Toggle flywheel <kbd>U</kbd></button>
+                </div>
+                <div role="tabpanel" id="pane-dac" aria-labelledby="menu-dac" hidden>
+                  <h2>DAC SELF-TEST</h2>
+                  <dl class="readouts"><div><dt>Current step</dt><dd data-value="dac">—</dd></div></dl>
+                  <p class="hint">Bench only. The first press opens a test pattern in the goggles: the ramp should be smooth and the six bars should gain contrast from D4 to D9. Each further press holds one pin high as a flat level for a multimeter (the display loses its picture). Unplug the display and measure CVBS to GND at each step, then run <code>tools/dac_check.py</code>. Requires firmware advertising Z in its help.</p>
+                  <button type="button" class="command-button" data-command="Z" data-hint="Show the DAC test pattern, then step through the multimeter levels. Live video stops; bench only." disabled>Pattern / next step <kbd>Z</kbd></button>
                 </div>
                 <div role="tabpanel" id="pane-exit" aria-labelledby="menu-exit" hidden>
                   <h2>BACK TO LIVE VIDEO</h2>

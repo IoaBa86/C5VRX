@@ -227,7 +227,8 @@ bool calibration_dc_ok(uint8_t gain);
 void lane_compare_request(void);
 
 /* ---- menu.c ---- */
-enum { MENU_BAND, MENU_CHANNEL, MENU_SCAN, MENU_VIDEO, MENU_CALIBRATE, MENU_OUTPUT, MENU_GAIN, MENU_FLYWHEEL, MENU_EXIT, MENU_ITEMS };
+enum { MENU_BAND, MENU_CHANNEL, MENU_SCAN, MENU_VIDEO, MENU_CALIBRATE, MENU_OUTPUT, MENU_GAIN, MENU_FLYWHEEL, MENU_DAC,
+       MENU_EXIT, MENU_ITEMS };
 extern volatile int s_menu_cursor;
 bool menu_open(void);
 /* The last menu_open() was deferred by a busy PHY (retry, don't allocate). */
@@ -235,6 +236,9 @@ bool menu_open_busy(void);
 void menu_close(void);
 void menu_render(void);
 void menu_set_standard_mode(std_mode_t mode);
+/* DAC TEST item (dac_check.h): advance pattern -> one flat level per bit ->
+ * all -> none -> pattern. Bench only: a flat level carries no sync. */
+void menu_dac_step(void);
 void status_screen(const char *title, const char *line1, const char *line2, int percent);
 void status_screen_end(void);
 bool menu_status_active(void);

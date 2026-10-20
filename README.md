@@ -118,6 +118,10 @@ GND ---------------+------> GND (goggle / monitor AV-in ground)
   saved). Higher levels can clip; check the loaded output on your display.
 - The XIAO is powered over USB-C or its 5 V pin as usual; the DAC needs no
   separate supply.
+- **Check the build with the DAC self-test** before chasing picture
+  problems: a test pattern for the goggles and a multimeter check that names
+  a swapped, open or wrong resistor. See
+  [Building and testing the resistor DAC](docs/hardware/dac-build-and-test.md).
 
 ## First boot
 
@@ -146,8 +150,10 @@ Menu items: **BAND** (next band), **CHANNEL** (next channel), **SCAN**
 (AUTO / NTSC / PAL for the menu picture; AUTO follows the camera),
 **CALIBRATE** (on the ground: measure again), **OUTPUT** (0.5-5.0x DAC
 level, saved), **GAIN** (AUTO / MAX / fixed G78..G24, saved), **FLYWHEEL**
-(ON/OFF, saved, default ON), **EXIT**.
-The menu closes by itself after 30 s without a press. It releases the
+(ON/OFF, saved, default ON), **DAC TEST** (bench only: test pattern; hold
+for the multimeter steps, see the [DAC guide](docs/hardware/dac-build-and-test.md)),
+**EXIT**.
+The menu closes by itself after 30 s without a press (5 min on DAC TEST). It releases the
 flywheel before allocating its DMA chain and retries a smaller progressive
 raster if the interlaced chain does not fit. Menu entry/exit includes a
 150-ms relock gap; verify the picture on the connected monitor.
@@ -169,6 +175,7 @@ raster if the interlaced chain does not fit. Menu entry/exit includes a
 (`tools/capture_iq_snapshot.py`), `o` menu, `c` next channel, `b` next band,
 `n`/`x` menu next/select, `s` scan, `F` calibrate again (as the menu item),
 `M` GAINMAP lines (for a gain-map preset), `L` bench-only IQ lane comparison (video stops ~3 s),
+`Z` DAC self-test (pattern, then the multimeter steps; `tools/dac_check.py`),
 `` ` `` download mode, `h` help.
 
 `v` cycles the video standard AUTO / NTSC / PAL using the same action as

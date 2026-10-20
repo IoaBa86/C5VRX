@@ -26,6 +26,7 @@
 #define TICK_MS          50
 #define LONG_TICKS       12             /* 0.6 s */
 #define MENU_IDLE_TICKS  600            /* 30 s without a press closes the menu */
+#define DAC_IDLE_TICKS   6000           /* 5 min on the bench-only DAC TEST page */
 #define RETUNE_SETTLE_TICKS 10          /* 500 ms after a PHY transaction */
 #define SCAN_PAIRS       4092u
 #define CONTROL_STACK_BYTES 6144u
@@ -287,6 +288,7 @@ static void menu_action(void)
     case MENU_OUTPUT: (void)transport_set_output((transport_output() + 1u) % OUTPUT_LEVELS); break;
     case MENU_GAIN: receiver_set_gain_mode(receiver_gain_mode_next(receiver_gain_mode()), true); break;
     case MENU_FLYWHEEL: transport_sync_flywheel_set(!transport_sync_flywheel_enabled(), true); break;
+    case MENU_DAC: menu_dac_step(); break;
     case MENU_VIDEO:
         cycle_video_standard();
         break;
@@ -307,6 +309,12 @@ static void command(int c, unsigned *menu_idle)
     /* Bench: the real gain step of every table row pair (receiver.c). */
     case 'Q': receiver_pair_sweep_toggle(); break;
     case 'U': transport_sync_flywheel_toggle(); break;
+    /* DAC self-test: open the menu on DAC TEST, then step like a hold. */
+    case 'Z':
+        if (!s_menu_active && !menu_open_checked()) break;
+        if (s_menu_cursor != MENU_DAC) { s_menu_cursor = MENU_DAC; menu_render(); }
+        else menu_dac_step();
+        break;
     case 'o': if (s_menu_active) menu_close(); else (void)menu_open_checked(); break;
     case 'e': menu_close(); break;  /* idempotent web-menu EXIT */
     case 'v': cycle_video_standard(); break;
@@ -442,7 +450,13 @@ static void control_task(void *arg)
             static uint8_t level_ticks;
             if (copy_control_window(s_window, CONTROL_BYTES)) receiver_level_feed(s_window, CONTROL_BYTES);
             if (++level_ticks >= 20u) { level_ticks = 0; receiver_level_roll(false, false); }
-            if (++menu_idle >= MENU_IDLE_TICKS) { menu_close(); printf("[MENU] closed after 30 s idle\n"); }
+            /* A multimeter needs longer than 30 s; the page is only reached
+             * by pressing through the menu. */
+            const unsigned idle_limit = s_menu_cursor == MENU_DAC ? DAC_IDLE_TICKS : MENU_IDLE_TICKS;
+            if (++menu_idle >= idle_limit) {
+                menu_close();
+                printf("[MENU] closed after %u s idle\n", idle_limit * TICK_MS / 1000u);
+            }
             else if (++menu_refresh >= 5) { menu_refresh = 0; menu_render(); }
         } else menu_idle = menu_refresh = 0;
 
