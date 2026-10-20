@@ -28,13 +28,19 @@ static double gauss(void)
 
 /* Mean of n quantised samples (dsp units summed like gain.c) of noise sigma
  * around a true DC (cells), clipped to the 4-bit range. */
+static uint32_t s_neg[2];   /* sign-bit counts of the last measure() */
 static void measure(double dc_i, double dc_q, double sigma, uint32_t n, int64_t *si, int64_t *sq)
 {
     *si = *sq = 0;
+    s_neg[0] = s_neg[1] = 0;
     for (uint32_t k = 0; k < n; ++k) {
         int i = (int)floor(dc_i + sigma * gauss()), q = (int)floor(dc_q + sigma * gauss());
-        i = i < -8 ? -8 : i > 7 ? 7 : i;
-        q = q < -8 ? -8 : q > 7 ? 7 : q;
+        /* ultrafine {9,6,5,4}: the sign bit stays, the magnitude bits fold
+         * (legacy/c5vrx3/main/rf.c: +288 reads as +32); -9 & 7 = 7 -> -1 */
+        i = i >= 0 ? (i & 7) : (i & 7) - 8;
+        q = q >= 0 ? (q & 7) : (q & 7) - 8;
+        s_neg[0] += i < 0;
+        s_neg[1] += q < 0;
         *si += 2 * i + 1;
         *sq += 2 * q + 1;
     }
@@ -52,7 +58,8 @@ static int run(double off_i, double off_q, double slope_i, double slope_q, doubl
         measure(ti, tq, sigma, DC_SERVO_MIN_SAMPLES, &si, &sq);
         if (!dc_servo_mean(si, sq, DC_SERVO_MIN_SAMPLES, dc)) return 99999;
         int step[2];
-        dc_servo_decide(s, 83u, dc, step);
+        const int pn[2] = {dc_servo_pneg(s_neg[0], DC_SERVO_MIN_SAMPLES), dc_servo_pneg(s_neg[1], DC_SERVO_MIN_SAMPLES)};
+        dc_servo_decide_sign(s, 83u, dc, pn, step);
         if (step[0] || step[1]) {
             code[0] += step[0];
             code[1] += step[1];
@@ -79,17 +86,25 @@ int main(void)
     static const double offs[][2] = {{-1.37, .21}, {1.18, 1.72}, {2.22, 1.97}, {1.54, -3.30}, {2.28, -1.73},
                                      {.49, -3.36}, {-3.9, -3.5}, {4.0, 4.0}};
     static const double slopes[][2] = {{150, 150}, {246, 127}, {-130, 220}, {60, -200}, {-250, -50}};
-    int worst = 0;
+    /* Slopes in the board's range (170-550 measured) within 20 periods (5 s);
+     * the weak ones of the set (|slope| <= 60, three times below anything
+     * measured) within 40: a quarter of the step per code, with the
+     * magnitude bits folding at the start (4 cells, sigma 1.9). */
+    int worst = 0, worst_weak = 0;
     unsigned cases = 0;
     for (unsigned o = 0; o < sizeof(offs) / sizeof(offs[0]); ++o)
         for (unsigned k = 0; k < sizeof(slopes) / sizeof(slopes[0]); ++k) {
+            const bool weak = fabs(slopes[k][0]) <= 60. || fabs(slopes[k][1]) <= 60.;
             dc_servo_init(&s);
-            const int e = run(offs[o][0], offs[o][1], slopes[k][0], slopes[k][1], 1.9, 0., 20, &s, NULL);
-            worst = e > worst ? e : worst;
+            const int e = run(offs[o][0], offs[o][1], slopes[k][0], slopes[k][1], 1.9, 0., weak ? 40 : 20, &s, NULL);
+            if (weak) worst_weak = e > worst_weak ? e : worst_weak;
+            else worst = e > worst ? e : worst;
             ++cases;
         }
-    printf("     boot offsets x slopes: %u cases, worst |DC| after 20 periods %d mcells\n", cases, worst);
-    check("every boot offset, either polarity: below 0.35 cells within 20 periods (5 s)", worst <= 350);
+    printf("     boot offsets x slopes: %u cases, worst |DC| %d mcells (20 periods), weak slopes %d (40 periods)\n",
+           cases, worst, worst_weak);
+    check("every boot offset, either polarity, board slopes: below 0.35 cells within 20 periods (5 s)", worst <= 350);
+    check("weak slopes (<= 60 mcells/code): below 0.35 cells within 40 periods (10 s)", worst_weak <= 350);
 
     /* Weak noise (sigma 0.8) with a 3.5-cell DC: the cloud sits on a rail. */
     dc_servo_init(&s);
@@ -127,17 +142,18 @@ int main(void)
     (void)run(2.0, 2.0, 400, 400, 1.9, 0., 12, &s, NULL);   /* slopes measured, ~+400 */
     const int learned_i = s.slope[0], learned_q = s.slope[1];
     int d0[2] = {1500, 1500}, st0[2], st1[2];
-    dc_servo_decide(&s, 83u, d0, st0);
+    static const int lin[2] = {500, 500};               /* sign share: no folding */
+    dc_servo_decide_sign(&s, 83u, d0, lin, st0);
     dc_servo_applied(&s, 83u, d0, st0);
     int jump[2] = {1500 + 600, 1500 + 700};            /* new channel: unrelated jump against the step */
-    dc_servo_decide(&s, 83u, jump, st1);
+    dc_servo_decide_sign(&s, 83u, jump, lin, st1);
     check("unrelated DC jump: a measured slope keeps its sign", s.known[0] && s.known[1] && s.slope[0] > 0 &&
           s.slope[1] > 0 && s.sign_rejects >= 1u && learned_i > 0 && learned_q > 0);
     dc_servo_init(&s);
-    dc_servo_decide(&s, 83u, d0, st0);
+    dc_servo_decide_sign(&s, 83u, d0, lin, st0);
     dc_servo_applied(&s, 83u, d0, st0);
     dc_servo_forget_step(&s, 83u);
-    dc_servo_decide(&s, 83u, jump, st1);
+    dc_servo_decide_sign(&s, 83u, jump, lin, st1);
     check("forgotten step: no slope evidence taken", s.slope[0] == DC_SERVO_SLOPE_DEFAULT &&
           s.slope[1] == DC_SERVO_SLOPE_DEFAULT && s.forgotten == 1u);
     /* Two rows with different offsets (board: G83 0.3 cells, G82 3.9 after
@@ -200,6 +216,31 @@ int main(void)
                (unsigned long)f.relearned, (unsigned long)f.sign_rejects, rms);
         check("flicker: no slope relearning from noise", f.relearned <= 1u && f.sign_rejects <= 10u);
         check("flicker: DC stays near the wander floor (<= 1.0 cell rms)", rms <= 1.0);
+    }
+    /* Board, PR #228: a template table 4.5 cells off on Q, the slope lost
+     * (relearn), the cloud partly on a rail: the +3 probe made it worse,
+     * its effect stayed under the learning threshold, and the probe repeated
+     * up to the trim clamp (+188 codes, 3.5 cells left). */
+    {
+        unsigned bad_cases = 0, cases_run = 0;
+        int worst_wrong = 0, worst_dc = 0;
+        static const double sl[] = {150, -150, 300, -300, 60};
+        for (unsigned k = 0; k < sizeof(sl) / sizeof(sl[0]); ++k)
+            for (int sign = -1; sign <= 1; sign += 2) {
+                dc_servo_init(&s);
+                s.slope[1] = 0;                         /* lost, as after a relearn */
+                int code_end[2];
+                const int e = run(0.0, sign * 9.0, 150, sl[k], 1.5, 0., 120, &s, code_end);
+                /* codes moved the wrong way: the correct code is -off/slope */
+                const double right = -sign * 9.0 * 1000. / sl[k];
+                const int wrong = (int)fabs(code_end[1] - right) - (int)fabs(right);
+                worst_wrong = wrong > worst_wrong ? wrong : worst_wrong;
+                worst_dc = e > worst_dc ? e : worst_dc;
+                bad_cases += e > 500;
+                ++cases_run;
+            }
+        printf("     lost slope, 9 cells (pinned), sigma 1.5: %u cases, worst |DC| after 120 periods %d mcells\n", cases_run, worst_dc);
+        check("lost slope on a clipped cloud: converges (<= 0.5 cells), never runs to the clamp", bad_cases == 0u);
     }
     printf("%u/%u dc servo checks passed\n", s_run - s_fail, s_run);
     return s_fail != 0;

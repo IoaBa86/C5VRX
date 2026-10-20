@@ -82,37 +82,41 @@ static inline unsigned dco_slot_for_store(const dco_index_t *x, uint16_t freq, u
 {
     int own = dco_slot_of(x, freq, key);
     if (own >= 0) return (unsigned)own;
-    unsigned best = 0;
+    /* Evict the table with the most template rows first, then the oldest:
+     * a table measured on its own channel is worth more than one that is
+     * still mostly another channel's (board, PR #228: tables of channels
+     * merely passed through pushed the measured 5805 MHz table out). */
+    unsigned best = 0, best_t = 0;
     for (unsigned k = 0; k < DCO_SLOTS; ++k) {
         if (!x->freq[k]) return k;
-        if (x->seq[k] < x->seq[best]) best = k;
+        const unsigned t = dco_mask_count(x->templ[k], 0, DCO_MASK_ROWS - 1u);
+        if (k == 0 || t > best_t || (t == best_t && x->seq[k] < x->seq[best])) { best = k; best_t = t; }
     }
     return best;
 }
 
-/* Template for (freq, key) without its own table: a table of the same
- * filter first (the codes depend on the filter much more than on the
- * channel), then the nearest frequency (ties: the more recent one),
- * preferring tables measured on their own channel over tables that still
- * hold template rows; -1 when nothing is stored. A table of another filter
- * is only a starting point: its rows stay template rows (calibration.c). */
+/* Template for (freq, key) without its own table: the table whose codes
+ * are expected closest, -1 when nothing is stored. The DC codes move with
+ * the frequency (board, PR #228: G83 225/186 at 5805 MHz, 144/279 at 5925,
+ * ~0.7 codes a MHz) more than with the filter (15-40 codes between the
+ * filters of one channel), so the cost is DCO_COST_PER_MHZ_X10 / 10 a MHz,
+ * DCO_COST_FILTER for another filter and DCO_COST_TEMPLATE for a table
+ * that still holds template rows; ties: the more recent. Before, a table of
+ * the same filter 120 MHz away won over the own channel's other filter. A
+ * template is only a starting point: its rows stay template rows. */
+#define DCO_COST_PER_MHZ_X10 7u
+#define DCO_COST_FILTER      30u
+#define DCO_COST_TEMPLATE    20u
 static inline int dco_nearest_slot(const dco_index_t *x, uint16_t freq, uint16_t key)
 {
     int best = -1;
-    unsigned best_d = 0;
-    bool same_filter = false, measured_exists = false;
-    for (unsigned k = 0; k < DCO_SLOTS; ++k)
-        if (x->freq[k] && !(x->freq[k] == freq && x->filt[k] == key) && x->filt[k] == key) same_filter = true;
-    for (unsigned k = 0; k < DCO_SLOTS; ++k)
-        if (x->freq[k] && !(x->freq[k] == freq && x->filt[k] == key) && (!same_filter || x->filt[k] == key) &&
-            !dco_mask_count(x->templ[k], 0, DCO_MASK_ROWS - 1u))
-            measured_exists = true;
+    unsigned best_c = 0;
     for (unsigned k = 0; k < DCO_SLOTS; ++k) {
         if (!x->freq[k] || (x->freq[k] == freq && x->filt[k] == key)) continue;
-        if (same_filter && x->filt[k] != key) continue;
-        if (measured_exists && dco_mask_count(x->templ[k], 0, DCO_MASK_ROWS - 1u)) continue;
-        unsigned d = x->freq[k] > freq ? (unsigned)(x->freq[k] - freq) : (unsigned)(freq - x->freq[k]);
-        if (best < 0 || d < best_d || (d == best_d && x->seq[k] > x->seq[best])) { best = (int)k; best_d = d; }
+        const unsigned d = x->freq[k] > freq ? (unsigned)(x->freq[k] - freq) : (unsigned)(freq - x->freq[k]);
+        const unsigned c = d * DCO_COST_PER_MHZ_X10 / 10u + (x->filt[k] != key ? DCO_COST_FILTER : 0u) +
+                           (dco_mask_count(x->templ[k], 0, DCO_MASK_ROWS - 1u) ? DCO_COST_TEMPLATE : 0u);
+        if (best < 0 || c < best_c || (c == best_c && x->seq[k] > x->seq[best])) { best = (int)k; best_c = c; }
     }
     return best;
 }

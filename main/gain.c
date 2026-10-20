@@ -149,6 +149,7 @@ static dg_observation_t measure(const uint8_t *samples, size_t bytes,
     uint32_t iq_seen = iq_bits(samples[0]);
     uint8_t prior_raw = samples[0], prior_phase = phase8_lut[prior_raw];
     ++hist[s_power[prior_raw]];
+    unsigned neg_i = prior_raw >> 7, neg_q = (prior_raw >> 3) & 1u;   /* I sign bit 7, Q sign bit 3 */
     origin += s_flags[prior_raw] & 1u;
     clip += s_flags[prior_raw] >> 1;
     for (size_t n = 1; n < bytes; ++n) {
@@ -159,6 +160,8 @@ static dg_observation_t measure(const uint8_t *samples, size_t bytes,
         iq_seen |= iq_bits(raw);
         cx += s_ci[raw];
         cy += s_cq[raw];
+        neg_i += raw >> 7;
+        neg_q += (raw >> 3) & 1u;
         cp += power;
         /* |wrap(phase - prior)| <= 32 codes (45 degrees) */
         coherent += power >= 8u && (uint8_t)(phase - prior_phase + 32u) <= 64u;
@@ -174,6 +177,8 @@ static dg_observation_t measure(const uint8_t *samples, size_t bytes,
     r.repeat_pm = bytes > 1u ? (uint16_t)(repeats * 1000u / (bytes - 1u)) : 0;
     r.sum_i = cx;
     r.sum_q = cy;
+    r.neg_i = (uint16_t)neg_i;
+    r.neg_q = (uint16_t)neg_q;
     r.rails = (uint8_t)((i_seen & 1u) | ((i_seen >> 14) & 2u) | ((q_seen & 1u) << 2) | ((q_seen >> 12) & 8u));
     /* Mean power around the window DC from the sums already taken: in dsp
      * units (2v+1) N * sum(x^2+y^2) - sum(x)^2 - sum(y)^2 over N^2, and a

@@ -551,7 +551,7 @@ int receiver_obs_cn_x10(void)
  * mean; short visits add up. A channel, PHY or table change restarts all
  * rows; the servo restarts a row whose codes it changed. The observer is
  * the only writer. */
-typedef struct { int64_t si, sq; uint32_t samples; } dc_row_acc_t;
+typedef struct { int64_t si, sq; uint32_t ni, nq, samples; } dc_row_acc_t;
 static uint32_t s_dc_rejected_folded;   /* windows kept out of the DC means (both rails) */
 static dc_row_acc_t s_dc_rows[ARC_VENDOR_GAIN_MAX + 1u];
 static uint32_t s_dc_rows_control, s_dc_rows_phy, s_dc_rows_table;
@@ -575,17 +575,21 @@ static void dc_accumulate(const dg_observation_t *o, size_t bytes, uint8_t gain,
     }
     s_dc_rows[gain].si += o->sum_i;
     s_dc_rows[gain].sq += o->sum_q;
+    s_dc_rows[gain].ni += o->neg_i;
+    s_dc_rows[gain].nq += o->neg_q;
     s_dc_rows[gain].samples += (uint32_t)bytes;
     taskEXIT_CRITICAL(&s_dc_acc_lock);
 }
 
-bool receiver_dc_take_row(uint8_t gain, uint32_t min_samples, int64_t *si, int64_t *sq, uint32_t *samples)
+bool receiver_dc_take_row(uint8_t gain, uint32_t min_samples, int64_t *si, int64_t *sq, uint32_t neg[2],
+                          uint32_t *samples)
 {
     if (gain > ARC_VENDOR_GAIN_MAX) return false;
     taskENTER_CRITICAL(&s_dc_acc_lock);
     const bool enough = s_dc_rows[gain].samples >= min_samples;
     if (enough) {
         *si = s_dc_rows[gain].si; *sq = s_dc_rows[gain].sq; *samples = s_dc_rows[gain].samples;
+        neg[0] = s_dc_rows[gain].ni; neg[1] = s_dc_rows[gain].nq;
         s_dc_rows[gain] = (dc_row_acc_t){0};       /* the next probe starts a fresh mean */
     }
     taskEXIT_CRITICAL(&s_dc_acc_lock);

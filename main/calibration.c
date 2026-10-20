@@ -1583,10 +1583,11 @@ static void drift_service(void)
     for (unsigned r = s_dco.lo; r <= s_dco.hi && r <= ARC_VENDOR_GAIN_MAX; ++r) {
         const uint8_t g = (uint8_t)r;
         int64_t si, sq;
-        uint32_t samples;
+        uint32_t samples, neg[2];
         int dc[2];
-        if (!receiver_dc_take_row(g, DC_SERVO_MIN_SAMPLES, &si, &sq, &samples) ||
+        if (!receiver_dc_take_row(g, DC_SERVO_MIN_SAMPLES, &si, &sq, neg, &samples) ||
             !dc_servo_mean(si, sq, samples, dc)) continue;
+        const int pneg[2] = {dc_servo_pneg(neg[0], samples), dc_servo_pneg(neg[1], samples)};
         ++s_servo_estimates;
         if (g == s_current_gain) {
             s_drift_avg[0] = dc[0]; s_drift_avg[1] = dc[1];
@@ -1624,7 +1625,7 @@ static void drift_service(void)
             s_adopt_run[g] = 0;
         }
         int step[2];
-        dc_servo_decide(&s_servo, g, dc, step);
+        dc_servo_decide_sign(&s_servo, g, dc, pneg, step);
         const int base[2] = {dco_offset(g, 0), dco_offset(g, 1)};
         for (int a = 0; a < 2; ++a) {
             const int lim = dc_trim_max(g);
@@ -2079,13 +2080,13 @@ void calibration_print(void)
                    g <= ARC_VENDOR_GAIN_MAX ? s_dco.e[g].valid : 0u, g <= ARC_VENDOR_GAIN_MAX ? s_dco_banned[g] : 0u);
     }
     printf("DC_SERVO dc_mcells=%d/%d slope_mcells_per_code=%d/%d offset=%d/%d own_row=%u steps=%lu writes=%lu "
-           "estimates=%lu learned=%lu relearned=%lu sign_rejects=%lu forgotten=%lu urgent_wakes=%lu skip=%lu/%lu/%lu/%lu/%lu fault=%u table_reloads=%lu reload_why=%u "
+           "estimates=%lu learned=%lu relearned=%lu sign_rejects=%lu turns=%lu forgotten=%lu urgent_wakes=%lu skip=%lu/%lu/%lu/%lu/%lu fault=%u table_reloads=%lu reload_why=%u "
            "volatile=1\n", s_drift_avg[0], s_drift_avg[1], s_servo.slope[0], s_servo.slope[1],
            dco_offset(s_current_gain, 0), dco_offset(s_current_gain, 1),
            s_current_gain <= ARC_VENDOR_GAIN_MAX ? (unsigned)s_drift_set[s_current_gain] : 0u,
            (unsigned long)s_servo.steps, (unsigned long)s_servo_writes, (unsigned long)s_servo_estimates,
            (unsigned long)s_servo.learned, (unsigned long)s_servo.relearned,
-           (unsigned long)s_servo.sign_rejects, (unsigned long)s_servo.forgotten, (unsigned long)s_dc_urgent_wakes,
+           (unsigned long)s_servo.sign_rejects, (unsigned long)s_servo.turns, (unsigned long)s_servo.forgotten, (unsigned long)s_dc_urgent_wakes,
            (unsigned long)s_servo_skip[0], (unsigned long)s_servo_skip[1], (unsigned long)s_servo_skip[2],
            (unsigned long)s_servo_skip[3], (unsigned long)s_servo_skip[4], (unsigned)s_dc_fault,
            (unsigned long)s_dco_reloads, (unsigned)s_dco_reload_why);

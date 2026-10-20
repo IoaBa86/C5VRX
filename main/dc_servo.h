@@ -41,12 +41,25 @@
 #define DC_SERVO_LEARN_STEP    3
 #define DC_SERVO_BAD_MCELLS    800
 #define DC_SERVO_BAD_RUN       3u
+/* Folding (board, PR #228): the ultrafine lane keeps the sign bit and folds
+ * the magnitude bits (legacy/c5vrx3/main/rf.c: +288 reads as +32). With a
+ * few cells of DC part of the cloud folds back, the mean stops growing and
+ * then shrinks as the DC grows: every channel with a template 4+ cells off
+ * read a flat ~3.0-3.5 cells whatever the code, the slope learned there had
+ * the wrong sign, and the servo walked to its limit. The mean's sign stays
+ * right (the sign bit is never folded), its size does not. So beyond
+ * DC_SERVO_FOLD_MCELLS nothing is learned and the step is full size in the
+ * direction of the sign and the polarity; still folded after
+ * DC_SERVO_FOLD_FLIP codes, the polarity flips (a wrong default). */
+#define DC_SERVO_FOLD_MCELLS   2000
+#define DC_SERVO_FOLD_FLIP     64
+#define DC_SERVO_FOLD_FLIP_MAX 512   /* the window doubles per flip (an expanding search) */
 
 typedef struct {
-    int slope[2];       /* mcells per code, signed, shared by the rows; 0 = unknown (probe first) */
+    int slope[2];       /* mcells per code, signed, shared by the rows */
     uint8_t known[2];   /* slope measured (not the default) */
-    struct { int last_dc[2], last_step[2]; uint8_t bad[2]; } row[DC_SERVO_ROWS];
-    uint32_t steps, learned, relearned, sign_rejects, forgotten;
+    struct { int last_dc[2], last_step[2]; uint8_t bad[2], last_folded[2]; int fold_walk[2], last_pneg[2], fold_window[2]; uint8_t fold_bad[2]; } row[DC_SERVO_ROWS];
+    uint32_t steps, learned, relearned, sign_rejects, forgotten, turns;
 } dc_servo_t;
 
 static inline int dc_servo_abs(int v) { return v < 0 ? -v : v; }
@@ -69,16 +82,48 @@ static inline bool dc_servo_mean(int64_t sum_i, int64_t sum_q, uint32_t samples,
 
 /* One decision for one row on a fresh mean measured after that row's last
  * step (same codes and context). Learns the slope from the last step's
- * effect, then returns the next step per axis (0 = none). */
-static inline void dc_servo_decide(dc_servo_t *s, unsigned r, const int dc[2], int step[2])
+ * effect where nothing folds, then returns the next step per axis. */
+/* Share of samples with the sign bit set, per mille: the sign bit never
+ * folds, so this follows the true DC everywhere (P = Phi(-DC/sigma)); 100..900
+ * is |DC| < 1.28 sigma, where nothing folds and the mean is linear. */
+#define DC_SERVO_PNEG_LO 100
+#define DC_SERVO_PNEG_HI 900
+static inline int dc_servo_pneg(uint32_t neg, uint32_t samples)
+{
+    return samples ? (int)((uint64_t)neg * 1000u / samples) : 500;
+}
+
+/* pneg: the sign share per axis (NULL: folding judged from the mean alone). */
+static inline void dc_servo_decide_sign(dc_servo_t *s, unsigned r, const int dc[2], const int *pneg, int step[2])
 {
     step[0] = step[1] = 0;
     if (r >= DC_SERVO_ROWS) return;
     for (int a = 0; a < 2; ++a) {
+        if (!s->slope[a]) s->slope[a] = DC_SERVO_SLOPE_DEFAULT;
+        const bool folded = pneg ? (pneg[a] < DC_SERVO_PNEG_LO || pneg[a] > DC_SERVO_PNEG_HI)
+                                 : dc_servo_abs(dc[a]) >= DC_SERVO_FOLD_MCELLS;
+        /* the DC's sign: the sign share where it can fold, else the mean */
+        const int sign = pneg && folded ? (pneg[a] < 500 ? 1 : -1) : (dc[a] > 0 ? 1 : -1);
+        if (s->row[r].last_step[a] && pneg && folded && s->row[r].last_folded[a]) {
+            /* a full step in the fold zone: the sign share must move toward
+             * 500; twice the other way is the wrong polarity */
+            const int was = dc_servo_abs(s->row[r].last_pneg[a] - 500), now = dc_servo_abs(pneg[a] - 500);
+            if (was < 499 && now >= was + 5) {
+                if (++s->row[r].fold_bad[a] >= 2u) {
+                    s->slope[a] = -s->slope[a]; s->known[a] = 0; s->row[r].fold_bad[a] = 0;
+                    s->row[r].fold_walk[a] = 0; ++s->turns;
+                    s->row[r].fold_window[a] = s->row[r].fold_window[a] ? s->row[r].fold_window[a] : DC_SERVO_FOLD_FLIP;
+                }
+            } else if (now + 5 <= was) {
+                s->row[r].fold_bad[a] = 0;
+            }
+        }
         if (s->row[r].last_step[a]) {
+            const bool linear = !folded && !s->row[r].last_folded[a] &&
+                                dc_servo_abs(s->row[r].last_dc[a]) < (pneg ? 1 << 30 : DC_SERVO_FOLD_MCELLS);
             const int moved = dc[a] - s->row[r].last_dc[a];
             const int slope = moved / s->row[r].last_step[a];
-            if (dc_servo_abs(s->row[r].last_step[a]) >= DC_SERVO_LEARN_STEP &&
+            if (linear && dc_servo_abs(s->row[r].last_step[a]) >= DC_SERVO_LEARN_STEP &&
                 dc_servo_abs(moved) >= 150 && dc_servo_abs(slope) >= DC_SERVO_SLOPE_MIN &&
                 dc_servo_abs(slope) <= DC_SERVO_SLOPE_MAX) {
                 /* Smooth a known slope; take the first measurement as is. A
@@ -90,19 +135,36 @@ static inline void dc_servo_decide(dc_servo_t *s, unsigned r, const int dc[2], i
                 else if ((s->slope[a] > 0) == (slope > 0)) { s->slope[a] = (s->slope[a] + slope) / 2; ++s->learned; }
                 else ++s->sign_rejects;
             }
-            if (dc_servo_abs(dc[a]) >= dc_servo_abs(s->row[r].last_dc[a]) && dc_servo_abs(dc[a]) > DC_SERVO_BAD_MCELLS) {
+            if (linear && dc_servo_abs(dc[a]) >= dc_servo_abs(s->row[r].last_dc[a]) &&
+                dc_servo_abs(dc[a]) > DC_SERVO_BAD_MCELLS) {
                 if (++s->row[r].bad[a] >= DC_SERVO_BAD_RUN) {
-                    s->slope[a] = 0; s->known[a] = 0; s->row[r].bad[a] = 0; ++s->relearned;
+                    /* the size is relearned; the polarity flips only on the
+                     * fold walk below (a hardware constant otherwise) */
+                    s->slope[a] = s->slope[a] < 0 ? -DC_SERVO_SLOPE_DEFAULT : DC_SERVO_SLOPE_DEFAULT;
+                    s->known[a] = 0; s->row[r].bad[a] = 0; ++s->relearned;
                 }
             } else {
                 s->row[r].bad[a] = 0;
             }
             s->row[r].last_step[a] = 0;
         }
-        if (dc_servo_abs(dc[a]) <= DC_SERVO_DEADBAND) continue;
+        s->row[r].last_folded[a] = folded;
+        s->row[r].last_pneg[a] = pneg ? pneg[a] : 500;
+        if (!folded) s->row[r].fold_walk[a] = s->row[r].fold_bad[a] = s->row[r].fold_window[a] = 0;
+        if (!s->row[r].fold_window[a]) s->row[r].fold_window[a] = DC_SERVO_FOLD_FLIP;
+        if (!folded && dc_servo_abs(dc[a]) <= DC_SERVO_DEADBAND) continue;
         int st;
-        if (!s->slope[a]) {
-            st = DC_SERVO_PROBE;                    /* unknown polarity: probe and learn */
+        if (folded) {
+            if (s->row[r].fold_walk[a] >= s->row[r].fold_window[a]) {
+                s->slope[a] = -s->slope[a];          /* walked this far and still folded: wrong polarity */
+                s->known[a] = 0;
+                s->row[r].fold_walk[a] = 0;
+                s->row[r].fold_window[a] = s->row[r].fold_window[a] * 2 > DC_SERVO_FOLD_FLIP_MAX ?
+                                           DC_SERVO_FOLD_FLIP_MAX : s->row[r].fold_window[a] * 2;
+                ++s->turns;
+            }
+            st = (sign > 0) == (s->slope[a] > 0) ? -DC_SERVO_STEP_MAX : DC_SERVO_STEP_MAX;
+            s->row[r].fold_walk[a] += DC_SERVO_STEP_MAX;   /* requested: a limit-blocked walk counts too */
         } else {
             const long num = -(long)dc[a] * DC_SERVO_GAIN_PCT;
             const long den = (long)s->slope[a] * 100;
@@ -116,6 +178,11 @@ static inline void dc_servo_decide(dc_servo_t *s, unsigned r, const int dc[2], i
         if (st < -DC_SERVO_STEP_MAX) st = -DC_SERVO_STEP_MAX;
         step[a] = st;
     }
+}
+
+static inline void dc_servo_decide(dc_servo_t *s, unsigned r, const int dc[2], int step[2])
+{
+    dc_servo_decide_sign(s, r, dc, NULL, step);
 }
 
 /* The row's step was applied: remember it for the slope and the check. */
@@ -139,5 +206,9 @@ static inline void dc_servo_forget_step(dc_servo_t *s, unsigned r)
 
 static inline void dc_servo_forget_all(dc_servo_t *s)
 {
-    for (unsigned r = 0; r < DC_SERVO_ROWS; ++r) dc_servo_forget_step(s, r);
+    for (unsigned r = 0; r < DC_SERVO_ROWS; ++r) {
+        dc_servo_forget_step(s, r);
+        for (int k = 0; k < 2; ++k)
+            s->row[r].fold_walk[k] = s->row[r].fold_window[k] = s->row[r].fold_bad[k] = s->row[r].last_folded[k] = 0;
+    }
 }

@@ -189,7 +189,9 @@ void control_flog_afc(int16_t *offset_khz, int16_t *residual_khz, uint32_t *corr
 /* Observer DC sums per gain row (receiver.c) for the live DC servo: a row's
  * sums once they hold min_samples (then it restarts); reset a row whose codes
  * changed, or every row. */
-bool receiver_dc_take_row(uint8_t gain, uint32_t min_samples, int64_t *si, int64_t *sq, uint32_t *samples);
+/* neg: samples with the I / Q sign bit set (the folding-proof DC sign). */
+bool receiver_dc_take_row(uint8_t gain, uint32_t min_samples, int64_t *si, int64_t *sq, uint32_t neg[2],
+                          uint32_t *samples);
 void receiver_dc_reset_row(uint8_t gain);
 void receiver_dc_reset_all(void);
 /* DC CAL NEEDED on this channel (dc_health.h): the flagged profiles in buf

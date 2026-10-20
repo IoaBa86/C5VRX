@@ -1204,3 +1204,46 @@ per-second log or the new evidence records, then fixed at its cause.
 - The pair sweep at ~10 m to measure the real steps of G40-G83 (the model
   holds over G29-G39 only).
 - A walk with this build.
+
+## DC on every channel: folding, unconverged rows and templates (2026-10-20, PR #228)
+
+Board, VTX off, all 48 channels surveyed 4 s after each switch (`T`:
+RX_LEVEL clipped_pm, DC_SERVO dc). 33 of 48 channels had the DC on a rail
+(3-6 cells). Four causes, each fixed at its root:
+
+- **Folding, not clipping.** The ultrafine lane keeps the sign bit and folds
+  the magnitude bits (`legacy/c5vrx3/main/rf.c`: +288 reads as +32). With a
+  few cells of DC the mean of the folded cloud stops growing and then
+  shrinks: every channel with a template 4+ cells off read a flat 3.0-3.5
+  cells whatever the code. The servo learned a slope of the wrong sign
+  there and walked to its limit (Q +188 codes, DAC flat end). The sign bit
+  never folds: the observer now counts sign bits per axis (2 operations a
+  byte), and the servo (`dc_servo_decide_sign`) learns and steps
+  proportionally only where the sign share is 10-90 % (|DC| < 1.28 sigma,
+  nothing folds); outside it takes full steps in the sign's direction,
+  checks the polarity on the share and flips it on an expanding window.
+  Host model with folding (`test_dc_servo.c`, 16 checks): 9 cells pinned
+  with a lost slope ends at 0.15 cells (was 10.9-28 cells). Board A1: from
+  3.4 cells at the trim limit to < 0.5 cells, trims -17/-16.
+- **Unconverged search rows stored as OK.** A startup search from the chip's
+  codes with 4+ cells of DC saw no slope (folded) and ran to its clamp
+  (G83 on 5805 MHz: codes 316 = base+96, residual 3.5 cells); the row was
+  stored and became every other channel's template. Now a row left with
+  more than 1.2 cells is missing, stored tables drop such rows on load, and
+  missing rows are searched again from a converged neighbour's codes
+  (`phy_dco_search_from`, rows ~1 dB apart): 5805 G78-G83 all repaired,
+  residual <= 0.3 cells, G83 225/186. A missing row holds the nearest
+  converged row's codes.
+- **Template choice.** The codes move with the frequency (G83 225/186 at
+  5805 MHz, 144/279 at 5925: ~0.7 codes a MHz) more than with the filter
+  (15-40 codes): `dco_nearest_slot` now minimises an expected code distance
+  (0.7/MHz, +30 for another filter, +20 for a table with template rows)
+  instead of "same filter first". Eviction drops the table with the most
+  template rows first.
+- **Channel change.** Urgent DC wakes skipped the periodic services, so the
+  new channel's table was never loaded while one-sided clipping kept waking
+  the servo; the servo also loads it itself now.
+
+Template rows trim +-192 codes (own rows +-96), and a template row the servo
+holds within 0.3 cells for 8 estimates on receiver noise becomes the
+channel's own row (`DCO_ADOPT`): channels calibrate themselves in use.
