@@ -28,6 +28,24 @@ typedef struct {
     uint32_t resets;        /* candidates dropped before confirming (diagnostics) */
 } kp_switch_guard_t;
 
+/* Is a restart worth its picture gap? Every switch is a halted restart,
+ * ~6 ms without video, and goggles may take fields to re-lock (walk
+ * 2026-10-20, A1: 13 restarts in 2 minutes, kp 3 -> 2 -> 1 -> 2 every ~5 s
+ * at the range edge while the walking C/N swung by +-5 dB; the operator saw
+ * desyncs on an otherwise good picture). One kp level (0.05) is worth a
+ * fraction of a dB: a program change (LP, the edge's +1.6 dB) always
+ * switches, two levels or more too, a single level only
+ * KP_ONE_LEVEL_GAP_US after the last kp restart. */
+#define KP_ONE_LEVEL_GAP_US 30000000LL
+static inline bool kp_switch_worth(int level, bool lp, int applied_level, bool applied_lp, int64_t last_kp_us,
+                                   int64_t now)
+{
+    if (lp != applied_lp || applied_level < 0) return true;
+    const int d = level > applied_level ? level - applied_level : applied_level - level;
+    if (d >= 2) return true;
+    return d == 1 && (!last_kp_us || now - last_kp_us >= KP_ONE_LEVEL_GAP_US);
+}
+
 static inline bool kp_switch_ready(const kp_switch_guard_t *g, int64_t now)
 {
     return !g->switched || now - g->last_switch_us >= KP_SWITCH_GAP_US;

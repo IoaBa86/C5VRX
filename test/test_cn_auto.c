@@ -108,7 +108,12 @@ static void measure_noise(const unsigned *rows, unsigned count)
 /* Estimate at row k for a carrier at the true C/N; returns the error in dB. */
 static double run_case(unsigned k, double cn_db, double porch, double dc, unsigned len, cna_reading_t *out, double *win_err)
 {
-    const double noise_true = 2.0 * sigma_at(k) * sigma_at(k) + CNA_QUANT_CELLS2;
+    /* The C/N is the carrier over the thermal noise (the pin C/N), the
+     * thermal floored at a quarter of the row's noise where the 4-bit step
+     * dominates (cna_estimate). */
+    const double noise_total = 2.0 * sigma_at(k) * sigma_at(k) + CNA_QUANT_CELLS2;
+    const double thermal = 2.0 * sigma_at(k) * sigma_at(k);
+    const double noise_true = thermal > 0.25 * noise_total ? thermal : 0.25 * noise_total;
     const double c = noise_true * pow(10.0, cn_db / 10.0);
     gen_t g;
     generate(&g, k, c, porch, dc, -dc, 4096u / len * 16u, len);
@@ -131,7 +136,7 @@ int main(void)
 
     /* Accuracy on measured rows, -1 MHz porch, over C/N and rows with table errors. */
     const double cns[] = {0, 2, 4, 6, 10, 15, 20};
-    double worst = 0, worst_q = 0;
+    double worst = 0, worst_q = 0, worst_weak = 0;
     unsigned cases = 0, clipped = 0, low_conf_q = 0, quant_strong = 0;
     for (unsigned j = 0; j < sizeof(measured) / sizeof(measured[0]); ++j)
         for (unsigned c = 0; c < sizeof(cns) / sizeof(cns[0]); ++c) {
@@ -139,16 +144,31 @@ int main(void)
             const double e = run_case(measured[j], cns[c], -1.0e6, 0.0, 256, &r, NULL);
             if (r.flags & CNA_F_CLIPPED) { ++clipped; continue; }
             /* A quantisation-limited row with a carrier under 2 cells must say LOW. */
-            if ((r.flags & CNA_F_QUANT_LIMITED) && r.confidence <= CNA_CONF_LOW) { ++low_conf_q; continue; }
-            if (r.flags & CNA_F_QUANT_LIMITED) { ++quant_strong; if (fabs(e) > fabs(worst_q)) worst_q = e; continue; }
+            if ((r.flags & CNA_F_QUANT_LIMITED) && r.confidence <= CNA_CONF_LOW) {
+                /* still used by the decisions (receiver_obs_cn_x10: one scale) */
+                ++low_conf_q;
+                if (fabs(e) < 90.0 && fabs(e) > fabs(worst_weak)) worst_weak = e;
+                continue;
+            }
+            if (r.flags & CNA_F_QUANT_LIMITED) {
+                /* The thermal noise of these rows is borrowed across the
+                 * table (+-3 dB errors here): accurate where the kp/LP and AFC
+                 * decisions are made (<= 12 dB), above it only >= 12 dB. */
+                ++quant_strong;
+                if (cns[c] <= 12.0) { if (fabs(e) > fabs(worst_q)) worst_q = e; }
+                else if (cns[c] + e < 12.0) worst_q = 99.0;
+                if (fabs(e) > 2.5) printf("     quant row %u C/N %.0f dB: error %+.2f dB (noise %.3f, conf %u)\n", measured[j], cns[c], e, r.noise_cells2, r.confidence);
+                continue;
+            }
             ++cases;
             if (fabs(e) > 1.5) printf("     row %u C/N %.0f dB: error %+.2f dB (noise %.3f, conf %u, flags 0x%02x)\n", measured[j], cns[c], e, r.noise_cells2, r.confidence, r.flags);
             if (fabs(e) > fabs(worst)) worst = e;
         }
-    printf("     thermal-noise rows: %u cases, worst %+.2f dB; quantisation-limited: %u strong (worst %+.2f dB), %u weak flagged LOW; %u folding\n",
-           cases, worst, quant_strong, worst_q, low_conf_q, clipped);
+    printf("     thermal-noise rows: %u cases, worst %+.2f dB; quantisation-limited: %u strong (worst %+.2f dB), %u weak flagged LOW (worst %+.2f dB); %u folding\n",
+           cases, worst, quant_strong, worst_q, low_conf_q, worst_weak, clipped);
     check("power C/N within 1.5 dB over 0-20 dB on every row with real noise, with +-3 dB table errors", fabs(worst) <= 1.5 && cases >= 20);
-    check("quantisation-limited rows: a strong carrier within 2.5 dB, a weak one only with LOW confidence", fabs(worst_q) <= 2.5);
+    check("quantisation-limited rows: a strong carrier within 2.5 dB up to 12 dB C/N (>= 12 dB above), a weak one only with LOW confidence",
+          fabs(worst_q) <= 2.5);
 
     /* A slowly rotating carrier (0 Hz) and 1 cell of DC, 256 and 1024 samples. */
     double worst_rot = 0, worst_win = 0, worst_len = 0;

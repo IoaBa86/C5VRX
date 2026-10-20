@@ -527,12 +527,22 @@ cna_reading_t receiver_cn_reading(void)
 
 int receiver_obs_cn_x10(void)
 {
-    {   /* C/N-AUTO when it is confident; otherwise the envelope model below
-         * (as before), and unknown stays unknown, never low. */
+    {   /* One scale: C/N-AUTO's power estimate whenever the row has a noise
+         * reference (measured or borrowed), whatever its confidence; the
+         * envelope model below only without any reference. Switching per
+         * window between the two (confidence >= OK) jumped by 5-9 dB on the
+         * walk of 2026-10-20 (A1): the M2M4 cross-check fails in walking
+         * fades, the 4-bit rows capped the confidence, and the kp ladder and
+         * LP gates followed the jumps. */
         const cna_reading_t r = receiver_cn_reading();
-        if (!s_obs_stuck && r.confidence >= CNA_CONF_OK && r.x10 != CNA_UNKNOWN_X10 &&
-            cn_gain_settled((uint64_t)esp_timer_get_time(), (uint64_t)s_last_gain_write_us, s_gain.state == DG_SETTLE))
+        if ((r.source & ~CNA_SRC_DISTORTED) == CNA_SRC_POWER) {   /* no carrier: unknown, as before */
+            /* A small carrier on a 4-bit-limited row (just after a fade, the
+             * gain still low) reads up to 8 dB high: hold, not a number. */
+            if (s_obs_stuck || r.x10 == CNA_UNKNOWN_X10 || (r.source & CNA_SRC_DISTORTED) ||
+                !cn_gain_settled((uint64_t)esp_timer_get_time(), (uint64_t)s_last_gain_write_us,
+                                 s_gain.state == DG_SETTLE)) return CN_UNKNOWN_X10;
             return r.x10;
+        }
     }
     /* Envelope model (cn_estimate.h); a fixed IQ point has no envelope to
      * judge and read 14-20 dB in the coherence model with no VTX at all. */

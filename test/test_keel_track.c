@@ -156,11 +156,25 @@ static dg_observation_t observe(double level_db, unsigned k, uint64_t t)
     return o;
 }
 
+/* The detector's own loss on a small signal, beyond the quantisation noise:
+ * the bit-exact U85Q chain (research/sim.py, PAL, deviation 1.0) at the same
+ * C/N with the total RMS at the quantiser 1.5 / 2.2 / 3.0 / 4.2 cells loses
+ * 2.9 / 1.4 / 0.6 / 0 dB of luma SINAD (range audit, PR #230; the picture
+ * threshold at 2 dB C/N falls from 0.96 to 0.67 at 1.5 cells). */
+static double small_signal_loss_db(double rms)
+{
+    static const double at[] = {1.5, 2.2, 3.0, 4.2}, loss[] = {2.9, 1.4, 0.6, 0.0};
+    if (rms <= at[0]) return loss[0] + (at[0] - rms) * 2.0;
+    for (int k = 1; k < 4; ++k)
+        if (rms <= at[k]) return loss[k - 1] + (loss[k] - loss[k - 1]) * (rms - at[k - 1]) / (at[k] - at[k - 1]);
+    return 0.0;
+}
+
 static double snr_db(double level_db, unsigned k)
 {
     const double r = radius(level_db, k), rn = noise_radius(k), d = dc_cells(k);
     if (r + rn + d > 7.5) return -99.0;
-    return 10.0 * log10(r * r / (rn * rn + 1.0 / 6.0 + d * d) + 1e-9);
+    return 10.0 * log10(r * r / (rn * rn + 1.0 / 6.0 + d * d) + 1e-9) - small_signal_loss_db(sqrt(r * r + rn * rn));
 }
 
 #define PATHS 12
@@ -194,7 +208,7 @@ typedef struct {
     double weight;
 } scenario_t;
 
-typedef struct { double usable_pct, writes_s, mean_dc; } result_t;
+typedef struct { double usable_pct, writes_s, mean_dc, mean_gain; } result_t;
 
 static result_t run(const scenario_t *sc, uint32_t seed)
 {
@@ -207,7 +221,7 @@ static result_t run(const scenario_t *sc, uint32_t seed)
     const unsigned settle_ticks = 5000u, ticks = 25000u;   /* 1 s settle, 5 s measured */
     unsigned ok = 0;
     uint32_t w0 = 0;
-    double dc_sum = 0;
+    double dc_sum = 0, gain_sum = 0;
     for (unsigned n = 0; n < settle_ticks + ticks; ++n, t += TICK_US) {
         if (n == settle_ticks) w0 = g.writes;
         double lv = sc->level_db + fading_db(t, sc->doppler, sc->k);
@@ -229,9 +243,10 @@ static result_t run(const scenario_t *sc, uint32_t seed)
                                (!last_fold || t - last_fold >= FOLD_COST_US);
             ok += fresh && snr_db(lv, applied) >= sc->threshold_db;
             dc_sum += dc_cells(applied);
+            gain_sum += applied;
         }
     }
-    return (result_t){100.0 * ok / ticks, (g.writes - w0) / 5.0, dc_sum / ticks};
+    return (result_t){100.0 * ok / ticks, (g.writes - w0) / 5.0, dc_sum / ticks, gain_sum / ticks};
 }
 
 int main(void)
@@ -276,8 +291,10 @@ int main(void)
         for (uint32_t seed = 1; seed <= 3; ++seed) {   /* three DC/fading draws */
             b = run(&sc[k], seed);
             a.usable_pct += b.usable_pct / 3; a.writes_s += b.writes_s / 3; a.mean_dc += b.mean_dc / 3;
+            a.mean_gain += b.mean_gain / 3;
         }
-        printf("     %-38s usable %5.1f%%  writes %5.1f/s  DC %.2f cells\n", sc[k].name, a.usable_pct, a.writes_s, a.mean_dc);
+        printf("     %-38s usable %5.1f%%  writes %5.1f/s  DC %.2f cells  G%.1f\n", sc[k].name, a.usable_pct, a.writes_s, a.mean_dc,
+               a.mean_gain);
         printf("S,%u,%.2f,%.2f,%.3f\n", k, a.usable_pct, a.writes_s, a.mean_dc);
         score += sc[k].weight * a.usable_pct; weights += sc[k].weight; writes += a.writes_s / n;
         if (k >= 8u && k < 12u) edge_writes += a.writes_s / 4.0;   /* the 3 dB and 0 dB edge scenarios */
@@ -286,12 +303,14 @@ int main(void)
     }
     printf("SCORE %.2f (weighted usable %%; edge counts twice), writes %.1f/s\n", score / weights, writes);
 #ifndef NO_CHECKS
-    /* KEEL-1 against the sample-based model (V7: score 62.3, edge 3 dB
-     * 39.6 %, walk-out 10-13 writes/s; V6 58.8). */
+    /* KEEL-1 against the sample-based model. Since PR #230 the model counts
+     * the detector's small-signal loss (small_signal_loss_db), which lowers
+     * every edge number: KEEL-1 as merged in #228 scores 63.7, edge 3 dB
+     * 29.3 % here (38-39.6 % without that loss; V7 62.3, V6 58.8 then). */
     unsigned fail = 0;
-    if (score / weights < 62.8) { printf("FAIL score %.2f < 62.8 (V7 62.3)\n", score / weights); ++fail; }
+    if (score / weights < 63.0) { printf("FAIL score %.2f < 63.0 (#228: 63.7)\n", score / weights); ++fail; }
     if (edge_writes > 3.0) { printf("FAIL edge writes %.1f/s > 3\n", edge_writes); ++fail; }
-    if (edge3_usable < 38.0) { printf("FAIL edge 3 dB usable %.1f < 38 %%\n", edge3_usable); ++fail; }
+    if (edge3_usable < 28.0) { printf("FAIL edge 3 dB usable %.1f < 28 %% (#228: 29.3)\n", edge3_usable); ++fail; }
     printf("%s: KEEL-1 checks\n", fail ? "FAIL" : "PASS");
     return fail != 0;
 #else
