@@ -112,10 +112,20 @@ selected, and the screen switches to the test pattern. From a computer, the
 `Z` key on the USB console or the **DAC TEST** tab of the web flasher does the
 same.
 
+![The DAC TEST pattern on a display, from a correctly wired DAC](dac-test-pattern.jpg)
+
+*The pattern from a correctly wired DAC, photographed on a display fed
+through an AV-to-HDMI converter. The ramp's individual steps are visible and
+its bright end is washed out by the display's brightness setting; both are
+normal. The D4 bar shows no visible step, as expected. The hint under the
+ramp now reads EVERY STEP BRIGHTER.*
+
 The pattern has two parts:
 
 - **A ramp** across the top, through every DAC level from black to full
-  white. On a correct DAC it is a smooth gradient.
+  white. On a correct DAC every step is a little brighter than the one to
+  its left. The 44 steps are often visible as fine stripes; that is normal.
+  A step that is darker than its left neighbour is not.
 - **Six bars** labelled D4 to D9. The two halves of each bar differ in one pin
   only, so each bar shows the contribution of one resistor. The contrast
   should roughly double from one bar to the next. The D4 bar is a single
