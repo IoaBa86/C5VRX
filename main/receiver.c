@@ -351,9 +351,16 @@ void receiver_level_feed(const uint8_t *window, size_t bytes)
 #define CNA_STORE_ROWS     30u
 typedef struct {
     uint8_t version;
-    struct { uint16_t freq; int8_t code; uint8_t skirt, bw20, seq; uint16_t noise_x256[CNA_STORE_ROWS]; } slot[CNA_STORE_SLOTS];
+    struct {
+        uint16_t freq; int8_t code; uint8_t skirt, bw20, seq;
+        uint16_t noise_x256[CNA_STORE_ROWS];
+        uint16_t anchor_x256[CNA_STORE_ROWS];   /* the clean startup value (cn_auto.h anchor), 0 = none */
+    } slot[CNA_STORE_SLOTS];
 } cna_store_t;
-#define CNA_STORE_VERSION 1u
+/* 2: the anchors are stored too; a map loaded for another channel or filter
+ * kept learning without one (operator, 2026-10-20). Version 1 maps are
+ * dropped and measured again at the next clean boot. */
+#define CNA_STORE_VERSION 2u
 static cna_store_t s_cna_store;
 static bool s_cna_store_loaded;
 static cna_noise_map_t s_cna_map;
@@ -403,6 +410,8 @@ static void cna_save(void)
         const unsigned row = CNA_STORE_LO + r;
         const float v = s_cna_map.n[row] >= CNA_MIN_SAMPLES ? s_cna_map.noise[row] * 256.0f : 0.0f;
         s_cna_store.slot[k].noise_x256[r] = (uint16_t)(v > 65535.0f ? 65535.0f : v);
+        const float a = s_cna_map.anchor[row] * 256.0f;
+        s_cna_store.slot[k].anchor_x256[r] = (uint16_t)(a > 65535.0f ? 65535.0f : a);
     }
     if (blob_store("cnmap", &s_cna_store, sizeof(s_cna_store))) s_cna_dirty = false;
 }
@@ -430,6 +439,7 @@ static void cna_key_check(void)
             if (s_cna_store.slot[k].noise_x256[r]) {
                 s_cna_map.noise[CNA_STORE_LO + r] = s_cna_store.slot[k].noise_x256[r] / 256.0f;
                 s_cna_map.n[CNA_STORE_LO + r] = CNA_MIN_SAMPLES;   /* loaded: measured on an earlier boot */
+                s_cna_map.anchor[CNA_STORE_LO + r] = s_cna_store.slot[k].anchor_x256[r] / 256.0f;
             }
 }
 void receiver_cn_noise_store(uint8_t row, float cells2)

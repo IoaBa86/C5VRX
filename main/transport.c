@@ -480,7 +480,18 @@ static bool stop_part(void *ctx, tr_part_t part)
 }
 static bool transport_sync_restart_begin(bool flag);
 static void transport_sync_restart_finish(bool verified);
+/* Where a restart's picture gap goes (T TRANSPORT_STAGES_US, range audit
+ * PR #230): the last restart's time per stage. */
+static uint32_t s_stage_us[TR_STAGES], s_quiesce_us;
+static bool quiesce_do(void *ctx);
 static bool quiesce(void *ctx)
+{
+    const int64_t t0 = esp_timer_get_time();
+    const bool ok = quiesce_do(ctx);
+    s_quiesce_us = (uint32_t)(esp_timer_get_time() - t0);
+    return ok;
+}
+static bool quiesce_do(void *ctx)
 {
     const restart_t *r=ctx;
     if(!transport_sync_restart_begin(r && r->flag) && !transport_sync_live_cancel())return false;
@@ -491,7 +502,15 @@ static bool quiesce(void *ctx)
 }
 
 static esp_err_t start_rings_tail(void);
+static bool restart_stage_do(void *ctx, tr_stage_t stage, bool rollback);
 static bool restart_stage(void *ctx, tr_stage_t stage, bool rollback)
+{
+    const int64_t t0 = esp_timer_get_time();
+    const bool ok = restart_stage_do(ctx, stage, rollback);
+    if (stage < TR_STAGES) s_stage_us[stage] = (uint32_t)(esp_timer_get_time() - t0);
+    return ok;
+}
+static bool restart_stage_do(void *ctx, tr_stage_t stage, bool rollback)
 {
     restart_t *r = ctx;
     if (stage == TR_BS_ENABLE && rollback) {
@@ -532,7 +551,8 @@ static bool restart_stage(void *ctx, tr_stage_t stage, bool rollback)
         break;
     }
     case TR_LUT_VERIFY:
-        if (!kp_lut_load(s_lut_work, s_lut_work, write_lut_entry, NULL, &s_kp_writes, &s_kp_verify_fail)) {
+        if (!kp_lut_load_delta(s_lut_work, s_lut_work, NULL, select_lut_entry, store_lut_entry, read_lut_entry,
+                               &s_kp_writes, &s_kp_verify_fail)) {
             printf("TRANSPORT restart lut_verify failed rollback=%u\n", rollback);
             return false;
         }
@@ -1100,6 +1120,13 @@ void transport_sync_live_print(void)
 
 void transport_print(void)
 {
+    printf("TRANSPORT_STAGES_US quiesce=%lu bs_enable=%lu program_load=%lu instruction_verify=%lu lut_verify=%lu "
+           "bs_reset=%lu bs_start=%lu rx_enable=%lu tx_enable=%lu rx_start=%lu tx_start=%lu (last restart)\n",
+           (unsigned long)s_quiesce_us, (unsigned long)s_stage_us[TR_BS_ENABLE], (unsigned long)s_stage_us[TR_PROGRAM_LOAD],
+           (unsigned long)s_stage_us[TR_INSTRUCTION_VERIFY], (unsigned long)s_stage_us[TR_LUT_VERIFY],
+           (unsigned long)s_stage_us[TR_BS_RESET], (unsigned long)s_stage_us[TR_BS_START],
+           (unsigned long)s_stage_us[TR_RX_ENABLE], (unsigned long)s_stage_us[TR_TX_ENABLE],
+           (unsigned long)s_stage_us[TR_RX_START], (unsigned long)s_stage_us[TR_TX_START]);
     printf("VIDEO_OUTPUT source=%s standard=%s\n", s_menu_active ? "MENU" : s_started ? "LIVE" : "OFF",
            s_video_std == VIDEO_STD_PAL ? "PAL" : "NTSC");
     printf("OUTPUT level=%s boot_restore=saved default=1.0x clipped_lut_entries=%u recovery_errors=%lu rollbacks=%lu "
@@ -1322,4 +1349,45 @@ metrics_t measure_window(const uint8_t *s, size_t n)
     m.clip_pm = n ? clip * 1000 / (int)n : 0;
     m.origin_pm = n ? origin * 1000 / (int)n : 1000;
     return m;
+}
+
+/* Bench (console H, range audit PR #230): can the LUT be written while the
+ * BitScrambler runs? The live writes of 2026-10-12 failed verification, but
+ * they predate the LUT16 CPU addressing fix (kp_lut_io.h): never retested.
+ * 1. the active values again, live: readback mismatches;
+ * 2. another kp level live, read back; 3. the active values back, live.
+ * The transport state (shadow, verified level) is not changed: a pure
+ * measurement. Video may show the other kp level for ~1 ms. */
+void transport_live_lut_test(void)
+{
+    if (!s_lut_known || !s_started || s_menu_active || s_transport_fault || s_verified_level < 0) {
+        printf("LIVE_LUT skip (not running, menu, fault or level unknown)\n");
+        return;
+    }
+    const int other = s_verified_level + 1 < KP_LEVELS ? s_verified_level + 1 : s_verified_level - 1;
+    static uint16_t want[KP_LUT_ENTRIES];
+    uint32_t mism[3] = {0, 0, 0}, us[3] = {0, 0, 0}, differ = 0;
+    for (unsigned i = 0; i < KP_LUT_ENTRIES; ++i) {
+        bool clipped;
+        want[i] = s_flag_format ? sync_flag_entry(kp_tables[other][i], s_output, &clipped)
+                                : output_entry(kp_tables[other][i], s_output, &clipped);
+        differ += want[i] != s_lut_live[i];
+    }
+    const uint16_t *pass[3] = {s_lut_live, want, s_lut_live};
+    for (int p = 0; p < 3; ++p) {
+        const int64_t t0 = esp_timer_get_time();
+        for (unsigned i = 0; i < KP_LUT_ENTRIES; ++i)
+            if (!write_lut_entry(NULL, i, pass[p][i])) ++mism[p];
+        us[p] = (uint32_t)(esp_timer_get_time() - t0);
+    }
+    /* A last full readback of the restored values. */
+    uint32_t final_mism = 0;
+    for (unsigned i = 0; i < KP_LUT_ENTRIES; ++i) {
+        select_lut_entry(NULL, i);
+        if ((read_lut_entry(NULL) & 0xffffu) != s_lut_live[i]) ++final_mism;
+    }
+    printf("LIVE_LUT level=%d other=%d differ=%lu same_live: mismatch=%lu us=%lu | other_live: mismatch=%lu us=%lu | "
+           "restore_live: mismatch=%lu us=%lu | final_readback_mismatch=%lu\n", s_verified_level, other,
+           (unsigned long)differ, (unsigned long)mism[0], (unsigned long)us[0], (unsigned long)mism[1],
+           (unsigned long)us[1], (unsigned long)mism[2], (unsigned long)us[2], (unsigned long)final_mism);
 }

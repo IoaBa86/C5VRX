@@ -85,6 +85,7 @@ void transport_print(void);
 void transport_sync_flywheel_toggle(void); /* U / menu FLYWHEEL: toggle and save */
 void transport_sync_flywheel_set(bool on, bool save);
 bool transport_sync_flywheel_enabled(void);
+void transport_live_lut_test(void);   /* bench: LUT writes while running (console H) */
 void transport_sync_flywheel_set_boot(bool on); /* settings_load: saved choice */
 void transport_sync_live_tick(void);   /* control loop; never holds a lifetime PHY lease */
 bool transport_sync_live_cancel(void); /* stop/restore before transport ownership changes */

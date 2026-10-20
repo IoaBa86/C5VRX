@@ -309,6 +309,7 @@ static void command(int c, unsigned *menu_idle)
     /* Bench: the real gain step of every table row pair (receiver.c). */
     case 'Q': receiver_pair_sweep_toggle(); break;
     case 'U': transport_sync_flywheel_toggle(); break;
+    case 'H': transport_live_lut_test(); break;   /* bench: live LUT writes */
     /* DAC self-test: open the menu on DAC TEST, then step like a hold. */
     case 'Z':
         if (!s_menu_active && !menu_open_checked()) break;
