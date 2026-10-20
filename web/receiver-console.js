@@ -8,7 +8,7 @@ export const BAND_NAMES = {
 export const KP_MODES = ['OFF', 'AUTO kp', 'AUTO kp+LP'];
 // Keys the firmware routes through control.c command(): ignored while a
 // calibration/lane-test status screen owns the picture.
-export const MENU_COMMAND_KEYS = new Set(['o', 'e', 'v', 'n', 'x', 'c', 'b', 's', 'K', 'k', 'j', 'P', 'g', 'A', 'U', 'G', 'Q']);
+export const MENU_COMMAND_KEYS = new Set(['o', 'e', 'v', 'n', 'x', 'c', 'b', 's', 'K', 'k', 'j', 'P', 'g', 'A', 'U', 'G', 'Q', 'Z']);
 
 const FIELDS = /(?:^|\s)(\w+)=([^\s]+)/g;
 const fields = (line, target = {}) => {
@@ -26,7 +26,9 @@ export class ReceiverConsole {
     this.directMenu = false;
     this.gainControl = false;
     this.flywheelControl = false;
+    this.dacTest = false;
     this.control = {};
+    this.dac = {};
     this.output = {};
     this.gain = {};
     this.flywheel = {};
@@ -65,7 +67,8 @@ export class ReceiverConsole {
         this.output = {};
         this.gain = {};
         this.flywheel = {};
-        this.directMenu = this.gainControl = this.flywheelControl = false;
+        this.directMenu = this.gainControl = this.flywheelControl = this.dacTest = false;
+        this.dac = {};
         this.scan = { active: false, candidates: 0, result: '', channel: '' };
         this.refused = '';
         events.add('ready');
@@ -76,6 +79,7 @@ export class ReceiverConsole {
     if (!this.current) return;
     if (/^\s+G RX gain /.test(line)) this.gainControl = true;
     if (/^\s+U sync flywheel ON\/OFF /.test(line)) this.flywheelControl = true;
+    if (/^\s+Z DAC self-test /.test(line)) this.dacTest = true;
 
     if (line.startsWith('STATUS ')) {
       // Status beat (control.c control_print_beat, every 2 s).
@@ -95,6 +99,12 @@ export class ReceiverConsole {
       events.add('status');
     } else if (line.startsWith('OUTPUT level=')) {
       fields(line, this.output);
+    } else if (line.startsWith('DACTEST step=')) {
+      this.dac = fields(line);
+      events.add('changed');
+    } else if (line.startsWith('DACTEST pattern')) {
+      this.dac = { step: 'PATTERN' };
+      events.add('changed');
     } else if (line.startsWith('GAIN ')) {
       fields(line, this.gain);
       if (this.gain.mode) events.add('changed');
@@ -202,6 +212,8 @@ export class ReceiverConsole {
       kpMode: Number.isInteger(kp) ? KP_MODES[kp] || '' : '',
       profile: c.mode || this.profile.active || '',
       liveProfile: this.profile.live,
+      dacStep: this.dac.step || '',
+      dacExpect: this.dac.expect_mv === undefined ? null : Number.parseInt(this.dac.expect_mv, 10),
       scan: scan.active ? `SCANNING · ${scan.candidates} WITH VIDEO`
         : scan.result === 'found' ? `FOUND ${scan.channel}`
           : scan.result === 'none_kept' ? `NO VIDEO FOUND · KEPT ${scan.channel}`
@@ -213,6 +225,7 @@ export class ReceiverConsole {
   supports(key) {
     if (key === 'G') return this.current && this.gainControl;
     if (key === 'U') return this.current && this.flywheelControl;
+    if (key === 'Z') return this.current && this.dacTest;
     return ['T', 'h', '?'].includes(key) || (this.current && (!['v', 'e'].includes(key) || this.directMenu));
   }
 }

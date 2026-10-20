@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "rf.h"
 #include "menu_entry.h"
+#include "dac_check.h"
 
 void transport_start_chain(dma_descriptor_t *first);
 void transport_stop_chain(void);
@@ -37,6 +38,11 @@ volatile int s_menu_cursor;
 static volatile bool s_status;
 static char s_status_title[40], s_status_line1[48], s_status_line2[48];
 static volatile int s_status_percent;
+/* DAC TEST: the current step, and whether the whole raster is a flat
+ * meter level (sync and burst overwritten) instead of the menu picture. */
+static dac_step_t s_dac_step = DAC_STEP_PATTERN;
+static bool s_raster_flat;
+static uint8_t s_flat_code;
 
 static const uint8_t s_icons[MENU_ITEMS][8] = {
     {0x10, 0x38, 0x54, 0x10, 0x10, 0x38, 0x7c, 0x00},   /* band */
@@ -47,9 +53,11 @@ static const uint8_t s_icons[MENU_ITEMS][8] = {
     {0x00, 0x08, 0x18, 0x38, 0x78, 0x38, 0x18, 0x08},   /* output */
     {0x00, 0x02, 0x06, 0x0e, 0x1e, 0x3e, 0x7e, 0x00},   /* gain */
     {0x3c, 0x42, 0x81, 0x99, 0x99, 0x81, 0x42, 0x3c},   /* flywheel */
+    {0x00, 0x03, 0x03, 0x0f, 0x0f, 0x3f, 0x3f, 0x00},   /* dac test */
     {0x7c, 0x44, 0x04, 0x1f, 0x04, 0x44, 0x7c, 0x00},   /* exit */
 };
-static const char *const s_items[MENU_ITEMS] = {"BAND", "CHANNEL", "SCAN", "VIDEO", "CALIBRATE", "OUTPUT", "GAIN", "FLYWHEEL", "EXIT"};
+static const char *const s_items[MENU_ITEMS] = {"BAND", "CHANNEL", "SCAN", "VIDEO", "CALIBRATE", "OUTPUT", "GAIN", "FLYWHEEL",
+                                                "DAC TEST", "EXIT"};
 
 static void rect(int x, int y, int w, int h, uint8_t code)
 {
@@ -105,8 +113,69 @@ static void title(const char *t, const char *hint)
     rect(100, 19, 276, 1, UI_DIVIDER);
 }
 
+static bool s_interlaced = true;
+
+/* Back from a flat meter level to the menu picture: sync, burst and blank
+ * segments are rebuilt in place; the descriptor chain is unchanged. */
+static void raster_restore(void)
+{
+    if (!s_raster_flat) return;
+    menu_raster_init(&s_raster, s_video_std, s_interlaced);
+    s_raster_flat = false;
+    sync_dma_c2m(&s_raster, sizeof(s_raster));
+}
+
+/* Every byte the chain sends becomes one DAC code: a constant node voltage
+ * for a multimeter. The display loses sync meanwhile. */
+static void raster_flat(uint8_t code)
+{
+    if (s_raster_flat && s_flat_code == code) return;
+    memset(&s_raster, code, sizeof(s_raster));
+    s_raster_flat = true;
+    s_flat_code = code;
+    sync_dma_c2m(&s_raster, sizeof(s_raster));
+}
+
+void menu_dac_step(void)
+{
+    s_dac_step = dac_check_next(s_dac_step);
+    const uint8_t code = dac_check_code(s_dac_step);
+    if (s_dac_step == DAC_STEP_PATTERN) {
+        printf("DACTEST pattern: a smooth ramp, then six bars whose contrast doubles from D4 to D9\n");
+    } else {
+        if (s_dac_step == DAC_STEP_BIT0) {
+            printf("DACTEST meter steps: unplug the display, measure CVBS to GND; expected mV at 3.30 V:");
+            for (unsigned k = 0; k < DAC_CHECK_BITS; ++k)
+                printf(" %s=%d", dac_check_pins[k], dac_check_expected_mv((uint8_t)(1u << k), DAC_CHECK_VDD_MV));
+            printf(" ALL=%d NONE=0 (scale by your 3V3 pin / 3.30)\n", dac_check_expected_mv(63, DAC_CHECK_VDD_MV));
+        }
+        printf("DACTEST step=%s code=%u expect_mv=%d (record it for tools/dac_check.py)\n",
+               dac_check_step_name(s_dac_step), code, dac_check_expected_mv(code, DAC_CHECK_VDD_MV));
+    }
+    if (s_menu_active) menu_render();
+}
+
+/* DAC TEST page, in the content pane like every other item: a ramp over
+ * every level from blanking to the top code, then one bar per bit whose
+ * halves differ in that bit alone. */
+static void render_dac_pattern(void)
+{
+    /* Ramp, written per sample: 44 levels of ~26 samples (0.65 us). */
+    const unsigned x0 = 100u * MENU_UI_X_SCALE_NUM / MENU_UI_X_SCALE_DEN;
+    const unsigned x1 = 376u * MENU_UI_X_SCALE_NUM / MENU_UI_X_SCALE_DEN;
+    for (unsigned y = 21; y < 33; ++y)
+        for (unsigned x = x0; x < x1; ++x) s_raster.ui[y][x] = dac_check_ramp_code(x - x0, x1 - x0);
+    for (unsigned k = 0; k < DAC_CHECK_BITS; ++k) {
+        const int x = 100 + (int)k * 46;
+        rect(x, 36, 21, 10, dac_check_bar_base(k));
+        rect(x + 21, 36, 21, 10, dac_check_bar_top(k));
+        text(dac_check_pins[k], x + 13, 48, UI_WHITE, 1);
+    }
+}
+
 static void render_status(void)
 {
+    raster_restore();
     memset(s_raster.ui, UI_ROOT, sizeof(s_raster.ui));
     rect(0, 0, MENU_UI_WIDTH, 8, UI_HEADER);
     text("C5VRX-5", 6, 0, UI_WHITE, 1);
@@ -151,6 +220,9 @@ void menu_render(void)
     char buf[32];
     const fpv_channel_t *ch = rf_channel();
     if (s_status) { render_status(); return; }
+    if (s_menu_cursor != MENU_DAC) s_dac_step = DAC_STEP_PATTERN;   /* leaving the item ends the meter */
+    if (s_dac_step != DAC_STEP_PATTERN) { raster_flat(dac_check_code(s_dac_step)); return; }
+    raster_restore();
     memset(s_raster.ui, UI_ROOT, sizeof(s_raster.ui));
     rect(0, 0, MENU_UI_WIDTH, MENU_UI_LINES, UI_PANEL);
     /* Header: name, channel, frequency, gain, signal, standard. */
@@ -259,6 +331,10 @@ void menu_render(void)
         text(transport_sync_flywheel_enabled() ? "FILLS SYNC WHEN THE CAMERA DROPS" :
              "CAMERA SYNC ONLY", 100, 47, UI_WHITE, 1);
         break;
+    case MENU_DAC:
+        title("DAC TEST", "HOLD: METER STEPS");
+        render_dac_pattern();
+        break;
     case MENU_CALIBRATE:
         title("CALIBRATE", "HOLD: CALIBRATE NOW");
         if (dc_cal) {
@@ -313,14 +389,13 @@ static void free_nodes(void)
     s_chunk_count = s_node_capacity = s_node_count = 0;
 }
 
-static bool s_interlaced = true;
-
 /* Count the raster, reserve exactly that (grow only), link a cycle.
  * Interlaced first; the progressive field only when its chain cannot be
  * reserved (half the descriptors, but not every display keeps it). */
 static esp_err_t reserve_chain(video_standard_t standard, bool interlaced, unsigned *required)
 {
     menu_raster_init(&s_raster, standard, interlaced);
+    s_raster_flat = false;
     *required = 0;
     if (!menu_raster_emit(&s_raster, standard, interlaced, count_segment, required) || !*required)
         return ESP_ERR_INVALID_SIZE;
@@ -411,6 +486,7 @@ void menu_close(void)
     transport_resume_live();
     free_nodes();       /* GDMA no longer references the chain */
     s_menu_active = false;
+    s_dac_step = DAC_STEP_PATTERN;
     ++s_control_epoch;
 }
 

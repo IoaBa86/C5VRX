@@ -58,7 +58,7 @@ test('every web shortcut is an actual current console byte, with its warning as 
   for (const [markup, key] of buttons) {
     assert.equal(key.length, 1);
     assert.ok(accepted.has(key), `Firmware does not accept ${key}`);
-    if (['c', 'b', 's', 'o', 'x', 'v', 'K', 'k', 'j', 'P', 'g', 'G', 'U', 'A', 'F', 'L', '`'].includes(key))
+    if (['c', 'b', 's', 'o', 'x', 'v', 'K', 'k', 'j', 'P', 'g', 'G', 'U', 'A', 'F', 'L', 'Z', '`'].includes(key))
       assert.match(markup, /data-hint=/, `${key} requires its action warning`);
     assert.doesNotMatch(markup, /data-confirm=/, 'menu commands never open a browser popup');
   }
@@ -202,4 +202,31 @@ test('flywheel requested state stays distinct from active output and refused cha
   assert.equal(state.view().gainMode, '');
   assert.equal(state.view().flywheel, null);
   assert.equal(state.view().flywheelActive, null);
+});
+
+test('DAC self-test: Z needs firmware that advertises it; steps and expected levels are parsed', () => {
+  const state = new ReceiverConsole();
+  state.push('C5VRX-5 keys: T status\n');
+  assert.equal(state.supports('Z'), false);
+  state.push('  Z DAC self-test (bench: test pattern, then one flat level per pin for a multimeter),\n');
+  assert.equal(state.supports('Z'), true);
+  state.push('DACTEST pattern: a smooth ramp, then six bars whose contrast doubles from D4 to D9\n');
+  assert.equal(state.view().dacStep, 'PATTERN');
+  assert.equal(state.view().dacExpect, null);
+  state.push('DACTEST step=D6 code=4 expect_mv=125 (record it for tools/dac_check.py)\n');
+  assert.equal(state.view().dacStep, 'D6');
+  assert.equal(state.view().dacExpect, 125);
+  state.reset();
+  assert.equal(state.supports('Z'), false);
+  assert.equal(state.view().dacStep, '');
+});
+
+test('the firmware help line enables the DAC self-test key', () => {
+  const consoleSource = fs.readFileSync(new URL('../main/console.c', import.meta.url), 'utf8');
+  const help = consoleSource.match(/"(\s+Z DAC self-test[^"]*)"/);
+  assert.ok(help, 'console.c help advertises Z');
+  const state = new ReceiverConsole();
+  state.push('C5VRX-5 keys: T status\n');
+  state.push(`${help[1].replace(/\n$/, '')}\n`);
+  assert.equal(state.supports('Z'), true);
 });
