@@ -310,7 +310,7 @@ void profile_observe(const afc2_result_t *r)
     s_gate.cn_checked = false;
     ++s_observed;
     if (!dev_gain_usable(s_obs_p50, (unsigned)s_obs_clip_pm, s_gain.state == DG_HOLD)) {
-        s_gate.amplitude += s_obs_p50 < 13 || s_obs_p50 > 32;
+        s_gate.amplitude += s_obs_p50 < 13 || s_obs_p50 > 40;
         s_gate.clip += s_obs_clip_pm != 0;
         s_gate.hold += s_gain.state != DG_HOLD;
         ++s_gated;

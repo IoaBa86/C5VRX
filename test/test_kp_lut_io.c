@@ -86,6 +86,28 @@ int main(void)
             assert(!memcmp(port.ram, kp_tables[level], sizeof(shadow)));
         }
     assert(fail == 1);
-    puts("PASS: LUT16 addressing, refreshed readback, full verification, rollback, all kp tables");
+
+    /* Delta load: only differing entries are written, every entry verified. */
+    for (unsigned k = 1; k < KP_LEVELS; ++k) {
+        memcpy(port.ram, kp_tables[k - 1], sizeof(port.ram));
+        uint32_t dw = 0, df = 0;
+        unsigned differ = 0;
+        for (unsigned i = 0; i < 1024; ++i) differ += kp_tables[k][i] != kp_tables[k - 1][i];
+        assert(kp_lut_load_delta(shadow, kp_tables[k], &port, select_entry, store, read_port, &dw, &df));
+        assert(dw == differ && df == 0 && !memcmp(port.ram, kp_tables[k], sizeof(shadow)));
+        assert(!memcmp(shadow, kp_tables[k], sizeof(shadow)));
+    }
+    {   /* a stuck entry is caught, and the shadow is not published */
+        memcpy(port.ram, kp_tables[0], sizeof(port.ram));
+        memcpy(shadow, kp_tables[0], sizeof(shadow));
+        uint32_t dw = 0, df = 0;
+        unsigned stuck = 0;
+        while (kp_tables[1][stuck] == kp_tables[0][stuck]) ++stuck;
+        port.fail_entry = (int)stuck;
+        assert(!kp_lut_load_delta(shadow, kp_tables[1], &port, select_entry, store, read_port, &dw, &df));
+        assert(df == 1 && !memcmp(shadow, kp_tables[0], sizeof(shadow)));
+        port.fail_entry = -1;
+    }
+    puts("PASS: LUT16 addressing, refreshed readback, full verification, rollback, all kp tables, delta load");
     return 0;
 }

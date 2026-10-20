@@ -97,8 +97,11 @@ static kp_switch_guard_t s_auto_candidate;
 /* Ladder evidence (T CONTROL line): windows offered, and why the unusable
  * ones were (board walk 2026-10-13: the log could not show it). */
 static uint32_t s_ladder_windows, s_ladder_copy_fail, s_ladder_settle, s_ladder_gain, s_ladder_ctx, s_ladder_stuck,
-    s_guard_confirms;
+    s_guard_confirms, s_kp_restarts_skipped;   /* skipped: a single kp level not worth a restart */
 static uint8_t s_kp_auto;
+/* LP policy (PR #230): 1 = rescue by the C/N benefit table (default),
+ * 0 = the earlier gain rule (G70 on, G65 off). Console O, NVS lp_cn. */
+static uint8_t s_lp_by_cn = 1;
 static int s_saved_kp_auto = -1;
 static bool s_mode_reset_pending;
 static void save_auto_mode(void)
@@ -309,6 +312,7 @@ static void command(int c, unsigned *menu_idle)
     /* Bench: the real gain step of every table row pair (receiver.c). */
     case 'Q': receiver_pair_sweep_toggle(); break;
     case 'U': transport_sync_flywheel_toggle(); break;
+    case 'H': transport_live_lut_test(); break;   /* bench: live LUT writes */
     /* DAC self-test: open the menu on DAC TEST, then step like a hold. */
     case 'Z':
         if (!s_menu_active && !menu_open_checked()) break;
@@ -323,6 +327,11 @@ static void command(int c, unsigned *menu_idle)
     case 'c': rf_next_channel(); after_retune(); break;
     case 'b': rf_next_band(); after_retune(); break;
     case 's': scan(); break;
+    case 'O':
+        s_lp_by_cn = s_lp_by_cn ? 0u : 1u;
+        (void)blob_store("lp_cn", &s_lp_by_cn, 1);
+        printf("LP policy %s (saved)\n", s_lp_by_cn ? "RESCUE by C/N benefit (default)" : "GAIN (G70 on, G65 off; earlier rule)");
+        break;
     case 'K':
         s_kp_auto = (uint8_t)((s_kp_auto + 1u) % 3u);
         save_auto_mode();
@@ -615,16 +624,26 @@ static void control_task(void *arg)
             s_kp.wide = profile == PROFILE_WIDE;   /* the 16 MHz rows of a measured wide VTX */
             /* LP follows the AUTO gain (kp_ladder.h KP_LP_GAIN_*); manual gain uses C/N. */
             s_kp.gain = kp_ladder_gain_evidence(receiver_gain_mode() == GAIN_MODE_AUTO, s_current_gain);
+            s_kp.lp_by_cn = s_lp_by_cn != 0;
             const bool program_usable = program_ok && ctx == afc_context();
             uint8_t level = kp_ladder_update_evidence(&s_kp, cn_x10, ladder_ok, program_usable,
                                                       profile_live_deviation_x100(), now, s_kp_auto == 2);
             bool usable = (s_kp.lp != transport_lp() ? program_usable : ladder_ok) && ctx == afc_context();
+            /* Only a restart worth its picture gap (kp_switch_worth): a
+             * single kp level waits; the ladder keeps its own level. */
+            static int64_t last_kp_restart_us;
+            const int applied = transport_kp_level();
+            if (!kp_switch_worth(level, s_kp.lp, applied, transport_lp(), last_kp_restart_us, now)) {
+                level = (uint8_t)applied;
+                ++s_kp_restarts_skipped;
+            }
             /* Confirm the program and the direction, not the exact level the
              * ladder is stepping through (kp_switch_guard.h). */
-            if (kp_switch_confirm_toward(&s_auto_candidate, level, s_kp.lp, transport_kp_level(), transport_lp(),
+            if (kp_switch_confirm_toward(&s_auto_candidate, level, s_kp.lp, applied, transport_lp(),
                                          ctx, usable, now)) {
                 ++s_guard_confirms;
                 s_mode_reset_pending = !transport_apply_auto(level, s_kp.lp);  /* kp + LP in one guarded restart */
+                if (!s_mode_reset_pending && (int)level != applied) last_kp_restart_us = now;
             }
         } else {
             s_auto_candidate.candidate = false;
@@ -658,6 +677,7 @@ void control_start(void)
         s_afc_sign_state = AFC2_SIGN_CONFIRMED;
         s_afc_sign_saved = true;
     }
+    if (!blob_load("lp_cn", &s_lp_by_cn, 1) || s_lp_by_cn > 1) s_lp_by_cn = 1;
     if (!blob_load("kp_auto", &s_kp_auto, 1) || s_kp_auto > 2) s_kp_auto = 2;
     else s_saved_kp_auto = s_kp_auto; /* an explicitly saved OFF wins */
     s_commands = xQueueCreate(16, sizeof(int));
@@ -725,7 +745,7 @@ void control_print(void)
            "afc_weak_skips=%u afc_sign=%+d(%s) standard=%s detected=%s signal=%d menu=%u deviation_x100=%d mode=%s "
            "kp_auto=%u%s kp_steps=%lu lp_switches=%lu busy=%u\n"
            "LADDER windows=%lu unusable_settle=%lu unusable_gain_write=%lu unusable_context=%lu copy_fail=%lu "
-           "stuck_iq=%lu guard_confirms=%lu guard_resets=%lu level=%u lp=%u lp_release_hold_ms=%ld cn_smoothed_x10=%ld\n",
+           "stuck_iq=%lu guard_confirms=%lu guard_resets=%lu level=%u lp=%u lp_release_hold_ms=%ld cn_smoothed_x10=%ld kp_restarts_skipped=%lu lp_policy=%s\n",
            rf_channel()->name, rf_frequency_mhz(), rf_offset_khz(), s_cfo_khz, s_afc_locked,
            s_afc_corrections, s_afc_weak_skips, s_afc_sign,
            s_afc_sign_state == AFC2_SIGN_FLIPPED ? "flipped" : s_afc_sign_state == AFC2_SIGN_CONFIRMED ? "confirmed" :
@@ -738,7 +758,8 @@ void control_print(void)
            (unsigned long)s_ladder_windows, (unsigned long)s_ladder_settle, (unsigned long)s_ladder_gain,
            (unsigned long)s_ladder_ctx, (unsigned long)s_ladder_copy_fail, (unsigned long)s_ladder_stuck,
            (unsigned long)s_guard_confirms, (unsigned long)s_auto_candidate.resets, s_kp.level, s_kp.lp,
-           (long)(s_kp.release_hold_us / 1000), (long)(s_kp.cn_q4 / 16));
+           (long)(s_kp.release_hold_us / 1000), (long)(s_kp.cn_q4 / 16),
+           (unsigned long)s_kp_restarts_skipped, s_lp_by_cn ? "cn_rescue" : "gain");
     vq_t vq;
     control_video_quality(&vq);
     printf("VIDEO_Q known=%u snr_x10=%d lines_x100=%u lines=%lu windows=%lu periods=%lu (end-to-end: sync/porch "

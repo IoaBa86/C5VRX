@@ -25,6 +25,7 @@
 #include "receiver.h"
 #include "cn_auto.h"
 #include "calibration_noise.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1728,6 +1729,7 @@ static void noise_map_startup(int64_t deadline)
     if (!receiver_pause("CNMAP")) return;
     const uint8_t restore = s_current_gain;
     unsigned rows = 0, rejected = 0;
+    float measured[DG_STATES] = {0};   /* the gain table (receiver_gain_table_measured) */
     /* Every row while the noise is real (it is the gain measurement of the
      * edge rows, gain.c dg_apply_measured_gain), every 3rd below. */
     bool fine = true;
@@ -1756,18 +1758,31 @@ static void noise_map_startup(int64_t deadline)
          * reads ~0.25-0.5 cells^2 and is kept (cn_auto marks it
          * quantisation-limited). */
         const double m2 = m2s / got, kurt = (m4s / got) / (m2 * m2);
-        if (m2 >= CNA_QLIM_CELLS2 && kurt < 1.85) { ++rejected; continue; }   /* G83 noise folds a little: ~1.9 */
+        /* Receiver noise reads 1.88-2.13 on a clean channel (G83 folds a
+         * little: ~1.9); a carrier lowers it, bursts raise it: B2 (5752 MHz,
+         * next to Wi-Fi 149/151) read 2.3-14 on 2026-10-20, and row 72 came
+         * out above row 73. Neither is the receiver's noise. */
+        if (m2 >= CNA_QLIM_CELLS2 && (kurt < 1.85 || kurt > 2.25)) {
+            ++rejected;
+            printf("CN_NOISE row=%d rejected kurtosis=%.2f (carrier or interference)\n", g, kurt);
+            continue;
+        }
         float mi, mq;
         cna_mean(&s, &mi, &mq);
         double M2, M4;
         cna_moments(&s, mi, mq, &M2, &M4);
         receiver_cn_noise_store((uint8_t)g, (float)M2);
+        if (g < DG_STATES) measured[g] = (float)M2;
         ++rows;
         if (M2 < CNA_QLIM_CELLS2) fine = false;
         printf("CN_NOISE row=%d noise_cells2=%.3f kurtosis=%.2f\n", g, M2, kurt);
     }
     receiver_set_gain(restore);
     receiver_resume();
+    /* The gain table only from a clean pass (the stored one stays otherwise):
+     * any rejected row above the 4-bit step means interference or a carrier. */
+    if (rejected == 0u) receiver_gain_table_measured(measured);
+    else printf("CN_NOISE gain_table=kept (rejected rows on this channel)\n");
     receiver_cn_noise_save();
     printf("CN_NOISE startup rows=%u rejected=%u (per-row noise for C/N-AUTO)\n", rows, rejected);
 }
@@ -1863,6 +1878,65 @@ static void startup_phase(bool manual)
 static volatile bool s_lane_requested;
 void lane_compare_request(void) { s_lane_requested = true; }
 
+/* Bench (console N, range audit PR #230): does the board's own video output
+ * (6-bit DAC and PARLIO TX at 40 MHz, next to the antenna input) raise the
+ * receiver's noise floor? Receiver noise at the table maximum with the
+ * output running and stopped, alternated four times (drift averages out);
+ * the VTX must be off. Video stops ~0.3 s per pair. */
+static volatile bool s_selfnoise_requested;
+void self_noise_request(void) { s_selfnoise_requested = true; }
+static bool selfnoise_measure(double *m2_out, double *kurt_out)
+{
+    uint8_t buf[PROBE_BYTES];
+    double m2s = 0.0, m4s = 0.0;
+    unsigned got = 0;
+    for (unsigned tries = 0; tries < 96u && got < 48u; ++tries) {
+        vTaskDelay(1);
+        if (!copy_probe_window(buf, NULL)) continue;
+        cna_sums_t p = {0};
+        for (unsigned k = 0; k < sizeof(buf); ++k) cna_sums_add(&p, buf[k]);
+        float mi, mq;
+        cna_mean(&p, &mi, &mq);
+        double m2, m4;
+        cna_moments(&p, mi, mq, &m2, &m4);
+        m2s += m2; m4s += m4;
+        ++got;
+    }
+    if (got < 16u) return false;
+    *m2_out = m2s / got;
+    *kurt_out = (m4s / got) / (*m2_out * *m2_out);
+    return true;
+}
+static void self_noise_test(void)
+{
+    if (!quiet_owner() || !receiver_pause("SELFNOISE")) { printf("SELFNOISE refused=busy\n"); return; }
+    const uint8_t restore = s_current_gain;
+    receiver_set_gain(rf_gain_table()->max_index);
+    vTaskDelay(pdMS_TO_TICKS(40));
+    double on_db = 0.0, off_db = 0.0;
+    unsigned pairs = 0;
+    for (unsigned rep = 0; rep < 4u; ++rep) {
+        double m_on, k_on, m_off, k_off;
+        const bool a = selfnoise_measure(&m_on, &k_on);
+        transport_stop_tx();
+        vTaskDelay(pdMS_TO_TICKS(30));
+        const bool b = selfnoise_measure(&m_off, &k_off);
+        transport_resume_live();
+        vTaskDelay(pdMS_TO_TICKS(60));
+        if (!a || !b) { printf("SELFNOISE pair=%u probe_failed\n", rep); continue; }
+        printf("SELFNOISE pair=%u output_on=%.3f kurt=%.2f output_off=%.3f kurt=%.2f diff_db=%+.2f\n", rep, m_on, k_on,
+               m_off, k_off, 10.0 * log10(m_on / m_off));
+        on_db += 10.0 * log10(m_on); off_db += 10.0 * log10(m_off);
+        ++pairs;
+    }
+    receiver_set_gain(restore);
+    receiver_resume();
+    if (pairs)
+        printf("SELFNOISE gain=%u pairs=%u mean_diff_db=%+.2f (receiver noise with the video output on minus off; "
+               "> 0.3 dB = the board raises its own floor)\n", rf_gain_table()->max_index, pairs,
+               (on_db - off_db) / pairs);
+}
+
 typedef struct { unsigned windows; long p_median, q_phase, origin_pm, clip_pm, env_x100; } lane_stats_t;
 
 static void lane_measure(lane_stats_t *st)
@@ -1954,6 +2028,7 @@ static void calibration_task(void *arg)
         periodic_us = esp_timer_get_time();
         if (s_manual_requested && !s_menu_active) { s_manual_requested = false; startup_phase(true); continue; }
         if (s_lane_requested && !s_menu_active) { s_lane_requested = false; lane_compare(); continue; }
+        if (s_selfnoise_requested && !s_menu_active) { s_selfnoise_requested = false; self_noise_test(); continue; }
         dco_service();
         dc_health_service();
         drift_service();

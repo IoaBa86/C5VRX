@@ -97,6 +97,26 @@ int main(void)
     kp_switch_mark(&gap, 0);
     assert(!kp_switch_ready_rescue(&gap, KP_SWITCH_RESCUE_GAP_US - 1) && kp_switch_ready_rescue(&gap, KP_SWITCH_RESCUE_GAP_US));
     assert(!kp_switch_ready(&gap, KP_SWITCH_RESCUE_GAP_US));
+    /* Worth a restart: LP always, two levels, one level only after 30 s. */
+    assert(kp_switch_worth(2, true, 2, false, 1, 2));
+    assert(kp_switch_worth(4, false, 2, false, 1, 2));
+    assert(!kp_switch_worth(3, false, 2, false, 1000000, 1000000 + KP_ONE_LEVEL_GAP_US - 1));
+    assert(kp_switch_worth(3, false, 2, false, 1000000, 1000000 + KP_ONE_LEVEL_GAP_US));
+    assert(kp_switch_worth(1, false, 2, false, 0, 5));            /* no kp restart yet */
+    assert(!kp_switch_worth(2, false, 2, false, 0, 5));           /* nothing to change */
+    assert(kp_switch_worth(2, false, -1, false, 1, 2));           /* unverified level: switch */
+    {   /* the walk's edge: target 3,2,1,2 every 5 s around a running 2 */
+        static const int seq[] = {3, 2, 1, 2, 3, 2};
+        int applied = 2, restarts = 0;
+        int64_t last = 1;
+        for (int k = 0; k < 6; ++k) {
+            const int64_t now = 5000000LL * (k + 1);
+            if (seq[k] != applied && kp_switch_worth(seq[k], true, applied, true, last, now)) {
+                applied = seq[k]; last = now; ++restarts;
+            }
+        }
+        assert(restarts <= 1);
+    }
     puts("PASS: rescue confirm and gap,  shared five-second cooldown, two-second confirmation, jitter, held unusable windows, stale gaps, contexts, direction");
     return 0;
 }

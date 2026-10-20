@@ -47,6 +47,8 @@ enum { CNA_CONF_NONE = 0, CNA_CONF_LOW = 1, CNA_CONF_OK = 2, CNA_CONF_HIGH = 3 }
 #define CNA_F_DC_UNKNOWN      0x20u   /* no long-term DC for the row yet */
 #define CNA_F_QUANT_LIMITED   0x40u   /* thermal noise below one 4-bit step at this row */
 #define CNA_F_NO_CARRIER      0x80u   /* power within 1 dB of the noise: no carrier to rate */
+/* cna_reading_t.flags is full: DISTORTED rides in the source (6 bits in the flight log). */
+#define CNA_SRC_DISTORTED     0x20u   /* a small carrier on a 4-bit-limited row: read up to +8 dB high */
 /* Below this noise-only power (cells^2, thermal sigma ~0.5 cell per axis)
  * a row's noise reading is no noise: with sub-cell noise the samples sit
  * on the cell centres and the reading depends on where the DC falls inside
@@ -60,6 +62,7 @@ typedef struct {
     float noise[CNA_ROWS];       /* thermal + quantisation noise power at each row, cells^2 */
     uint16_t n[CNA_ROWS];        /* windows that measured it */
     int64_t us[CNA_ROWS];        /* when it was last measured (0 = loaded/unknown time) */
+    float anchor[CNA_ROWS];      /* the clean startup value (two-sided kurtosis gate), 0 = none */
 } cna_noise_map_t;
 
 typedef struct {
@@ -72,9 +75,24 @@ typedef struct {
 static inline float cna_db(float r) { return 10.0f * log10f(r > 1e-9f ? r : 1e-9f); }
 
 /* ---- noise map ---- */
+/* In service a row may drift only CNA_ANCHOR_DB around its clean startup
+ * value (temperature): a carrier near -6 dB C/N passes the absence test
+ * (kurtosis ~1.93-1.96) and, learned again and again, crept into the noise
+ * (operator, 2026-10-20; B2 row 72 read above row 73). */
+#define CNA_ANCHOR_DB 0.5f
+static inline void cna_noise_anchor(cna_noise_map_t *m, unsigned row, float power_cells2)
+{
+    if (row < CNA_ROWS && power_cells2 > 0.0f) m->anchor[row] = power_cells2;
+}
+
 static inline void cna_noise_learn(cna_noise_map_t *m, unsigned row, float power_cells2, int64_t now_us)
 {
     if (row >= CNA_ROWS || !(power_cells2 > 0.0f)) return;
+    if (m->anchor[row] > 0.0f) {
+        const float hi = m->anchor[row] * 1.1220185f, lo = m->anchor[row] / 1.1220185f;   /* +-0.5 dB */
+        if (power_cells2 > hi) power_cells2 = hi;
+        if (power_cells2 < lo) power_cells2 = lo;
+    }
     if (!m->n[row]) m->noise[row] = power_cells2;
     else m->noise[row] += (power_cells2 - m->noise[row]) / (m->n[row] < 16u ? (float)(m->n[row] + 1u) : 16.0f);
     if (m->n[row] < 60000u) ++m->n[row];
@@ -195,8 +213,14 @@ static inline cna_reading_t cna_estimate(double m2, double m4, float noise, floa
     bool have_power = false, have_m2m4 = false;
     float cn_power = 0.0f, cn_m2m4 = 0.0f;
     if (noise > 0.0f && noise_uncert_db < 6.0f) {
+        /* The carrier over the receiver's thermal noise, the C/N at the pin
+         * that the kp/LP curves, the gates and the dBm meter are defined on:
+         * on rows near the 4-bit step the quantisation (part of the row's
+         * noise) is no noise of the link, and dividing by it read up to ~2 dB
+         * low there (walk 2026-10-20, A1). */
         const float c = (float)m2 - noise;
-        cn_power = c > 0.02f * noise ? cna_db(c / noise) : -17.0f;
+        const float th = noise - CNA_QUANT_CELLS2 > 0.25f * noise ? noise - CNA_QUANT_CELLS2 : 0.25f * noise;
+        cn_power = c > 0.02f * th ? cna_db(c / th) : -17.0f;
         have_power = true;
         r.power_x10 = (int)lroundf(10.0f * cn_power);
     }
@@ -243,7 +267,10 @@ static inline cna_reading_t cna_estimate(double m2, double m4, float noise, floa
      * by the 4-bit steps, not noisy: never more than LOW (the gain core does
      * not hold a weak carrier there; strong ones, radius >= 2 cells, read
      * within ~2 dB). */
-    if ((flags & CNA_F_QUANT_LIMITED) && m2 < 4.0 && conf > CNA_CONF_LOW) conf = CNA_CONF_LOW;
+    if ((flags & CNA_F_QUANT_LIMITED) && m2 < 4.0) {
+        if (conf > CNA_CONF_LOW) conf = CNA_CONF_LOW;
+        r.source |= CNA_SRC_DISTORTED;   /* no number for decisions (receiver_obs_cn_x10) */
+    }
     r.confidence = (uint8_t)conf;
     if (conf == CNA_CONF_NONE) r.x10 = CNA_UNKNOWN_X10;
     if (r.x10 != CNA_UNKNOWN_X10) { if (r.x10 > 300) r.x10 = 300; if (r.x10 < -30) r.x10 = -30; }

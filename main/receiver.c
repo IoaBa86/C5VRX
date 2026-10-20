@@ -351,9 +351,16 @@ void receiver_level_feed(const uint8_t *window, size_t bytes)
 #define CNA_STORE_ROWS     30u
 typedef struct {
     uint8_t version;
-    struct { uint16_t freq; int8_t code; uint8_t skirt, bw20, seq; uint16_t noise_x256[CNA_STORE_ROWS]; } slot[CNA_STORE_SLOTS];
+    struct {
+        uint16_t freq; int8_t code; uint8_t skirt, bw20, seq;
+        uint16_t noise_x256[CNA_STORE_ROWS];
+        uint16_t anchor_x256[CNA_STORE_ROWS];   /* the clean startup value (cn_auto.h anchor), 0 = none */
+    } slot[CNA_STORE_SLOTS];
 } cna_store_t;
-#define CNA_STORE_VERSION 1u
+/* 2: the anchors are stored too; a map loaded for another channel or filter
+ * kept learning without one (operator, 2026-10-20). Version 1 maps are
+ * dropped and measured again at the next clean boot. */
+#define CNA_STORE_VERSION 2u
 static cna_store_t s_cna_store;
 static bool s_cna_store_loaded;
 static cna_noise_map_t s_cna_map;
@@ -403,6 +410,8 @@ static void cna_save(void)
         const unsigned row = CNA_STORE_LO + r;
         const float v = s_cna_map.n[row] >= CNA_MIN_SAMPLES ? s_cna_map.noise[row] * 256.0f : 0.0f;
         s_cna_store.slot[k].noise_x256[r] = (uint16_t)(v > 65535.0f ? 65535.0f : v);
+        const float a = s_cna_map.anchor[row] * 256.0f;
+        s_cna_store.slot[k].anchor_x256[r] = (uint16_t)(a > 65535.0f ? 65535.0f : a);
     }
     if (blob_store("cnmap", &s_cna_store, sizeof(s_cna_store))) s_cna_dirty = false;
 }
@@ -430,13 +439,16 @@ static void cna_key_check(void)
             if (s_cna_store.slot[k].noise_x256[r]) {
                 s_cna_map.noise[CNA_STORE_LO + r] = s_cna_store.slot[k].noise_x256[r] / 256.0f;
                 s_cna_map.n[CNA_STORE_LO + r] = CNA_MIN_SAMPLES;   /* loaded: measured on an earlier boot */
+                s_cna_map.anchor[CNA_STORE_LO + r] = s_cna_store.slot[k].anchor_x256[r] / 256.0f;
             }
 }
 void receiver_cn_noise_store(uint8_t row, float cells2)
 {
     cna_key_check();
     if (row >= CNA_ROWS || !(cells2 > 0.0f)) return;
+    s_cna_map.anchor[row] = 0.0f;   /* the startup value replaces the anchor, then anchors */
     for (unsigned k = 0; k < CNA_MIN_SAMPLES; ++k) cna_noise_learn(&s_cna_map, row, cells2, esp_timer_get_time());
+    cna_noise_anchor(&s_cna_map, row, cells2);
     s_cna_dirty = true;
 }
 void receiver_cn_noise_save(void) { cna_save(); s_cna_gain_dirty = true; }
@@ -446,15 +458,54 @@ void receiver_cn_noise_save(void) { cna_save(); s_cna_gain_dirty = true; }
  * cells^2) give the gain core and the dBm meter their real gain
  * (dg_apply_measured_gain). Applied by the observer task, the core's only
  * writer, after every map change and every re-bind. */
+/* The gain table comes from the startup noise map only (no carrier,
+ * kurtosis-checked, calibration.c): the gain per row does not depend on the
+ * channel or the analog filter, so it is kept for the whole boot and stored
+ * ("gtab") for a boot with the VTX on. The live map is not used: it follows
+ * the channel and filter (measured_rows=0 after a profile switch, board
+ * 2026-10-20) and its in-service learning took in a weak carrier (G83-G72
+ * 9.1 dB against 10.8 measured at boot). */
+#define GTAB_VERSION 2u   /* 2: only clean startup passes (two-sided kurtosis gate) */
+typedef struct { uint8_t version, rows; uint16_t th_x256[DG_STATES]; } gtab_blob_t;
 static unsigned s_gain_rows_measured;
+static float s_gain_th[DG_STATES];
+static bool s_gain_th_loaded;
+static float s_gain_th_staged[DG_STATES];   /* calibration task -> observer (the core's only writer) */
+static volatile bool s_gain_th_new;
 static void cna_apply_gain(void)
 {
-    float th[DG_STATES] = {0};
-    for (unsigned k = 0; k < DG_STATES && k < CNA_ROWS; ++k) {
-        const float t = s_cna_map.n[k] >= CNA_MIN_SAMPLES ? s_cna_map.noise[k] - CNA_QUANT_CELLS2 : 0.0f;
-        th[k] = t >= 0.5f ? t : 0.0f;
+    if (!s_gain_th_loaded) {
+        s_gain_th_loaded = true;
+        gtab_blob_t b;
+        if (blob_load("gtab", &b, sizeof(b)) && b.version == GTAB_VERSION && b.rows >= 2u)
+            for (unsigned k = 0; k < DG_STATES; ++k) s_gain_th[k] = b.th_x256[k] / 256.0f;
     }
-    s_gain_rows_measured = dg_apply_measured_gain(&s_gain, th);
+    if (s_gain_th_new) {
+        __sync_synchronize();
+        memcpy(s_gain_th, s_gain_th_staged, sizeof(s_gain_th));
+        s_gain_th_new = false;
+    }
+    s_gain_rows_measured = dg_apply_measured_gain(&s_gain, s_gain_th);
+}
+
+void receiver_gain_table_measured(const float noise_cells2[DG_STATES])
+{
+    float th[DG_STATES] = {0};
+    unsigned rows = 0;
+    for (unsigned k = 0; k < DG_STATES; ++k) {
+        const float t = noise_cells2[k] - CNA_QUANT_CELLS2;
+        th[k] = noise_cells2[k] > 0.0f && t >= 0.5f ? t : 0.0f;
+        rows += th[k] > 0.0f;
+    }
+    if (rows < 2u) return;
+    memcpy(s_gain_th_staged, th, sizeof(th));
+    __sync_synchronize();
+    s_gain_th_new = true;
+    gtab_blob_t b = {.version = GTAB_VERSION, .rows = (uint8_t)rows};
+    for (unsigned k = 0; k < DG_STATES; ++k) b.th_x256[k] = (uint16_t)(th[k] * 256.0f + 0.5f);
+    gtab_blob_t old;
+    if (!blob_load("gtab", &old, sizeof(old)) || memcmp(&old, &b, sizeof(b))) (void)blob_store("gtab", &b, sizeof(b));
+    s_cna_gain_dirty = true;
 }
 
 static void cna_probe(const uint8_t *sample, size_t bytes, const dg_observation_t *o, uint8_t row, int64_t now)
@@ -527,12 +578,22 @@ cna_reading_t receiver_cn_reading(void)
 
 int receiver_obs_cn_x10(void)
 {
-    {   /* C/N-AUTO when it is confident; otherwise the envelope model below
-         * (as before), and unknown stays unknown, never low. */
+    {   /* One scale: C/N-AUTO's power estimate whenever the row has a noise
+         * reference (measured or borrowed), whatever its confidence; the
+         * envelope model below only without any reference. Switching per
+         * window between the two (confidence >= OK) jumped by 5-9 dB on the
+         * walk of 2026-10-20 (A1): the M2M4 cross-check fails in walking
+         * fades, the 4-bit rows capped the confidence, and the kp ladder and
+         * LP gates followed the jumps. */
         const cna_reading_t r = receiver_cn_reading();
-        if (!s_obs_stuck && r.confidence >= CNA_CONF_OK && r.x10 != CNA_UNKNOWN_X10 &&
-            cn_gain_settled((uint64_t)esp_timer_get_time(), (uint64_t)s_last_gain_write_us, s_gain.state == DG_SETTLE))
+        if ((r.source & ~CNA_SRC_DISTORTED) == CNA_SRC_POWER) {   /* no carrier: unknown, as before */
+            /* A small carrier on a 4-bit-limited row (just after a fade, the
+             * gain still low) reads up to 8 dB high: hold, not a number. */
+            if (s_obs_stuck || r.x10 == CNA_UNKNOWN_X10 || (r.source & CNA_SRC_DISTORTED) ||
+                !cn_gain_settled((uint64_t)esp_timer_get_time(), (uint64_t)s_last_gain_write_us,
+                                 s_gain.state == DG_SETTLE)) return CN_UNKNOWN_X10;
             return r.x10;
+        }
     }
     /* Envelope model (cn_estimate.h); a fixed IQ point has no envelope to
      * judge and read 14-20 dB in the coherence model with no VTX at all. */

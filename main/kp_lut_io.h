@@ -24,6 +24,32 @@ static inline bool kp_lut_write16(void *ctx, unsigned entry, uint16_t value,
     return (read(ctx) & 0xffffu) == value;
 }
 
+/* The same full verification, but an entry is written only when the RAM
+ * does not already hold it (the program load wrote its own table; adjacent
+ * kp levels differ in ~1/3 of the entries). Each entry: select, read; on a
+ * difference store, select, read again. The halted LUT stage was 2.7-2.9 ms
+ * of the ~5.5 ms restart gap with select-store-select-read for all 1024
+ * (board, range audit PR #230). Caller owns a halted core. */
+static inline bool kp_lut_load_delta(uint16_t *shadow, const uint16_t *want, void *ctx,
+                                     kp_lut_select_fn select_entry, kp_lut_data_fn store, kp_lut_read_fn read,
+                                     uint32_t *writes, uint32_t *verify_fail)
+{
+    bool verified = true;
+    for (unsigned entry = 0; entry < KP_LUT_ENTRIES; ++entry) {
+        select_entry(ctx, entry);
+        if ((read(ctx) & 0xffffu) == want[entry]) continue;
+        ++*writes;
+        store(ctx, want[entry]);
+        select_entry(ctx, entry);
+        if ((read(ctx) & 0xffffu) != want[entry]) {
+            ++*verify_fail;
+            verified = false;
+        }
+    }
+    if (verified && shadow != want) memcpy(shadow, want, KP_LUT_ENTRIES * sizeof(*shadow));
+    return verified;
+}
+
 /* Caller owns a halted core. Verify the entire candidate before publishing
  * its shadow. Failure leaves the last verified shadow intact for rollback. */
 static inline bool kp_lut_load(uint16_t *shadow, const uint16_t *want,

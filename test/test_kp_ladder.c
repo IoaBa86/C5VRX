@@ -377,6 +377,37 @@ int main(void)
         check("narrow rows: not for the board's 11.9 MHz narrow entry, nor DEFAULT",
               !kp_ladder_narrow_rows(true, 11875u) && !kp_ladder_narrow_rows(false, 10000u));
     }
+    {   /* LP as a rescue by the C/N benefit table (PR #230). Deviation 1.0,
+         * 12 MHz: in below 4.4 dB, out above 7.5 dB; the gain never decides. */
+        kp_ladder_t c;
+        int64_t tc = 0;
+        kp_ladder_reset(&c);
+        c.lp_by_cn = true;
+        c.gain = 83;   /* the edge row: no longer a reason */
+        for (int k = 0; k < 200; ++k, tc += TICK_US) (void)kp_ladder_update_lp(&c, 120, true, 100, tc, true);
+        check("C/N rescue: G83 at 12 dB C/N stays U85Q", !c.lp);
+        c.gain = 30;
+        for (int k = 0; k < 200; ++k, tc += TICK_US) (void)kp_ladder_update_lp(&c, 30, true, 100, tc, true);
+        check("C/N rescue: 3 dB C/N enters LP whatever the gain", c.lp);
+        for (int k = 0; k < 200; ++k, tc += TICK_US) (void)kp_ladder_update_lp(&c, 65, true, 100, tc, true);
+        check("C/N rescue: 6.5 dB (between entry and exit) stays LP", c.lp);
+        for (int k = 0; k < 400; ++k, tc += TICK_US)
+            (void)kp_ladder_update_evidence(&c, CN_UNKNOWN_X10, true, true, 100, tc, true);
+        check("C/N rescue: an unknown C/N (no carrier) holds LP, never counts as 0 dB", c.lp);
+        for (int k = 0; k < 400; ++k, tc += TICK_US) (void)kp_ladder_update_lp(&c, 90, true, 100, tc, true);
+        check("C/N rescue: 9 dB leaves LP after the release hold", !c.lp);
+        for (int k = 0; k < 400; ++k, tc += TICK_US)
+            (void)kp_ladder_update_evidence(&c, CN_UNKNOWN_X10, true, true, 100, tc, true);
+        check("C/N rescue: an unknown C/N holds U85Q too (no phantom LP with the VTX off)", !c.lp);
+        check("C/N rescue table: narrow 10 MHz enters later, wide 16 MHz earlier",
+              kp_ladder_want_lp_cn(KP_CLASS_NORMAL, 40, false, true, false) == false &&
+              kp_ladder_want_lp_cn(KP_CLASS_NORMAL, 40, false, false, false) == true &&
+              kp_ladder_want_lp_cn(KP_CLASS_WIDE, 68, false, false, true) == true &&
+              kp_ladder_want_lp_cn(KP_CLASS_WIDE, 68, false, false, false) == false);
+        check("C/N rescue: wide class under its 1.5 dB floor holds (LP can cost lock there)",
+              kp_ladder_want_lp_cn(KP_CLASS_WIDE, 10, false, false, false) == false &&
+              kp_ladder_want_lp_cn(KP_CLASS_WIDE, 10, true, false, false) == true);
+    }
     printf("%s: %u checks, %u failures\n", s_fail ? "FAIL" : "PASS", s_run, s_fail);
     return s_fail ? 1 : 0;
 }

@@ -1247,3 +1247,52 @@ RX_LEVEL clipped_pm, DC_SERVO dc). 33 of 48 channels had the DC on a rail
 Template rows trim +-192 codes (own rows +-96), and a template row the servo
 holds within 0.3 cells for 8 estimates on receiver noise becomes the
 channel's own row (`DCO_ADOPT`): channels calibrate themselves in use.
+
+## Range audit, first pass: the 2026-10-19 walk (session 34, PR #228 data)
+
+`tools/edge_audit.py` on blackbox session 34 (build keel1h, before the
+PR #228 DC and gain fixes), every second binned by the envelope C/N, plus
+the ten raw edge IQ snapshots (M2M4 on the 4-bit samples):
+
+- **The dropout seconds had the DC on a rail.** The 25 seconds at C/N
+  bins <= 2 dB (23 dropouts) sat at 2.6-4.2 cells of DC; the seconds at
+  4-20 dB at 0.13-0.26. That is the fold runaway of the DC servo fixed in
+  PR #228; the edge of that walk was set by it, not by the RF.
+- **No excess noise in the chain.** The snapshots' noise equals the
+  startup noise map of their row (G71 0.69 vs 0.687 cells^2, G77 2.09 vs
+  2.14): the digital noise is the receiver's thermal noise.
+- **The gain was far too low at some moments.** G59 with a carrier of 0.66
+  cells radius, G46 with 0.99, G71 with no carrier left: the carrier sat
+  within about one 4-bit step, 10-20 dB of sensitivity unused at that
+  moment (after attacks, during fades).
+- **Two C/N readings disagree by ~7 dB.** In clean-DC seconds the video
+  share fell to 35-56 % at an envelope C/N of 4-8 dB, while the level
+  meter put the carrier at -86..-78 dBm over a -97 dBm noise floor (11-19
+  dB). One of the two is wrong at the lower rows; C/N-AUTO (PR #228)
+  replaces the envelope estimate and is checked on the next walk.
+- The video share is ~75-89 % even on a strong signal, so it is a relative
+  measure only.
+
+## Range audit: static edge, restart gap, self-noise (2026-10-20, PR #230)
+
+- **Static edge (VTX fixed, A1):** the picture fails at C/N -3..+3 dB on the
+  20.7 MHz scale, carrier -90..-93 dBm over a -96.7 dBm noise floor (12.9
+  MHz): about where the bit-exact simulation puts the U85Q+LP threshold
+  (picture 0.03-0.25 at 0 dB, 0.95 at 2 dB). The 8-10 dB read on the walk
+  was the old C/N scale plus walking fades. Rating: ~-92 dBm static,
+  ~-88..-90 dBm walking (meter calibrated against Wi-Fi RSSI, +-1-2 dB).
+- **Self-noise:** console N alternates the receiver noise at G83 with the
+  video output (DAC, PARLIO TX) on and off: +0.00 / -0.04 dB over 8 pairs.
+  The board does not raise its own floor; the floor is the chip's (noise
+  figure ~6 dB from kTB in 12.9 MHz).
+- **Restart gap:** T TRANSPORT_STAGES_US. Of ~5.5 ms without picture: LUT
+  2.7-2.9 ms (2.2-2.5 with the delta load), program load 0.8, TX start 0.8.
+  The IDF program load writes the program's own LUT in 32-bit mode first;
+  a target LUT written into the program image would save the second pass.
+- **Live LUT writes:** console H. The CPU readback returns nothing valid
+  while the BitScrambler runs (1023-1024 of 1024 mismatch with the same
+  values written), so a live kp switch cannot be verified; the halted
+  restart stays.
+- **Gain writes on a still signal:** -47 dBm, VTX and receiver still: 0
+  writes, 0 overloads, sync 90 %. The walk's 10-29 writes a second close
+  in came from walking fades.
