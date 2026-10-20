@@ -283,6 +283,13 @@ int main(void)
         {"walking 18 dB C/N, Rayleigh 5 Hz", edge18, 5, 0, 0, 10, 2},
         {"walking 6 dB C/N (K 3, 2 Hz)", edge6, 2, 3, 0, 3, 2},
         {"close, walking Rayleigh 2 Hz", close, 2, 0, 0, 10, 1},
+        /* A drone at 100-200 km/h: Doppler v / lambda = 540-1070 Hz at
+         * 5.8 GHz, a fade every 1-2 ms (operator, 2026-10-20). No gain loop
+         * can follow that; KEEL must ride the envelope, not hunt it. */
+        {"fast drone 100 km/h, mid (K 3, 540 Hz)", mid, 540, 3, 0, 10, 1},
+        {"fast drone 100 km/h, edge 6 dB (K 3)", edge6, 540, 3, 0, 3, 2},
+        {"fast drone 200 km/h, edge 3 dB (K 3)", edge3, 1070, 3, 0, 3, 2},
+        {"fast drone 100 km/h, walk-out 18 dB Rayleigh", edge18, 540, 0, 0, 10, 2},
     };
     const unsigned n = sizeof(sc) / sizeof(sc[0]);
     double score = 0, weights = 0, writes = 0, edge_writes = 0, edge3_usable = 0;
@@ -305,10 +312,12 @@ int main(void)
 #ifndef NO_CHECKS
     /* KEEL-1 against the sample-based model. Since PR #230 the model counts
      * the detector's small-signal loss (small_signal_loss_db), which lowers
-     * every edge number: KEEL-1 as merged in #228 scores 63.7, edge 3 dB
-     * 29.3 % here (38-39.6 % without that loss; V7 62.3, V6 58.8 then). */
+     * every edge number, and the fast-drone scenarios (540-1070 Hz) count:
+     * KEEL-1 as merged in #228 scores 60.4, edge 3 dB 29.3 %; target P95
+     * 38 / release 34 / heat 1.5 dB 61.9 and 30.6 % (38-39.6 % edge without
+     * the small-signal loss; V7 62.3, V6 58.8 on the older list). */
     unsigned fail = 0;
-    if (score / weights < 63.0) { printf("FAIL score %.2f < 63.0 (#228: 63.7)\n", score / weights); ++fail; }
+    if (score / weights < 61.5) { printf("FAIL score %.2f < 61.5 (#228: 60.4)\n", score / weights); ++fail; }
     if (edge_writes > 3.0) { printf("FAIL edge writes %.1f/s > 3\n", edge_writes); ++fail; }
     if (edge3_usable < 28.0) { printf("FAIL edge 3 dB usable %.1f < 28 %% (#228: 29.3)\n", edge3_usable); ++fail; }
     printf("%s: KEEL-1 checks\n", fail ? "FAIL" : "PASS");

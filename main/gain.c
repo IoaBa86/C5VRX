@@ -755,10 +755,12 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
 #define DG7_FOLD_PM 20u      /* two-sided clipping per mille that starts a fold */
 #endif
 #ifndef DG7_TARGET_P95
-#define DG7_TARGET_P95 30u      /* radius ~5.5: ~3 dB below them, inside the deviation gate (profile_logic.h, P50 <= 32) */
+#define DG7_TARGET_P95 38u      /* radius ~6.2: 2 dB below the rails, inside the deviation gate (profile_logic.h, P50 <= 40).
+                                   * 30 before PR #230: at 540 Hz fading (100 km/h) the 16 ms peak memory always
+                                   * holds a fade peak, and the edge sat a home row low (model: 48 -> 51 % usable) */
 #endif
 #ifndef DG7_RELEASE_P95
-#define DG7_RELEASE_P95 26u      /* one step under the target: above the noise peaks at G83 (P95 15-19) */
+#define DG7_RELEASE_P95 30u      /* under the target, above the noise peaks at G83 (P95 15-19); 34 delayed the second climb after a -22 dB step to 31.8 ms */
 #endif
 #ifndef DG7_HOLD_US
 #define DG7_HOLD_US 16000u   /* peak memory (KEEL-1; V7 used 48 ms) */
@@ -774,7 +776,7 @@ static uint64_t settle_guard_us(const direct_gain_t *g)
  * 16 ms later, 255 writes a second between G61 and G79. After an attack the
  * row that folded stays out of reach this long. */
 #ifndef DG7_HEAT_STEP_Q8
-#define DG7_HEAT_STEP_Q8   768u       /* +3 dB per folded release into a row */
+#define DG7_HEAT_STEP_Q8   384u       /* +1.5 dB per folded release into a row (3 dB parked the edge at G74, PR #230) */
 #endif
 #define DG7_HEAT_MAX_Q8    3072u      /* at most 12 dB */
 #define DG7_HEAT_WINDOW_US 150000u    /* a fold this soon after a release counts */

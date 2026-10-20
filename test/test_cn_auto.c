@@ -275,6 +275,20 @@ int main(void)
         check("without any noise measurement the power source is unavailable", r.source != CNA_SRC_POWER && r.confidence <= CNA_CONF_LOW);
     }
 
+    {   /* a weak carrier learned again and again cannot pull an anchored row */
+        cna_noise_map_t m;
+        memset(&m, 0, sizeof(m));
+        for (unsigned k = 0; k < CNA_MIN_SAMPLES; ++k) cna_noise_learn(&m, 72, 0.84f, 1);
+        cna_noise_anchor(&m, 72, 0.84f);
+        for (unsigned k = 0; k < 500u; ++k) cna_noise_learn(&m, 72, 0.84f * 1.26f, 2);   /* +1 dB: a -6 dB carrier */
+        const double drift = 10.0 * log10(m.noise[72] / 0.84);
+        cna_noise_map_t f;
+        memset(&f, 0, sizeof(f));
+        for (unsigned k = 0; k < 500u; ++k) cna_noise_learn(&f, 72, 0.84f * 1.26f, 2);
+        printf("     anchored row after 500 learns at +1 dB: %+.2f dB (unanchored %+.2f dB)\n", drift,
+               10.0 * log10(f.noise[72] / 0.84));
+        check("in-service learning stays within 0.5 dB of the clean startup value", drift <= 0.51 && drift >= 0.0);
+    }
     printf("%u/%u C/N-AUTO checks passed\n", s_run - s_fail, s_run);
     return s_fail != 0;
 }

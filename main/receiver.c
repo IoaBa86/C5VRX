@@ -436,7 +436,9 @@ void receiver_cn_noise_store(uint8_t row, float cells2)
 {
     cna_key_check();
     if (row >= CNA_ROWS || !(cells2 > 0.0f)) return;
+    s_cna_map.anchor[row] = 0.0f;   /* the startup value replaces the anchor, then anchors */
     for (unsigned k = 0; k < CNA_MIN_SAMPLES; ++k) cna_noise_learn(&s_cna_map, row, cells2, esp_timer_get_time());
+    cna_noise_anchor(&s_cna_map, row, cells2);
     s_cna_dirty = true;
 }
 void receiver_cn_noise_save(void) { cna_save(); s_cna_gain_dirty = true; }

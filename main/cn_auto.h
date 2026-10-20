@@ -62,6 +62,7 @@ typedef struct {
     float noise[CNA_ROWS];       /* thermal + quantisation noise power at each row, cells^2 */
     uint16_t n[CNA_ROWS];        /* windows that measured it */
     int64_t us[CNA_ROWS];        /* when it was last measured (0 = loaded/unknown time) */
+    float anchor[CNA_ROWS];      /* the clean startup value (two-sided kurtosis gate), 0 = none */
 } cna_noise_map_t;
 
 typedef struct {
@@ -74,9 +75,24 @@ typedef struct {
 static inline float cna_db(float r) { return 10.0f * log10f(r > 1e-9f ? r : 1e-9f); }
 
 /* ---- noise map ---- */
+/* In service a row may drift only CNA_ANCHOR_DB around its clean startup
+ * value (temperature): a carrier near -6 dB C/N passes the absence test
+ * (kurtosis ~1.93-1.96) and, learned again and again, crept into the noise
+ * (operator, 2026-10-20; B2 row 72 read above row 73). */
+#define CNA_ANCHOR_DB 0.5f
+static inline void cna_noise_anchor(cna_noise_map_t *m, unsigned row, float power_cells2)
+{
+    if (row < CNA_ROWS && power_cells2 > 0.0f) m->anchor[row] = power_cells2;
+}
+
 static inline void cna_noise_learn(cna_noise_map_t *m, unsigned row, float power_cells2, int64_t now_us)
 {
     if (row >= CNA_ROWS || !(power_cells2 > 0.0f)) return;
+    if (m->anchor[row] > 0.0f) {
+        const float hi = m->anchor[row] * 1.1220185f, lo = m->anchor[row] / 1.1220185f;   /* +-0.5 dB */
+        if (power_cells2 > hi) power_cells2 = hi;
+        if (power_cells2 < lo) power_cells2 = lo;
+    }
     if (!m->n[row]) m->noise[row] = power_cells2;
     else m->noise[row] += (power_cells2 - m->noise[row]) / (m->n[row] < 16u ? (float)(m->n[row] + 1u) : 16.0f);
     if (m->n[row] < 60000u) ++m->n[row];

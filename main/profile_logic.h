@@ -135,7 +135,7 @@ static inline int profile_base_level_for(int p) { return (85 - profile_base_kp_x
  * keep the actual gain/clip gates without reintroducing coherence here. */
 static inline bool dev_gain_usable(int p50, unsigned clip_pm, bool held)
 {
-    return held && p50 >= 13 && p50 <= 32 && clip_pm == 0;
+    return held && p50 >= 13 && p50 <= 40 && clip_pm == 0;   /* KEEL-1 target P95 38 (PR #230); folding stays out (clip_pm) */
 }
 #define DEV_STORE_DELTA_X100     3           /* NVS: ignore smaller changes ... */
 #define DEV_STORE_GAP_US         300000000LL /* ... and rewrite at most every 5 min */

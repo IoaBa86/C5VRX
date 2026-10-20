@@ -19,9 +19,9 @@ static unsigned s_fail, s_run;
 #define CHECK(c, ...) do { ++s_run; if (!(c)) { ++s_fail; printf("FAIL %s:%d: ", __FILE__, __LINE__); \
                            printf(__VA_ARGS__); printf("\n"); } } while (0)
 
-static dg_observation_t carrier(uint64_t t)   /* radius ~5 cells, constant envelope */
+static dg_observation_t carrier(uint64_t t)   /* radius ~5.8 cells (KEEL-1 working point since PR #230), constant envelope */
 {
-    return (dg_observation_t){.p50 = 25, .p90 = 26, .p95 = 27, .origin_pm = 0, .clip_pm = 0, .coherence = 90,
+    return (dg_observation_t){.p50 = 31, .p90 = 33, .p95 = 34, .origin_pm = 0, .clip_pm = 0, .coherence = 90,
                               .repeat_pm = 50, .span = 11, .observed_us = t};
 }
 static dg_observation_t empty(uint64_t t)
