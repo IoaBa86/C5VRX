@@ -153,6 +153,11 @@ export function decodeSecond(p) {
   s.writesRelease = p.length >= 42 ? p[39] : null;
   s.sentinel = p.length >= 42 ? p[40] : null;
   s.overloadsAfterWrite = p.length >= 42 ? p[41] : null;
+  // C/N-AUTO (50-byte records)
+  const cnv = (o) => { const v = d.getInt16(o, true); return v <= -990 ? null : v / 10; };
+  s.cnPower = p.length >= 50 ? cnv(42) : null;
+  s.cnM2m4 = p.length >= 50 ? cnv(44) : null;
+  s.cnConfidence = p.length >= 50 ? p[48] & 3 : null;
   if (p.length >= 38 && (p[37] & 1) && d.getInt16(34, true) !== -32768) {
     s.level = d.getInt16(34, true) / 10;
     s.noise = d.getInt8(36);
@@ -254,7 +259,7 @@ export function summarize(session) {
 export function secondsCsv(session) {
   const keys = ['t', 'snr', 'lines', 'cn', 'video', 'dropoutCategory', 'gainMin', 'gain', 'gainMax', 'clip', 'gainWrites',
     'overloads', 'dcI', 'dcQ', 'offI', 'offQ', 'servo', 'afcOffset', 'afcResidual', 'afcSteps', 'profile', 'kp', 'lp',
-    'sphase', 'temp', 'flags', 'rxState', 'rxReason', 'level', 'noise', 'levelExact', 'writesAttack', 'writesRelease', 'sentinel', 'overloadsAfterWrite'];
+    'sphase', 'temp', 'flags', 'rxState', 'rxReason', 'level', 'noise', 'levelExact', 'writesAttack', 'writesRelease', 'sentinel', 'overloadsAfterWrite', 'cnPower', 'cnM2m4', 'cnConfidence'];
   const rows = session.seconds.map((s) => keys.map((k) => (s[k] === null || s[k] === undefined ? '' : typeof s[k] === 'number' ? +s[k].toFixed(3) : s[k])).join(','));
   return [keys.join(','), ...rows].join('\n') + '\n';
 }

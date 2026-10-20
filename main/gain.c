@@ -4,6 +4,7 @@
  * the V6 carrier memory described in gain.h. */
 #include "gain.h"
 #include "direct_gain_v3_lut.h"
+#include <math.h>
 #include <string.h>
 
 /* A Q4 cell represents the half-integer position n+0.5. The lookup is built
@@ -148,6 +149,7 @@ static dg_observation_t measure(const uint8_t *samples, size_t bytes,
     uint32_t iq_seen = iq_bits(samples[0]);
     uint8_t prior_raw = samples[0], prior_phase = phase8_lut[prior_raw];
     ++hist[s_power[prior_raw]];
+    unsigned neg_i = prior_raw >> 7, neg_q = (prior_raw >> 3) & 1u;   /* I sign bit 7, Q sign bit 3 */
     origin += s_flags[prior_raw] & 1u;
     clip += s_flags[prior_raw] >> 1;
     for (size_t n = 1; n < bytes; ++n) {
@@ -158,6 +160,8 @@ static dg_observation_t measure(const uint8_t *samples, size_t bytes,
         iq_seen |= iq_bits(raw);
         cx += s_ci[raw];
         cy += s_cq[raw];
+        neg_i += raw >> 7;
+        neg_q += (raw >> 3) & 1u;
         cp += power;
         /* |wrap(phase - prior)| <= 32 codes (45 degrees) */
         coherent += power >= 8u && (uint8_t)(phase - prior_phase + 32u) <= 64u;
@@ -173,6 +177,8 @@ static dg_observation_t measure(const uint8_t *samples, size_t bytes,
     r.repeat_pm = bytes > 1u ? (uint16_t)(repeats * 1000u / (bytes - 1u)) : 0;
     r.sum_i = cx;
     r.sum_q = cy;
+    r.neg_i = (uint16_t)neg_i;
+    r.neg_q = (uint16_t)neg_q;
     r.rails = (uint8_t)((i_seen & 1u) | ((i_seen >> 14) & 2u) | ((q_seen & 1u) << 2) | ((q_seen >> 12) & 8u));
     /* Mean power around the window DC from the sums already taken: in dsp
      * units (2v+1) N * sum(x^2+y^2) - sum(x)^2 - sum(y)^2 over N^2, and a
@@ -988,6 +994,44 @@ uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o)
     ++g->holds;
     if (!no_carrier) g->last_healthy_us = now;
     return g->current_gain;
+}
+
+/* Board, pair sweep on receiver noise (PR #228): the fine steps of the top
+ * rows are 1.0 dB (model 0.83) and the G78/G77 baseband step 0.93 dB (model
+ * 1.85); G83 -> G72 is 11.2 dB (model 10.2). Receiver noise is a constant
+ * input, so its power per row is the row's real gain. */
+unsigned dg_apply_measured_gain(direct_gain_t *g, const float thermal_cells2[DG_STATES])
+{
+    if (!g || !thermal_cells2) return 0u;
+    int top = -1, low = -1;
+    for (int k = (int)g->table.max_index; k >= 0; --k)
+        if (thermal_cells2[k] > 0.0f) { if (top < 0) top = k; low = k; }
+    if (top < 0 || top == low) return 0u;
+    int16_t q8[DG_STATES];
+    memcpy(q8, g->model_db_q8, sizeof(q8));
+    unsigned set = 0;
+    for (int k = low; k <= top; ++k) {
+        if (thermal_cells2[k] <= 0.0f) continue;
+        const float rel = 10.0f * log10f(thermal_cells2[k] / thermal_cells2[top]);
+        q8[k] = (int16_t)(g->model_db_q8[top] + (int)lroundf(rel * 256.0f));
+        ++set;
+    }
+    /* Unmeasured rows between measured ones: linear in the row (the board
+     * measured ~1 dB a row through the baseband steps the model makes 1.85
+     * dB; following the model's shape kept those wrong steps). */
+    for (int k = low; k <= top; ++k) {
+        if (thermal_cells2[k] > 0.0f) continue;
+        int a = k - 1, b = k + 1;
+        while (a > low && thermal_cells2[a] <= 0.0f) --a;
+        while (b < top && thermal_cells2[b] <= 0.0f) ++b;
+        q8[k] = (int16_t)(q8[a] + (q8[b] - q8[a]) * (k - a) / (b - a));
+    }
+    /* Below the lowest measured row: the model, joined to it. */
+    const int shift = q8[low] - g->model_db_q8[low];
+    for (int k = 0; k < low; ++k) q8[k] = (int16_t)(g->model_db_q8[k] + shift);
+    memcpy(g->model_db_q8, q8, sizeof(q8));
+    keel_build(g);
+    return set;
 }
 
 void dg_write_refused(direct_gain_t *g, uint8_t actual_gain)

@@ -189,7 +189,9 @@ void control_flog_afc(int16_t *offset_khz, int16_t *residual_khz, uint32_t *corr
 /* Observer DC sums per gain row (receiver.c) for the live DC servo: a row's
  * sums once they hold min_samples (then it restarts); reset a row whose codes
  * changed, or every row. */
-bool receiver_dc_take_row(uint8_t gain, uint32_t min_samples, int64_t *si, int64_t *sq, uint32_t *samples);
+/* neg: samples with the I / Q sign bit set (the folding-proof DC sign). */
+bool receiver_dc_take_row(uint8_t gain, uint32_t min_samples, int64_t *si, int64_t *sq, uint32_t neg[2],
+                          uint32_t *samples);
 void receiver_dc_reset_row(uint8_t gain);
 void receiver_dc_reset_all(void);
 /* DC CAL NEEDED on this channel (dc_health.h): the flagged profiles in buf
@@ -204,10 +206,15 @@ int calibration_filter_class_mhz(void);
 /* C/N model of the latest observer window; CN_UNKNOWN_X10 on a fixed IQ point. */
 int receiver_obs_cn_x10(void);
 #include "rx_level.h"
-void receiver_level_roll(bool no_carrier);   /* 1 Hz, the supervisor (diag.c) */
+void receiver_level_roll(bool no_carrier, bool video);   /* video: sync seen this second */   /* 1 Hz, the supervisor (diag.c) */
 rx_level_t receiver_level(void);    /* last full second */
 bool receiver_noise_learned(void);
 void receiver_pair_sweep_toggle(void);   /* bench, console Q */
+#include "cn_auto.h"
+cna_reading_t receiver_cn_reading(void);   /* C/N-AUTO: value, confidence, source */
+void receiver_cn_noise_store(uint8_t row, float cells2);   /* startup noise map (calibration.c) */
+void receiver_cn_noise_save(void);
+unsigned calibration_filter_nbw_khz(void);   /* measured noise bandwidth of the active filter, 0 unknown */
 uint32_t receiver_sentinel_forwarded(void);
 void receiver_level_feed(const uint8_t *window, size_t bytes);   /* the menu's control windows */
 unsigned calibration_narrow_width_khz(void);   /* measured -3 dB width, 0 = none */
@@ -273,7 +280,6 @@ void diag_toggle_stream(void);          /* console R */
 void settings_load(void);
 void settings_save(void);
 void settings_save_output(unsigned level); /* only after verified output application */
-void settings_save_gain_mode(uint8_t mode);
 void settings_save_flywheel(bool on);
 bool blob_load(const char *key, void *data, size_t size);
 bool blob_store(const char *key, const void *data, size_t size);

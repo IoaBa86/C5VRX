@@ -109,6 +109,16 @@ int main(void)
     r = rx_level_compute(sum, n, 0, g.model_db_q8, top, nrel);
     check("learned noise: C/N 10 dB over it", abs(r.cn_x10 - 100) <= 2);
 
+    {   /* the display gate: noise 1.3 dB over its reference is no carrier without video */
+        rx_level_t r = {.valid = true, .above_noise = true, .input_dbm_x10 = -952, .carrier_dbm_x10 = -1000,
+                        .cn_x10 = -55};
+        const rx_level_t a = rx_level_gate(r, false), b = rx_level_gate(r, true);
+        check("gate: 1.3 dB over the noise without video reads no carrier", !a.above_noise && a.cn_x10 == -990 &&
+              a.carrier_dbm_x10 == -952);
+        check("gate: the same with video keeps the carrier (range edge)", b.above_noise && b.carrier_dbm_x10 == -1000);
+        r.cn_x10 = 20; r.carrier_dbm_x10 = -925;
+        check("gate: C/N >= 0 dB shows without video", rx_level_gate(r, false).above_noise);
+    }
     printf("%u/%u rx level checks passed\n", s_run - s_fail, s_run);
     return s_fail != 0;
 }

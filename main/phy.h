@@ -15,6 +15,7 @@ uint32_t phy_generation(void);
 bool phy_busy(void);
 /* Non-blocking gain/offset ownership without a new generation. */
 bool phy_try_actuator(uint32_t expected_generation);
+bool phy_try_actuator_wait(uint32_t expected_generation, uint32_t wait_ticks);   /* bounded wait for the lock */
 void phy_end_actuator(void);
 /* Receive observers invalidate buffered evidence BEFORE a physical change.
  * Hook must be nonblocking, allocation-free, and must not acquire PHY ownership.
@@ -49,6 +50,9 @@ typedef struct {
     int residual_mcells[2];
 } phy_dco_result_t;
 esp_err_t phy_dco_search(bool (*measure)(int dc[2]), phy_dco_result_t *res);
+/* The same search started from given codes (a converged neighbour row) instead
+ * of the live ones: start NULL = phy_dco_search. */
+esp_err_t phy_dco_search_from(bool (*measure)(int dc[2]), const int start[2], phy_dco_result_t *res);
 /* The same codes for a row whose receiver noise is below one quantizer step:
  * the IQ is one fixed code, so the DC is found per axis by bisection on the
  * code where that fixed code flips (DC within half a cell). measured=false

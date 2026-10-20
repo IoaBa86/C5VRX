@@ -25,7 +25,6 @@ bool blob_store(const char *, const void *, size_t);
 void settings_load(void);
 void settings_save(void);
 void settings_save_output(unsigned);
-void settings_save_gain_mode(uint8_t mode);
 void receiver_set_gain_mode(uint8_t mode, bool save);
 void settings_save_flywheel(bool on);
 void transport_sync_flywheel_set_boot(bool on);
@@ -147,14 +146,10 @@ int main(void) {
     assert(writes == 1 && !commits); fail_set = 0; boot(); assert(output == 2);
     fail_commit = 1; settings_save_output(1); fail_commit = 0; boot(); assert(output == 2);
     settings_save_output(1); boot(); assert(output == 1);
-    /* Gain mode: own key, restored at boot, unchanged value not rewritten,
-     * independent of output/channel blobs. */
+    /* Gain mode: never restored, every boot starts AUTO, even with a fixed
+     * mode left in NVS by an earlier firmware. */
     boot(); assert(!gain_restores);
-    writes = commits = 0; settings_save_gain_mode(255); assert(writes == 1 && commits == 1);
-    boot(); assert(gain_restores == 1 && gain_mode == 255 && output == 1);
-    settings_save_gain_mode(255); assert(writes == 1 && commits == 1);
-    settings_save_gain_mode(42); boot(); assert(gain_mode == 42 && output == 1);
-    settings_save_gain_mode(0); boot(); assert(gain_restores == 1 && gain_mode == 0);
+    const unsigned char old_fixed = 42; seed(2, &old_fixed, 1); boot(); assert(!gain_restores && gain_mode == 0);
     /* Flywheel: absent key keeps the firmware default (ON), saved ON/OFF restored. */
     slots[3].n = 0; boot(); assert(!flywheel_restores && flywheel_boot == 0);
     writes = commits = 0; settings_save_flywheel(true); assert(writes == 1 && commits == 1);

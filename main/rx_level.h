@@ -83,3 +83,21 @@ static inline rx_level_t rx_level_compute(const uint32_t sum_x16[RX_LEVEL_ROWS],
     r.cn_x10 = r.above_noise ? (int)lround(100.0 * log10(carrier / noise_rel)) : -990;
     return r;
 }
+
+/* A carrier is shown only on evidence: 1 dB over the noise reference is
+ * within what the noise itself moves (temperature, a Wi-Fi burst, a
+ * reference learned at another moment), and that excess read as a carrier
+ * of noise - 6 dB, "-100 dBm" with no VTX (operator, 2026-10-20). Without
+ * video the carrier must reach the noise (C/N >= 0 dB, total 3 dB over);
+ * with video (sync seen this second) 1 dB is enough, so the meter keeps
+ * working at the range edge. */
+#define RX_LEVEL_NO_VIDEO_MIN_CN_X10 0
+static inline rx_level_t rx_level_gate(rx_level_t r, bool video)
+{
+    if (r.valid && r.above_noise && !video && r.cn_x10 < RX_LEVEL_NO_VIDEO_MIN_CN_X10) {
+        r.above_noise = false;
+        r.carrier_dbm_x10 = r.input_dbm_x10;
+        r.cn_x10 = -990;
+    }
+    return r;
+}

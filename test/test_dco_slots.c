@@ -38,6 +38,18 @@ int main(void)
     store(&x, 5362);                         /* evicts the oldest: 5732 */
     check("LRU eviction drops the least recently stored channel", dco_slot_of(&x, 5732, K0) < 0 &&
           dco_slot_of(&x, 5865, K0) >= 0 && dco_slot_of(&x, 5362, K0) >= 0);
+    /* A table still holding template rows goes before an older measured one. */
+    {
+        dco_index_t t;
+        dco_index_init(&t);
+        static const uint16_t f6[6] = {5805, 5825, 5865, 5645, 5925, 5945};
+        for (unsigned k = 0; k < 6u; ++k) store(&t, f6[k]);
+        const int tmpl = dco_slot_of(&t, 5925, K0);
+        for (unsigned g = 54; g <= 83; ++g) dco_mask_put(t.templ[tmpl], g, true);   /* passed through only */
+        store(&t, 5740);
+        check("eviction prefers the table with template rows over the oldest measured one",
+              dco_slot_of(&t, 5925, K0) < 0 && dco_slot_of(&t, 5805, K0) >= 0 && dco_slot_of(&t, 5740, K0) >= 0);
+    }
     /* Sequence renumbering keeps the use order. */
     x.next_seq = UINT16_MAX;
     store(&x, 5917);
@@ -51,8 +63,10 @@ int main(void)
     store(&y, 5658);                           /* measured on its own channel */
     store(&y, 5917);
     dco_mask_put(y.templ[dco_slot_of(&y, 5917, K0)], 60, true);   /* still holds a template row */
-    check("template-copy tables are skipped as seed while a measured one exists",
-          y.freq[dco_nearest_slot(&y, 5900, K0)] == 5658);
+    check("a measured table wins over a template copy at a similar distance",
+          y.freq[dco_nearest_slot(&y, 5800, K0)] == 5658);
+    check("a template copy 17 MHz away wins over a measured table 242 MHz away (codes move ~0.7/MHz)",
+          y.freq[dco_nearest_slot(&y, 5900, K0)] == 5917);
     dco_index_t z;
     dco_index_init(&z);
     store(&z, 5917);
@@ -77,8 +91,11 @@ int main(void)
         check("it seeds from the same channel's other filter when nothing else exists",
               dco_nearest_slot(&f, 5865, narrow) == 0);
         dco_index_touch(&f, dco_slot_for_store(&f, 5732, narrow), 5732, narrow);
-        check("a table of the same filter seeds before the same channel's other filter",
-              f.freq[dco_nearest_slot(&f, 5865, narrow)] == 5732);
+        check("the same channel's other filter seeds before a same-filter table 133 MHz away",
+              f.freq[dco_nearest_slot(&f, 5865, narrow)] == 5865);
+        dco_index_touch(&f, dco_slot_for_store(&f, 5845, narrow), 5845, narrow);
+        check("a same-filter table 20 MHz away seeds before the same channel's other filter",
+              f.freq[dco_nearest_slot(&f, 5865, narrow)] == 5845);
         check("storing the narrow table on 5865 takes its own slot",
               dco_slot_for_store(&f, 5865, narrow) != (unsigned)dco_slot_of(&f, 5865, normal));
         dco_index_touch(&f, dco_slot_for_store(&f, 5865, narrow), 5865, narrow);

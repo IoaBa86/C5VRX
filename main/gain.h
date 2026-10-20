@@ -43,6 +43,7 @@ typedef struct {
     uint16_t env_ratio_x100; /* DC-removed envelope mean^2/var of |z|^2, x100 (noise 100) */
     uint8_t centered;        /* judged around the window DC (DC-dominated, gain.c) */
     int32_t sum_i, sum_q;    /* sums of 2v+1 per axis (dsp units): the probe DC for the servo */
+    uint16_t neg_i, neg_q;   /* samples with the sign bit set: never folded (dc_servo.h) */
     uint8_t rails;           /* rails reached: bit 0 I-8, 1 I+7, 2 Q-8, 3 Q+7 */
     uint16_t pwr_x16;        /* DC-removed mean power, cells^2 x16 (rx_level.h) */
     uint64_t observed_us;
@@ -183,6 +184,12 @@ dg_observation_t dg_measure(const uint8_t *samples, size_t bytes,
 dg_observation_t dg_measure_gain(const uint8_t *samples, size_t bytes,
                                  const uint8_t phase8_lut[256], uint64_t observed_us);
 uint8_t dg_tick(direct_gain_t *g, const dg_observation_t *o);
+/* Measured gain per row (KEEL-1 steps, rx_level): thermal_cells2[k] > 0 for
+ * rows whose receiver noise was measured well above the 4-bit step; their
+ * gain becomes the measured one (relative to the highest such row, which
+ * keeps its model value); rows below the lowest measured one follow the
+ * model, shifted to join it. Rebuilds the home rows. Returns rows set. */
+unsigned dg_apply_measured_gain(direct_gain_t *g, const float thermal_cells2[DG_STATES]);
 void dg_sync_applied(direct_gain_t *g, uint8_t gain, uint64_t write_us);
 /* A write the PHY did not take: the core is back on the real gain, no settle. */
 void dg_write_refused(direct_gain_t *g, uint8_t actual_gain);

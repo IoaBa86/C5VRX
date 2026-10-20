@@ -23,6 +23,7 @@
  * deviation, diag.c). A step that cannot run (no quiet channel, menu open,
  * ...) keeps the safe default and is tried again on the next boot. */
 #include "receiver.h"
+#include "cn_auto.h"
 #include "calibration_noise.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -536,6 +537,17 @@ int calibration_filter_class_mhz(void)
     return 20;
 }
 
+/* Measured noise bandwidth of the active filter (the startup sweep), 0
+ * when unknown: C/N-AUTO converts to the 20 MHz scale with it. */
+unsigned calibration_filter_nbw_khz(void)
+{
+    rf_filter_t f, now = rf_filter();
+    if (filter_setting(FILTER_NORMAL, &f) && rf_filter_equal(f, now) && s_filter_cal.normal.valid) return s_filter_cal.normal.nbw_khz;
+    if (filter_setting(FILTER_NARROW, &f) && rf_filter_equal(f, now) && s_filter_cal.narrow.valid) return s_filter_cal.narrow.nbw_khz;
+    if (filter_setting(FILTER_WIDE, &f) && rf_filter_equal(f, now) && s_filter_cal.wide.valid) return s_filter_cal.wide.nbw_khz;
+    return s_filter_cal.calibrated_nbw_khz;
+}
+
 unsigned calibration_narrow_width_khz(void)
 {
     return s_filter_cal.narrow.valid ? s_filter_cal.narrow.width_khz : 0u;
@@ -573,6 +585,15 @@ typedef struct {
  * one quantizer step there, nothing to correct); 0 = still missing. */
 #define DCO_ROW_OK    1u
 #define DCO_ROW_FLOOR 2u
+/* A row whose search left more than this is not converged (clipped start,
+ * see phy_dco_search_from): never OK, never a template, searched again from
+ * a converged neighbour. The live servo trims what a good row leaves. */
+#define DCO_BAD_MCELLS 1200
+static bool dco_entry_bad(const dco_entry_t *e)
+{
+    return e->valid == 1u && (abs(e->residual_mcells[0]) > DCO_BAD_MCELLS || abs(e->residual_mcells[1]) > DCO_BAD_MCELLS);
+}
+static uint32_t s_dco_bad_dropped, s_dco_repairs, s_dco_repair_fails;
 typedef struct {
     uint16_t freq;
     uint8_t version, lo, hi, band5, iq_scale_sel, filter_bw20;
@@ -658,6 +679,16 @@ static unsigned dco_template_rows(void) { return dco_mask_count(s_dco_templ, s_d
 /* A row measured on the own channel is no longer a template row. */
 static void dco_row_measured(unsigned g) { dco_mask_put(s_dco_templ, g, false); }
 
+/* Rows stored before this check: a bad row becomes missing on load. */
+static unsigned dco_drop_bad(dco_table_t *t)
+{
+    unsigned n = 0;
+    for (unsigned g = t->lo; g <= t->hi && g <= ARC_VENDOR_GAIN_MAX; ++g)
+        if (dco_entry_bad(&t->e[g])) { t->e[g].valid = 0; ++n; }
+    s_dco_bad_dropped += n;
+    return n;
+}
+
 static void dco_slot_key(unsigned slot, char key[8]) { snprintf(key, 8, "dco%u", slot); }
 
 static bool dco_load_slot(unsigned slot, dco_table_t *out)
@@ -738,6 +769,7 @@ static void dco_select(void)
     const int own = dco_slot_of(&s_dco_index, freq, want.key);
     if (own >= 0 && dco_load_slot((unsigned)own, &s_dco) && dco_matches(&s_dco, &want)) {
         memcpy(s_dco_templ, s_dco_index.templ[own], sizeof(s_dco_templ));
+        if (dco_drop_bad(&s_dco)) printf("DCO table freq=%u: unconverged rows dropped (searched again)\n", freq);
         return;
     }
     /* No own table: start from the nearest one, the same filter first. */
@@ -745,6 +777,7 @@ static void dco_select(void)
     if (near >= 0 && dco_load_slot((unsigned)near, &s_dco)) {
         const uint16_t from = s_dco.freq;
         s_dco.freq = freq;
+        (void)dco_drop_bad(&s_dco);
         if (dco_matches(&s_dco, &want)) {
             s_dco_seed_mhz = from;
             ++s_dco_seeds;
@@ -787,11 +820,33 @@ static int dco_trimmed(unsigned g, unsigned axis)
     return v < 0 ? 0 : v > 511 ? 511 : v;
 }
 
+/* The row whose codes gain g holds: its own, or for a missing row the
+ * nearest converged one within 6 rows (the codes of neighbouring rows differ
+ * by a few; the chip's own codes left 4+ cells at G83 on 5805 MHz).
+ * -1 = nothing to hold. */
+#define DCO_BORROW_ROWS 6
+static uint32_t s_dco_borrowed;
+static int dco_hold_row(uint8_t g)
+{
+    if (g < s_dco.lo || g > s_dco.hi || s_dco_banned[g] || s_dco.freq != rf_frequency_mhz()) return -1;
+    if (s_dco.e[g].valid == DCO_ROW_OK) return g;
+    if (s_dco.e[g].valid) return -1;                      /* FLOOR: nothing to correct */
+    for (int d = 1; d <= DCO_BORROW_ROWS; ++d) {
+        if (g - d >= (int)s_dco.lo && s_dco.e[g - d].valid == DCO_ROW_OK && !s_dco_banned[g - d]) return g - d;
+        if (g + d <= (int)s_dco.hi && s_dco.e[g + d].valid == DCO_ROW_OK && !s_dco_banned[g + d]) return g + d;
+    }
+    return -1;
+}
+
 void dco_post_gain(uint8_t g)
 {
-    if (receiver_paused() || g < s_dco.lo || g > s_dco.hi || s_dco.e[g].valid != DCO_ROW_OK ||
-        s_dco_banned[g] || s_dco.freq != rf_frequency_mhz()) return;
-    if (phy_dco_hold(dco_trimmed(g, 0), dco_trimmed(g, 1)) == ESP_OK) ++s_dco_hook_holds;
+    if (receiver_paused()) return;
+    const int r = dco_hold_row(g);
+    if (r < 0) return;
+    if (phy_dco_hold(dco_trimmed((unsigned)r, 0), dco_trimmed((unsigned)r, 1)) == ESP_OK) {
+        ++s_dco_hook_holds;
+        s_dco_borrowed += r != (int)g;
+    }
 }
 
 /* Sampling-phase probes run with the gain worker paused, where the post-gain
@@ -800,10 +855,9 @@ void dco_post_gain(uint8_t g)
 static void dco_hold_for_scan(void)
 {
     dco_select();
-    const uint8_t g = s_current_gain;
-    if (g < s_dco.lo || g > s_dco.hi || s_dco.e[g].valid != DCO_ROW_OK || s_dco_banned[g] ||
-        s_dco.freq != rf_frequency_mhz()) return;
-    (void)phy_dco_hold(dco_trimmed(g, 0), dco_trimmed(g, 1));   /* the live trim too */
+    const int r = dco_hold_row(s_current_gain);
+    if (r < 0) return;
+    (void)phy_dco_hold(dco_trimmed((unsigned)r, 0), dco_trimmed((unsigned)r, 1));   /* the live trim too */
 }
 
 static bool dco_measure(int dc[2])
@@ -921,7 +975,7 @@ static bool dco_flat_row(uint8_t g)
 /* One quiet search of gain row g (receiver noise). NOISE_BELOW_STEP when
  * the noise is below one quantizer step there (no codes at or below g),
  * NOISE_PROBE_FAILED when nothing could be measured (rows untouched). */
-static int dco_quiet_search(uint8_t g)
+static int dco_quiet_search(uint8_t g, const int *seed)
 {
     if (!receiver_pause("DCO")) return NOISE_PROBE_FAILED;
     const uint8_t restore = s_current_gain;
@@ -946,11 +1000,17 @@ static int dco_quiet_search(uint8_t g)
         s_dco_floor = (uint8_t)(g + 1);
     } else {
         phy_dco_result_t res;
-        (void)phy_dco_search(dco_measure, &res);
+        (void)phy_dco_search_from(dco_measure, seed, &res);
         if (res.measured) {
-            s_dco.e[g] = (dco_entry_t){{(int16_t)res.codes[0], (int16_t)res.codes[1]},
+            const dco_entry_t e = {{(int16_t)res.codes[0], (int16_t)res.codes[1]},
                 {(int16_t)res.residual_mcells[0], (int16_t)res.residual_mcells[1]}, DCO_ROW_OK};
-            dco_row_measured(g);
+            if (!dco_entry_bad(&e)) {
+                s_dco.e[g] = e;
+                dco_row_measured(g);
+            } else {
+                s_dco.e[g].valid = 0;                /* not converged: missing, repaired from a neighbour */
+                printf("DCO row=%u not_converged residual=%d/%d\n", g, e.residual_mcells[0], e.residual_mcells[1]);
+            }
         }
         s_dco_found_us[g] = esp_timer_get_time();
         ++s_dco_searches;
@@ -978,6 +1038,36 @@ bool calibration_dc_ok(uint8_t g)
     return s_dco.e[g].valid == DCO_ROW_FLOOR || g < s_dco_floor;
 }
 
+/* Continuation: every missing row next to a converged one is searched from
+ * that row's codes, upward from below and downward from above, until no row
+ * changes. The gain steps between rows are ~1 dB, so the start is within the
+ * search's linear range wherever the chip's own codes were not. */
+static void dco_repair_rows(int64_t deadline)
+{
+    for (bool changed = true; changed && esp_timer_get_time() < deadline;) {
+        changed = false;
+        for (int pass = 0; pass < 2; ++pass) {
+            for (int k = 0; k <= (int)(s_dco.hi - s_dco.lo); ++k) {
+                const int g = pass == 0 ? (int)s_dco.lo + k : (int)s_dco.hi - k;
+                const int n = pass == 0 ? g - 1 : g + 1;
+                /* A template neighbour seeds too: the seed only has to start
+                 * the search inside its linear range. */
+                if (n < (int)s_dco.lo || n > (int)s_dco.hi || s_dco.e[g].valid || s_dco.e[n].valid != DCO_ROW_OK ||
+                    g < (int)s_dco_floor) continue;
+                if (esp_timer_get_time() > deadline || !noise_like()) return;
+                const int seed[2] = {s_dco.e[n].code[0], s_dco.e[n].code[1]};
+                ++s_dco_repairs;
+                if (dco_quiet_search((uint8_t)g, seed) == NOISE_MEASURABLE && s_dco.e[g].valid == DCO_ROW_OK) {
+                    printf("DCO row=%u repaired from row=%d codes=%d/%d\n", g, n, s_dco.e[g].code[0], s_dco.e[g].code[1]);
+                    changed = true;
+                } else {
+                    ++s_dco_repair_fails;
+                }
+            }
+        }
+    }
+}
+
 /* The quiet-noise row search, from the top row down; shared by the own
  * channel (VTX off) and a quiet channel (VTX on). */
 /* refine: also measure rows that still come from a template (own channel
@@ -998,11 +1088,12 @@ static const char *dco_quiet_rows(bool manual, bool refine, int64_t deadline, co
         status_screen("CALIBRATING DC", line1, line2, rows ? (int)(done * 100u / rows) : 0);
         if (esp_timer_get_time() > deadline) { why = "timeout"; break; }
         if (!noise_like()) { why = "carrier_detected"; break; }   /* VTX switched on / leaking */
-        const int r = dco_quiet_search((uint8_t)g);
+        const int r = dco_quiet_search((uint8_t)g, NULL);
         if (r == NOISE_PROBE_FAILED) { why = "probe_failed"; break; }
         if (r == NOISE_BELOW_STEP) { why = "floor"; break; }     /* the rest needs no correction */
         ++done;
     }
+    if (!strcmp(why, "done") || !strcmp(why, "floor")) dco_repair_rows(deadline);
     *done_out = done;
     return why;
 }
@@ -1373,6 +1464,20 @@ static void dco_service(void)
  * Q stored as 224, 262, 251, 239 by four calibrations), and with +-48 the
  * servo sat at +44..48 on the 224 table, one step from losing the DC. */
 #define DC_TRIM_MAX_OFFSET 96
+/* Template rows (codes of another channel) may need more: the LO leakage
+ * DC moves with the frequency (board, PR #228: E7 5925 MHz on the 5805 MHz
+ * table, Q at the +96 clamp with 3.5 cells left on G83, and the gain backed
+ * off to G79 because of the clipping). */
+#define DC_TRIM_MAX_TEMPLATE 192
+static int dc_trim_max(unsigned g) { return dco_mask_get(s_dco_templ, g) ? DC_TRIM_MAX_TEMPLATE : DC_TRIM_MAX_OFFSET; }
+/* Self-calibration in use: a template row the servo holds within
+ * DC_ADOPT_MCELLS for DC_ADOPT_RUN estimates in a row on receiver noise
+ * (no video) becomes this channel's own row (codes + trim), stored with the
+ * table, as a search would have. */
+#define DC_ADOPT_MCELLS 300
+#define DC_ADOPT_RUN 8u
+static uint8_t s_adopt_run[ARC_VENDOR_GAIN_MAX + 1u];
+static uint32_t s_dco_adopted;
 static int s_drift_avg[2];
 static float s_temp_c = -100.0f;
 static bool s_dc_fault;
@@ -1471,14 +1576,18 @@ static void drift_service(void)
         s_servo_ctx.control = s_control_epoch; s_servo_ctx.reloads = s_dco_reloads;
         s_servo_ctx.freq = rf_frequency_mhz(); s_servo_ctx.key = live_filter_key();
     }
+    /* Another channel's table: load this channel's (or its template) now
+     * instead of skipping until something else does. */
+    if (s_dco.freq != rf_frequency_mhz() && quiet_owner()) dco_select();
     if (s_dco.freq != rf_frequency_mhz()) { ++s_servo_skip[1]; return; }
     for (unsigned r = s_dco.lo; r <= s_dco.hi && r <= ARC_VENDOR_GAIN_MAX; ++r) {
         const uint8_t g = (uint8_t)r;
         int64_t si, sq;
-        uint32_t samples;
+        uint32_t samples, neg[2];
         int dc[2];
-        if (!receiver_dc_take_row(g, DC_SERVO_MIN_SAMPLES, &si, &sq, &samples) ||
+        if (!receiver_dc_take_row(g, DC_SERVO_MIN_SAMPLES, &si, &sq, neg, &samples) ||
             !dc_servo_mean(si, sq, samples, dc)) continue;
+        const int pneg[2] = {dc_servo_pneg(neg[0], samples), dc_servo_pneg(neg[1], samples)};
         ++s_servo_estimates;
         if (g == s_current_gain) {
             s_drift_avg[0] = dc[0]; s_drift_avg[1] = dc[1];
@@ -1489,12 +1598,39 @@ static void drift_service(void)
             dc_servo_forget_step(&s_servo, g);
             continue;
         }
+        if (dco_mask_get(s_dco_templ, g) && s_drift_set[g] && !video_recent() &&
+            abs(dc[0]) <= DC_ADOPT_MCELLS && abs(dc[1]) <= DC_ADOPT_MCELLS) {
+            if (++s_adopt_run[g] >= DC_ADOPT_RUN) {
+                /* Rows without their own trim inherit the nearest one's:
+                 * pin theirs before this row's trim goes into its codes. */
+                for (unsigned r = s_dco.lo; r <= s_dco.hi && r <= ARC_VENDOR_GAIN_MAX; ++r) {
+                    if (s_drift_set[r]) continue;
+                    s_drift_offset[r][0] = dco_offset(r, 0);
+                    s_drift_offset[r][1] = dco_offset(r, 1);
+                    s_drift_set[r] = true;
+                }
+                for (int a = 0; a < 2; ++a) {
+                    s_dco.e[g].code[a] = (int16_t)dco_trimmed(g, (unsigned)a);
+                    s_dco.e[g].residual_mcells[a] = (int16_t)dc[a];
+                    s_drift_offset[g][a] = 0;
+                }
+                dco_row_measured(g);
+                s_dco_dirty = true;
+                s_adopt_run[g] = 0;
+                ++s_dco_adopted;
+                printf("DCO row=%u adopted freq=%u codes=%d/%d (servo on receiver noise)\n", g, s_dco.freq,
+                       s_dco.e[g].code[0], s_dco.e[g].code[1]);
+            }
+        } else {
+            s_adopt_run[g] = 0;
+        }
         int step[2];
-        dc_servo_decide(&s_servo, g, dc, step);
+        dc_servo_decide_sign(&s_servo, g, dc, pneg, step);
         const int base[2] = {dco_offset(g, 0), dco_offset(g, 1)};
         for (int a = 0; a < 2; ++a) {
-            if (base[a] + step[a] > DC_TRIM_MAX_OFFSET) step[a] = DC_TRIM_MAX_OFFSET - base[a];
-            if (base[a] + step[a] < -DC_TRIM_MAX_OFFSET) step[a] = -DC_TRIM_MAX_OFFSET - base[a];
+            const int lim = dc_trim_max(g);
+            if (base[a] + step[a] > lim) step[a] = lim - base[a];
+            if (base[a] + step[a] < -lim) step[a] = -lim - base[a];
         }
         if (!step[0] && !step[1]) continue;
         int applied[2] = {step[0], step[1]};
@@ -1582,6 +1718,60 @@ static void deviation_startup(int64_t deadline)
     profile_commit(dev);
 }
 
+/* C/N-AUTO noise map (cn_auto.h): with no carrier, the noise power of the
+ * rows 3 apart from the table maximum down to G54, ~25 ms each, every boot
+ * (also on a channel quiet now but measured before: temperature and drift).
+ * Startup only, never in flight; skipped with a carrier on the channel. */
+static void noise_map_startup(int64_t deadline)
+{
+    if (!noise_like()) { printf("CN_NOISE startup skip=carrier_or_not_quiet (map from NVS / learned later)\n"); return; }
+    if (!receiver_pause("CNMAP")) return;
+    const uint8_t restore = s_current_gain;
+    unsigned rows = 0, rejected = 0;
+    /* Every row while the noise is real (it is the gain measurement of the
+     * edge rows, gain.c dg_apply_measured_gain), every 3rd below. */
+    bool fine = true;
+    for (int g = (int)rf_gain_table()->max_index; g >= 54 && esp_timer_get_time() < deadline; g -= fine ? 1 : 3) {
+        receiver_set_gain((uint8_t)g);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        cna_sums_t s = {0};
+        uint8_t buf[PROBE_BYTES];
+        double m2s = 0.0, m4s = 0.0;
+        unsigned got = 0;
+        for (unsigned tries = 0; tries < 48u && got < 24u; ++tries) {
+            vTaskDelay(1);
+            if (!copy_probe_window(buf, NULL)) continue;
+            cna_sums_t p = {0};
+            for (unsigned k = 0; k < sizeof(buf); ++k) cna_sums_add(&p, buf[k]);
+            float mi, mq;
+            cna_mean(&p, &mi, &mq);
+            double m2, m4;
+            cna_moments(&p, mi, mq, &m2, &m4);
+            m2s += m2; m4s += m4;
+            cna_sums_merge(&s, &p);
+            ++got;
+        }
+        if (got < 8u) continue;
+        /* Noise only (Gaussian: M4 ~ 2 M2^2); a row below one 4-bit step
+         * reads ~0.25-0.5 cells^2 and is kept (cn_auto marks it
+         * quantisation-limited). */
+        const double m2 = m2s / got, kurt = (m4s / got) / (m2 * m2);
+        if (m2 >= CNA_QLIM_CELLS2 && kurt < 1.85) { ++rejected; continue; }   /* G83 noise folds a little: ~1.9 */
+        float mi, mq;
+        cna_mean(&s, &mi, &mq);
+        double M2, M4;
+        cna_moments(&s, mi, mq, &M2, &M4);
+        receiver_cn_noise_store((uint8_t)g, (float)M2);
+        ++rows;
+        if (M2 < CNA_QLIM_CELLS2) fine = false;
+        printf("CN_NOISE row=%d noise_cells2=%.3f kurtosis=%.2f\n", g, M2, kurt);
+    }
+    receiver_set_gain(restore);
+    receiver_resume();
+    receiver_cn_noise_save();
+    printf("CN_NOISE startup rows=%u rejected=%u (per-row noise for C/N-AUTO)\n", rows, rejected);
+}
+
 static void calib_record(bool manual, int64_t t0);   /* flight log, below */
 #define STARTUP_BUDGET_US 120000000LL
 /* A full calibration (first boot, a new calibration generation, CALIBRATE)
@@ -1626,6 +1816,8 @@ static void startup_phase(bool manual)
         if (esp_timer_get_time() < deadline) dco_startup(manual, deadline);
         if (esp_timer_get_time() < deadline) dco_startup_profiles(manual, deadline);
         else dco_ready_note();
+        printf("STARTUP step=noise_map\n");
+        if (esp_timer_get_time() < deadline) noise_map_startup(deadline);
         printf("STARTUP step=deviation\n");
         /* Video needs a moment back on the own channel before measuring. */
         status_screen_end();
@@ -1745,13 +1937,21 @@ static void calibration_task(void *arg)
     rf_set_post_gain_hook(dco_post_gain);
     printf("STARTUP task up\n");
     startup_phase(false);
+    int64_t periodic_us = 0;
     for (;;) {
         if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250))) {
-            /* Woken for DC: only the servo, the rest keeps its 250 ms pace. */
+            /* Woken for DC: the servo now, and the rest still at its 250 ms
+             * pace. The urgent wakes used to skip it altogether: after a
+             * channel change the old DC table pushed the noise onto a rail,
+             * one-sided clipping woke the servo every 100 ms, dco_service()
+             * never ran to load the new channel's table, and the servo skipped
+             * the foreign table: no DC correction until the next boot (board,
+             * PR #228: A1 -> A2/A3, every probe clipped for minutes). */
             ++s_dc_urgent_wakes;
             drift_service();
-            continue;
+            if (esp_timer_get_time() - periodic_us < 250000) continue;
         }
+        periodic_us = esp_timer_get_time();
         if (s_manual_requested && !s_menu_active) { s_manual_requested = false; startup_phase(true); continue; }
         if (s_lane_requested && !s_menu_active) { s_lane_requested = false; lane_compare(); continue; }
         dco_service();
@@ -1880,13 +2080,13 @@ void calibration_print(void)
                    g <= ARC_VENDOR_GAIN_MAX ? s_dco.e[g].valid : 0u, g <= ARC_VENDOR_GAIN_MAX ? s_dco_banned[g] : 0u);
     }
     printf("DC_SERVO dc_mcells=%d/%d slope_mcells_per_code=%d/%d offset=%d/%d own_row=%u steps=%lu writes=%lu "
-           "estimates=%lu learned=%lu relearned=%lu sign_rejects=%lu forgotten=%lu urgent_wakes=%lu skip=%lu/%lu/%lu/%lu/%lu fault=%u table_reloads=%lu reload_why=%u "
+           "estimates=%lu learned=%lu relearned=%lu sign_rejects=%lu turns=%lu forgotten=%lu urgent_wakes=%lu skip=%lu/%lu/%lu/%lu/%lu fault=%u table_reloads=%lu reload_why=%u "
            "volatile=1\n", s_drift_avg[0], s_drift_avg[1], s_servo.slope[0], s_servo.slope[1],
            dco_offset(s_current_gain, 0), dco_offset(s_current_gain, 1),
            s_current_gain <= ARC_VENDOR_GAIN_MAX ? (unsigned)s_drift_set[s_current_gain] : 0u,
            (unsigned long)s_servo.steps, (unsigned long)s_servo_writes, (unsigned long)s_servo_estimates,
            (unsigned long)s_servo.learned, (unsigned long)s_servo.relearned,
-           (unsigned long)s_servo.sign_rejects, (unsigned long)s_servo.forgotten, (unsigned long)s_dc_urgent_wakes,
+           (unsigned long)s_servo.sign_rejects, (unsigned long)s_servo.turns, (unsigned long)s_servo.forgotten, (unsigned long)s_dc_urgent_wakes,
            (unsigned long)s_servo_skip[0], (unsigned long)s_servo_skip[1], (unsigned long)s_servo_skip[2],
            (unsigned long)s_servo_skip[3], (unsigned long)s_servo_skip[4], (unsigned)s_dc_fault,
            (unsigned long)s_dco_reloads, (unsigned)s_dco_reload_why);
@@ -1897,6 +2097,12 @@ void calibration_print(void)
            dco_template_rows(), s_dco_seed_mhz, (unsigned long)s_dco_seeds, stored, DCO_SLOTS);
     for (unsigned k = 0; k < DCO_SLOTS; ++k) if (s_dco_index.freq[k]) printf(" %u", s_dco_index.freq[k]);
     printf("\n");
+    printf("DCO_REPAIR bad_dropped=%lu repairs=%lu repair_fails=%lu borrowed_holds=%lu (unconverged rows dropped, "
+           "searched from a converged neighbour; a missing row holds the nearest converged one's codes)\n",
+           (unsigned long)s_dco_bad_dropped, (unsigned long)s_dco_repairs, (unsigned long)s_dco_repair_fails,
+           (unsigned long)s_dco_borrowed);
+    printf("DCO_ADOPT rows=%lu (template rows taken as own codes after the servo held them on receiver noise)\n",
+           (unsigned long)s_dco_adopted);
     printf("DCO_CONTEXT table_freq=%u table_bw20=%u table_code=%d table_skirt=%d "
            "active_freq=%u active_bw20=%u active_code=%d active_skirt=%u filter_same=%u\n",
            s_dco.freq, (unsigned)s_dco.filter_bw20, (int)s_dco.filter_code, (int)s_dco.filter_skirt,

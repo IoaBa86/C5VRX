@@ -85,6 +85,10 @@ jobs:
           /tmp/test_rx_level
           cc -O2 -std=c11 -Wall -Wextra -Werror -I../main test_keel_track.c ../main/gain.c ../main/arc_phy.c -lm -o /tmp/test_keel_track
           /tmp/test_keel_track | grep -v "^S,"
+          cc -O2 -std=c11 -Wall -Wextra -Werror -I../main test_cn_auto.c -lm -o /tmp/test_cn_auto
+          /tmp/test_cn_auto
+          cc -O2 -std=c11 -Wall -Wextra -Werror -I../main test_gain_measured.c ../main/gain.c ../main/arc_phy.c -lm -o /tmp/test_gain_measured
+          /tmp/test_gain_measured
           cc -O2 -std=c11 -Wall -Wextra -Werror -I../main test_gain_track.c ../main/gain.c ../main/arc_phy.c -lm -o /tmp/test_gain_track
           /tmp/test_gain_track | grep -v "^R," | tail -8
           cc -O2 -std=c11 -Wall -Wextra -Werror -I../main test_gain_measure.c ../main/gain.c ../main/arc_phy.c -lm -o /tmp/test_gain_measure

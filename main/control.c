@@ -449,7 +449,7 @@ static void control_task(void *arg)
              * second (20 ticks). */
             static uint8_t level_ticks;
             if (copy_control_window(s_window, CONTROL_BYTES)) receiver_level_feed(s_window, CONTROL_BYTES);
-            if (++level_ticks >= 20u) { level_ticks = 0; receiver_level_roll(false); }
+            if (++level_ticks >= 20u) { level_ticks = 0; receiver_level_roll(false, false); }
             /* A multimeter needs longer than 30 s; the page is only reached
              * by pressing through the menu. */
             const unsigned idle_limit = s_menu_cursor == MENU_DAC ? DAC_IDLE_TICKS : MENU_IDLE_TICKS;
