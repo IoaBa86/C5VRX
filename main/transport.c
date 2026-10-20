@@ -284,8 +284,13 @@ static bool write_lut_entry(void *ctx, unsigned entry, uint16_t value)
 /* Apply one complete target using the normal pipeline restart. Copy the
  * shadow only after the halted RAM verifies; a failed load resumes baseline
  * video instead of repeatedly retrying writes under the running core. */
+static int64_t stage_now(void);
+static void stage_note(int stage, int64_t us);
+static void stage_hooks(void) { tr_hook_now = stage_now; tr_hook_note = stage_note; }
+
 unsigned transport_kp_tick(void)
 {
+    stage_hooks();
     if (!s_lut_known || !s_started || s_menu_active || transport_kp_level() == s_kp_target) return 0;
     uint32_t before = s_kp_writes;
     (void)switch_live(s_kp_target, s_prog_lp);
@@ -348,7 +353,7 @@ static bool switch_live(int level, bool lp)
     return ok;
 }
 
-bool transport_apply_auto(int level, bool lp) { return switch_live(level, lp); }
+bool transport_apply_auto(int level, bool lp) { stage_hooks(); return switch_live(level, lp); }
 
 uint32_t transport_switch_wait_ms(void)
 {
@@ -483,15 +488,13 @@ static void transport_sync_restart_finish(bool verified);
 /* Where a restart's picture gap goes (T TRANSPORT_STAGES_US, range audit
  * PR #230): the last restart's time per stage. */
 static uint32_t s_stage_us[TR_STAGES], s_quiesce_us;
-static bool quiesce_do(void *ctx);
-static bool quiesce(void *ctx)
+static int64_t stage_now(void) { return esp_timer_get_time(); }
+static void stage_note(int stage, int64_t us)
 {
-    const int64_t t0 = esp_timer_get_time();
-    const bool ok = quiesce_do(ctx);
-    s_quiesce_us = (uint32_t)(esp_timer_get_time() - t0);
-    return ok;
+    if (stage < 0) s_quiesce_us = (uint32_t)us;
+    else if (stage < TR_STAGES) s_stage_us[stage] = (uint32_t)us;
 }
-static bool quiesce_do(void *ctx)
+static bool quiesce(void *ctx)
 {
     const restart_t *r=ctx;
     if(!transport_sync_restart_begin(r && r->flag) && !transport_sync_live_cancel())return false;
@@ -502,15 +505,7 @@ static bool quiesce_do(void *ctx)
 }
 
 static esp_err_t start_rings_tail(void);
-static bool restart_stage_do(void *ctx, tr_stage_t stage, bool rollback);
 static bool restart_stage(void *ctx, tr_stage_t stage, bool rollback)
-{
-    const int64_t t0 = esp_timer_get_time();
-    const bool ok = restart_stage_do(ctx, stage, rollback);
-    if (stage < TR_STAGES) s_stage_us[stage] = (uint32_t)(esp_timer_get_time() - t0);
-    return ok;
-}
-static bool restart_stage_do(void *ctx, tr_stage_t stage, bool rollback)
 {
     restart_t *r = ctx;
     if (stage == TR_BS_ENABLE && rollback) {
@@ -578,6 +573,7 @@ static bool restart_stage_do(void *ctx, tr_stage_t stage, bool rollback)
         printf("TRANSPORT restart stage=%d rollback=%u error=%s\n", stage, rollback, esp_err_to_name(err));
     return err == ESP_OK;
 }
+
 
 static int find_dma(bool rx)
 {
