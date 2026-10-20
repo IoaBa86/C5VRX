@@ -228,6 +228,7 @@ bool calibration_sphase_settled(void);
 bool calibration_dc_ok(uint8_t gain);
 /* Explicit bench-only lane comparison (console L): video stops ~2 s. */
 void lane_compare_request(void);
+void self_noise_request(void);   /* bench: noise floor with the video output on vs off (console N) */
 
 /* ---- menu.c ---- */
 enum { MENU_BAND, MENU_CHANNEL, MENU_SCAN, MENU_VIDEO, MENU_CALIBRATE, MENU_OUTPUT, MENU_GAIN, MENU_FLYWHEEL, MENU_DAC,
