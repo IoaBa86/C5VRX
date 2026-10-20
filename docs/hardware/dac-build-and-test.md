@@ -114,7 +114,7 @@ use the AV cable that came with the goggles.
 ### 1. Test pattern
 
 Open the menu (hold BOOT for 0.6 s), press BOOT until **DAC TEST** is
-selected, and the screen switches to the test pattern. From a computer, the
+selected, and the test pattern appears next to the item list. From a computer, the
 `Z` key on the USB console or the **DAC TEST** tab of the web flasher does the
 same.
 
@@ -123,8 +123,9 @@ same.
 *The pattern from a correctly wired DAC, photographed on a display fed
 through an AV-to-HDMI converter. The ramp's individual steps are visible and
 its bright end is washed out by the display's brightness setting; both are
-normal. The D4 bar shows no visible step, as expected. The hint under the
-ramp now reads EVERY STEP BRIGHTER.*
+normal. The D4 bar shows no visible step, as expected. This photo shows an
+earlier full-screen layout; the pattern now sits in the menu's content pane,
+next to the item list.*
 
 The pattern has two parts:
 

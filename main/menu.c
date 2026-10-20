@@ -155,25 +155,21 @@ void menu_dac_step(void)
     if (s_menu_active) menu_render();
 }
 
-/* Full-screen DAC pattern: a ramp over every level from blanking to the top
- * code, then one bar per bit whose halves differ in that bit alone. */
+/* DAC TEST page, in the content pane like every other item: a ramp over
+ * every level from blanking to the top code, then one bar per bit whose
+ * halves differ in that bit alone. */
 static void render_dac_pattern(void)
 {
-    static const char ramp_hint[] = "RAMP: EVERY STEP BRIGHTER";
-    memset(s_raster.ui, UI_ROOT, sizeof(s_raster.ui));
-    rect(0, 0, MENU_UI_WIDTH, 8, UI_HEADER);
-    text("DAC TEST", 6, 0, UI_WHITE, 1);
-    text_right("HOLD: METER  PRESS: NEXT", 376, 0, UI_MUTED);
-    /* Ramp, written per sample: 44 levels of ~36 samples (0.9 us). */
-    const unsigned ramp_samples = MENU_UI_WIDTH * MENU_UI_X_SCALE_NUM / MENU_UI_X_SCALE_DEN;
-    for (unsigned y = 10; y < 26; ++y)
-        for (unsigned x = 0; x < ramp_samples; ++x) s_raster.ui[y][x] = dac_check_ramp_code(x, ramp_samples);
-    text(ramp_hint, ((int)MENU_UI_WIDTH - 8 * ((int)sizeof(ramp_hint) - 1)) / 2, 27, UI_MUTED, 1);
+    /* Ramp, written per sample: 44 levels of ~26 samples (0.65 us). */
+    const unsigned x0 = 100u * MENU_UI_X_SCALE_NUM / MENU_UI_X_SCALE_DEN;
+    const unsigned x1 = 376u * MENU_UI_X_SCALE_NUM / MENU_UI_X_SCALE_DEN;
+    for (unsigned y = 21; y < 33; ++y)
+        for (unsigned x = x0; x < x1; ++x) s_raster.ui[y][x] = dac_check_ramp_code(x - x0, x1 - x0);
     for (unsigned k = 0; k < DAC_CHECK_BITS; ++k) {
-        const int x = 6 + (int)k * 63;
-        rect(x, 37, 28, 10, dac_check_bar_base(k));
-        rect(x + 28, 37, 28, 10, dac_check_bar_top(k));
-        text(dac_check_pins[k], x + 20, 48, UI_WHITE, 1);
+        const int x = 100 + (int)k * 46;
+        rect(x, 36, 21, 10, dac_check_bar_base(k));
+        rect(x + 21, 36, 21, 10, dac_check_bar_top(k));
+        text(dac_check_pins[k], x + 13, 48, UI_WHITE, 1);
     }
 }
 
@@ -227,11 +223,6 @@ void menu_render(void)
     if (s_menu_cursor != MENU_DAC) s_dac_step = DAC_STEP_PATTERN;   /* leaving the item ends the meter */
     if (s_dac_step != DAC_STEP_PATTERN) { raster_flat(dac_check_code(s_dac_step)); return; }
     raster_restore();
-    if (s_menu_cursor == MENU_DAC) {
-        render_dac_pattern();
-        sync_dma_c2m(s_raster.ui, sizeof(s_raster.ui));
-        return;
-    }
     memset(s_raster.ui, UI_ROOT, sizeof(s_raster.ui));
     rect(0, 0, MENU_UI_WIDTH, MENU_UI_LINES, UI_PANEL);
     /* Header: name, channel, frequency, gain, signal, standard. */
@@ -339,6 +330,10 @@ void menu_render(void)
         text("SAVED, APPLIES ON EXIT", 100, 36, UI_MUTED, 1);
         text(transport_sync_flywheel_enabled() ? "FILLS SYNC WHEN THE CAMERA DROPS" :
              "CAMERA SYNC ONLY", 100, 47, UI_WHITE, 1);
+        break;
+    case MENU_DAC:
+        title("DAC TEST", "HOLD: METER STEPS");
+        render_dac_pattern();
         break;
     case MENU_CALIBRATE:
         title("CALIBRATE", "HOLD: CALIBRATE NOW");
