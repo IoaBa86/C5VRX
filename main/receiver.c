@@ -446,15 +446,54 @@ void receiver_cn_noise_save(void) { cna_save(); s_cna_gain_dirty = true; }
  * cells^2) give the gain core and the dBm meter their real gain
  * (dg_apply_measured_gain). Applied by the observer task, the core's only
  * writer, after every map change and every re-bind. */
+/* The gain table comes from the startup noise map only (no carrier,
+ * kurtosis-checked, calibration.c): the gain per row does not depend on the
+ * channel or the analog filter, so it is kept for the whole boot and stored
+ * ("gtab") for a boot with the VTX on. The live map is not used: it follows
+ * the channel and filter (measured_rows=0 after a profile switch, board
+ * 2026-10-20) and its in-service learning took in a weak carrier (G83-G72
+ * 9.1 dB against 10.8 measured at boot). */
+#define GTAB_VERSION 2u   /* 2: only clean startup passes (two-sided kurtosis gate) */
+typedef struct { uint8_t version, rows; uint16_t th_x256[DG_STATES]; } gtab_blob_t;
 static unsigned s_gain_rows_measured;
+static float s_gain_th[DG_STATES];
+static bool s_gain_th_loaded;
+static float s_gain_th_staged[DG_STATES];   /* calibration task -> observer (the core's only writer) */
+static volatile bool s_gain_th_new;
 static void cna_apply_gain(void)
 {
-    float th[DG_STATES] = {0};
-    for (unsigned k = 0; k < DG_STATES && k < CNA_ROWS; ++k) {
-        const float t = s_cna_map.n[k] >= CNA_MIN_SAMPLES ? s_cna_map.noise[k] - CNA_QUANT_CELLS2 : 0.0f;
-        th[k] = t >= 0.5f ? t : 0.0f;
+    if (!s_gain_th_loaded) {
+        s_gain_th_loaded = true;
+        gtab_blob_t b;
+        if (blob_load("gtab", &b, sizeof(b)) && b.version == GTAB_VERSION && b.rows >= 2u)
+            for (unsigned k = 0; k < DG_STATES; ++k) s_gain_th[k] = b.th_x256[k] / 256.0f;
     }
-    s_gain_rows_measured = dg_apply_measured_gain(&s_gain, th);
+    if (s_gain_th_new) {
+        __sync_synchronize();
+        memcpy(s_gain_th, s_gain_th_staged, sizeof(s_gain_th));
+        s_gain_th_new = false;
+    }
+    s_gain_rows_measured = dg_apply_measured_gain(&s_gain, s_gain_th);
+}
+
+void receiver_gain_table_measured(const float noise_cells2[DG_STATES])
+{
+    float th[DG_STATES] = {0};
+    unsigned rows = 0;
+    for (unsigned k = 0; k < DG_STATES; ++k) {
+        const float t = noise_cells2[k] - CNA_QUANT_CELLS2;
+        th[k] = noise_cells2[k] > 0.0f && t >= 0.5f ? t : 0.0f;
+        rows += th[k] > 0.0f;
+    }
+    if (rows < 2u) return;
+    memcpy(s_gain_th_staged, th, sizeof(th));
+    __sync_synchronize();
+    s_gain_th_new = true;
+    gtab_blob_t b = {.version = GTAB_VERSION, .rows = (uint8_t)rows};
+    for (unsigned k = 0; k < DG_STATES; ++k) b.th_x256[k] = (uint16_t)(th[k] * 256.0f + 0.5f);
+    gtab_blob_t old;
+    if (!blob_load("gtab", &old, sizeof(old)) || memcmp(&old, &b, sizeof(b))) (void)blob_store("gtab", &b, sizeof(b));
+    s_cna_gain_dirty = true;
 }
 
 static void cna_probe(const uint8_t *sample, size_t bytes, const dg_observation_t *o, uint8_t row, int64_t now)

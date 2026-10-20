@@ -1728,6 +1728,7 @@ static void noise_map_startup(int64_t deadline)
     if (!receiver_pause("CNMAP")) return;
     const uint8_t restore = s_current_gain;
     unsigned rows = 0, rejected = 0;
+    float measured[DG_STATES] = {0};   /* the gain table (receiver_gain_table_measured) */
     /* Every row while the noise is real (it is the gain measurement of the
      * edge rows, gain.c dg_apply_measured_gain), every 3rd below. */
     bool fine = true;
@@ -1756,18 +1757,31 @@ static void noise_map_startup(int64_t deadline)
          * reads ~0.25-0.5 cells^2 and is kept (cn_auto marks it
          * quantisation-limited). */
         const double m2 = m2s / got, kurt = (m4s / got) / (m2 * m2);
-        if (m2 >= CNA_QLIM_CELLS2 && kurt < 1.85) { ++rejected; continue; }   /* G83 noise folds a little: ~1.9 */
+        /* Receiver noise reads 1.88-2.13 on a clean channel (G83 folds a
+         * little: ~1.9); a carrier lowers it, bursts raise it: B2 (5752 MHz,
+         * next to Wi-Fi 149/151) read 2.3-14 on 2026-10-20, and row 72 came
+         * out above row 73. Neither is the receiver's noise. */
+        if (m2 >= CNA_QLIM_CELLS2 && (kurt < 1.85 || kurt > 2.25)) {
+            ++rejected;
+            printf("CN_NOISE row=%d rejected kurtosis=%.2f (carrier or interference)\n", g, kurt);
+            continue;
+        }
         float mi, mq;
         cna_mean(&s, &mi, &mq);
         double M2, M4;
         cna_moments(&s, mi, mq, &M2, &M4);
         receiver_cn_noise_store((uint8_t)g, (float)M2);
+        if (g < DG_STATES) measured[g] = (float)M2;
         ++rows;
         if (M2 < CNA_QLIM_CELLS2) fine = false;
         printf("CN_NOISE row=%d noise_cells2=%.3f kurtosis=%.2f\n", g, M2, kurt);
     }
     receiver_set_gain(restore);
     receiver_resume();
+    /* The gain table only from a clean pass (the stored one stays otherwise):
+     * any rejected row above the 4-bit step means interference or a carrier. */
+    if (rejected == 0u) receiver_gain_table_measured(measured);
+    else printf("CN_NOISE gain_table=kept (rejected rows on this channel)\n");
     receiver_cn_noise_save();
     printf("CN_NOISE startup rows=%u rejected=%u (per-row noise for C/N-AUTO)\n", rows, rejected);
 }

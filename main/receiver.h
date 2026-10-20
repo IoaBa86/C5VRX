@@ -214,6 +214,8 @@ void receiver_pair_sweep_toggle(void);   /* bench, console Q */
 cna_reading_t receiver_cn_reading(void);   /* C/N-AUTO: value, confidence, source */
 void receiver_cn_noise_store(uint8_t row, float cells2);   /* startup noise map (calibration.c) */
 void receiver_cn_noise_save(void);
+/* The startup noise map as the gain table (noise per row, 0 = not measured). */
+void receiver_gain_table_measured(const float noise_cells2[DG_STATES]);
 unsigned calibration_filter_nbw_khz(void);   /* measured noise bandwidth of the active filter, 0 unknown */
 uint32_t receiver_sentinel_forwarded(void);
 void receiver_level_feed(const uint8_t *window, size_t bytes);   /* the menu's control windows */
