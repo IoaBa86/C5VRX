@@ -92,6 +92,8 @@ typedef struct {
     bool narrow;            /* narrow (MATCHED, 10 MHz class) filter: own curves; set by the caller */
     bool wide;              /* WIDE profile (16 MHz class) filter: own curves; set by the caller */
     uint8_t gain;           /* receiver gain index; set by the caller, 0 = unknown (C/N rule) */
+    bool lp_by_cn;          /* LP from the C/N benefit table, not the gain (set by the caller) */
+    int64_t cn_known_us;    /* last window with a known C/N (an unknown one is never 0 dB) */
 } kp_ladder_t;
 
 /* A control window the ladder may use: settled after a retune or restart,
@@ -135,6 +137,8 @@ static inline void kp_ladder_reset(kp_ladder_t *l)
     l->last_program_us = 0;
     l->release_hold_us = KP_LP_RELEASE_BASE_US;
     l->released_us = -(1LL << 40);
+    l->cn_known_us = -(1LL << 40);
+    l->lp_by_cn = false;   /* the caller sets the policy every tick (control.c) */
 }
 
 /* Best kp (x100) per VTX deviation class at C/N 0, 2, 4, 8, 12, 20 dB:
@@ -209,6 +213,33 @@ static const uint8_t kp_lp_curve_wide16_x100[6] = {85, 85, 85, 85, 85, 85};
 static const int16_t kp_lp_on_x10[KP_CLASSES] = {65, 65, 70, 85};
 static const int16_t kp_lp_floor_x10[KP_CLASSES] = {-999, -999, -999, 15};
 #define KP_LP_HYST_X10   15            /* leave LP 1.5 dB above where it is entered */
+
+/* LP as a late rescue by its predicted picture benefit (PR #230 review,
+ * research/data/best_combo*.json, 8 seeds PAL+NTSC, the 20.7 MHz C/N scale
+ * of C/N-AUTO): enter where LP gives +1 dB luma SINAD over the best U85Q,
+ * leave where the benefit is back to 0 dB. Per deviation class:
+ * 12 MHz (DEFAULT, and the board's ~11.9 MHz "narrow"): 0.69 5.4/7.9,
+ * 1.0 4.4/7.5, 1.05-1.15 interpolated 5.4/7.9, 1.4 6.4/8.3; 10 MHz (a
+ * narrow filter measured close to the model): 0.69 4.3/6.9, 1.0 3.5/6.5;
+ * 16 MHz (WIDE): 1.4 7.1/9.0. The gain no longer decides: G70 meant LP at a
+ * 10-17 dB C/N on the walks (2-3.5 dB SINAD lost; research/lp_policy_replay.py:
+ * 57-88 % less unnecessary LP, no missed rescue). */
+static const int16_t kp_lp_enter12_x10[KP_CLASSES] = {54, 44, 54, 64};
+static const int16_t kp_lp_exit12_x10[KP_CLASSES] = {79, 75, 79, 83};
+static const int16_t kp_lp_enter10_x10[2] = {43, 35};
+static const int16_t kp_lp_exit10_x10[2] = {69, 65};
+#define KP_LP_ENTER16_X10 71
+#define KP_LP_EXIT16_X10  90
+#define KP_CN_FRESH_US 1000000LL   /* an LP decision needs a known C/N this recent; else hold */
+static inline bool kp_ladder_want_lp_cn(int cls, int cn_x10, bool lp, bool narrow, bool wide)
+{
+    int enter, leave;
+    if (wide && cls == KP_CLASS_WIDE) { enter = KP_LP_ENTER16_X10; leave = KP_LP_EXIT16_X10; }
+    else if (narrow && cls <= KP_CLASS_NORMAL) { enter = kp_lp_enter10_x10[cls]; leave = kp_lp_exit10_x10[cls]; }
+    else { enter = kp_lp_enter12_x10[cls]; leave = kp_lp_exit12_x10[cls]; }
+    if (cn_x10 < kp_lp_floor_x10[cls]) return lp;   /* under the floor LP can cost lock: hold */
+    return lp ? cn_x10 <= leave : cn_x10 < enter;
+}
 
 static inline int kp_ladder_class(int dev_x100)
 {
@@ -303,20 +334,28 @@ static inline uint8_t kp_ladder_update_evidence(kp_ladder_t *l, int cn_x10, bool
      * counts as 0 dB. */
     if (window_ok) {
         l->last_usable_us = now_us;
-        const int raw_cn = cn_x10 <= CN_UNKNOWN_X10 ? 0 : cn_x10;
-        if (!l->cn_init) { l->cn_q4 = raw_cn * 16; l->cn_init = true; }
-        else l->cn_q4 += (raw_cn * 16 - l->cn_q4) / 8;
+        if (cn_x10 > CN_UNKNOWN_X10) {
+            l->cn_known_us = now_us;
+            if (!l->cn_init) { l->cn_q4 = cn_x10 * 16; l->cn_init = true; }
+            else l->cn_q4 += (cn_x10 * 16 - l->cn_q4) / 8;
+        } else if (!l->lp_by_cn) {   /* the gain policy's floor: a noise-like window counts as 0 dB */
+            if (!l->cn_init) { l->cn_q4 = 0; l->cn_init = true; }
+            else l->cn_q4 += (0 - l->cn_q4) / 8;
+        }
     }
     const int cn = l->cn_init ? l->cn_q4 / 16 : 0;
     /* A known gain is evidence for LP without any IQ measurement. Retunes
      * and PHY ownership still hold it. The C/N fallback needs a window. */
-    const bool program_evidence = program_ok && (l->gain || window_ok);
+    const bool cn_fresh = l->cn_init && now_us - l->cn_known_us <= KP_CN_FRESH_US;
+    const bool program_evidence = program_ok && (l->lp_by_cn ? cn_fresh : (l->gain || window_ok));
     if (program_evidence) l->last_program_us = now_us;
     if (allow_lp && program_evidence) {
         /* Program first: a switch lands on the new program's curve level at
          * this C/N, a quality-matched point (the curves cross near the
          * switch C/N), then kp steps on as usual. */
-        const int8_t want = l->gain ? (l->gain >= (l->lp ? KP_LP_GAIN_OFF : KP_LP_GAIN_ON) ? 1 : 0)
+        const int8_t want = l->lp_by_cn ? (kp_ladder_want_lp_cn(kp_ladder_class(dev_x100), cn, l->lp, l->narrow,
+                                                                l->wide) ? 1 : 0)
+                          : l->gain ? (l->gain >= (l->lp ? KP_LP_GAIN_OFF : KP_LP_GAIN_ON) ? 1 : 0)
                                     : (kp_ladder_want_lp_g(kp_ladder_class(dev_x100), cn, l->lp, l->wide) ? 1 : 0);
         if (want == (int8_t)l->lp) l->lp_pending = -1;
         else if (want != l->lp_pending) { l->lp_pending = want; l->lp_since = now_us; }

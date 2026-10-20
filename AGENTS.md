@@ -878,8 +878,15 @@ before allocating internal DMA descriptors in 384-byte chunks. Interlaced
 NTSC/PAL needs about 18/22 KiB; progressive fallback about 9/11 KiB.
 Keep the 6144-byte control stack reserved before RF/driver allocations.
 See [PR212](docs/PR212.md) for current behavior, evidence and board checks.
-Gain-driven LP (G70/G65) follows the gain only in AUTO; manual MAX/fixed
-gain uses the C/N rule (PR #218 follow-up). `SYNC_FLYWHEEL_LOAD` measures
+LP is a rescue by predicted picture benefit since PR #230 (operator
+decision 2026-10-20, console `O`, NVS `lp_cn`, default on): in below the
+C/N where the bit-exact curves give LP +1 dB luma SINAD over the best U85Q,
+out above the 0 dB crossover, per deviation class and measured filter
+(`kp_ladder_want_lp_cn`); an unknown C/N holds, never counts as 0 dB; the
+gain no longer decides. Replay of three walks (`research/lp_policy_replay.py`):
+57-88 % less LP above the exit C/N, no missed rescue. The earlier
+gain-driven LP (G70/G65, PR #218 follow-up) stays selectable with `O`.
+`SYNC_FLYWHEEL_LOAD` measures
 flywheel ISR occupancy; board numbers pending (`docs/FINDINGS.md`).
 
 

@@ -101,6 +101,7 @@ static void help(void)
            "  F calibrate (startup steps again; video stops), L bench IQ lane comparison (video stops ~3 s),\n"
            "  H bench: LUT writes while running (readback; another kp level for ~1 ms),\n"
            "  N bench: noise floor with the video output on vs off (VTX off; video stops ~0.3 s x4),\n"
+           "  O LP policy: RESCUE by C/N benefit (default) <-> GAIN (G70/G65, earlier rule) (saved),\n"
            "  Z DAC self-test (bench: test pattern, then one flat level per pin for a multimeter),\n"
            "  ` reboot to USB download (flashing)\n");
 }
@@ -149,7 +150,7 @@ static void console_task(void *arg)
             case 'N': self_noise_request(); break;
             case 'Y': case 'W': case 'X': flightlog_console((char)c); break;
             case 'h': case '?': help(); break;
-            case 'o': case 'e': case 'v': case 'n': case 'x': case 'c': case 'b': case 's': case 'K': case 'k': case 'j': case 'P': case 'g': case 'A': case 'U': case 'G': case 'Q': case 'Z': case 'H': {
+            case 'o': case 'e': case 'v': case 'n': case 'x': case 'c': case 'b': case 's': case 'K': case 'k': case 'j': case 'P': case 'g': case 'A': case 'U': case 'G': case 'Q': case 'Z': case 'H': case 'O': {
                 int command = c;
                 if (s_commands) (void)xQueueSend(s_commands, &command, 0);
                 break;
