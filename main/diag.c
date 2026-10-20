@@ -88,7 +88,7 @@ static void rx_supervise(const diag_record_t *r)
         .owned = s_menu_active || s_scan_active || calibration_in_startup(),
     };
     overloads = s_gain.overloads; one_sided = s_gain.one_sided_clips; have = true;
-    receiver_level_roll(s_rx.state == RX_ACQUIRE && s_rx.reason == 1u);   /* reason 1: no_carrier */
+    receiver_level_roll(s_rx.state == RX_ACQUIRE && s_rx.reason == 1u, r->video_pct >= 20u);   /* reason 1: no_carrier */
     const uint8_t before = s_rx.state;
     (void)rx_state_step(&s_rx, &o);
     /* Raw IQ at the range edge (the blackbox's ground truth for the C/N

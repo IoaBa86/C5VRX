@@ -441,7 +441,7 @@ static void control_task(void *arg)
              * second (20 ticks). */
             static uint8_t level_ticks;
             if (copy_control_window(s_window, CONTROL_BYTES)) receiver_level_feed(s_window, CONTROL_BYTES);
-            if (++level_ticks >= 20u) { level_ticks = 0; receiver_level_roll(false); }
+            if (++level_ticks >= 20u) { level_ticks = 0; receiver_level_roll(false, false); }
             if (++menu_idle >= MENU_IDLE_TICKS) { menu_close(); printf("[MENU] closed after 30 s idle\n"); }
             else if (++menu_refresh >= 5) { menu_refresh = 0; menu_render(); }
         } else menu_idle = menu_refresh = 0;

@@ -299,7 +299,7 @@ static void level_accumulate(const dg_observation_t *o, uint8_t gain)
     else { s_lvl_sum[gain] += o->pwr_x16; ++s_lvl_n[gain]; }
     taskEXIT_CRITICAL(&s_lvl_lock);
 }
-void receiver_level_roll(bool no_carrier)
+void receiver_level_roll(bool no_carrier, bool video)
 {
     static uint32_t sum[RX_LEVEL_ROWS], n[RX_LEVEL_ROWS];
     uint32_t clipped;
@@ -319,7 +319,7 @@ void receiver_level_roll(bool no_carrier)
         s_noise_rel = s_noise_rel > 0.0f ? s_noise_rel + (r.rel - s_noise_rel) / 8.0f : r.rel;
         r = rx_level_compute(sum, n, clipped, s_gain.model_db_q8, s_gain.table.max_index, s_noise_rel);
     }
-    s_level = r;
+    s_level = rx_level_gate(r, video);
 }
 rx_level_t receiver_level(void) { return s_level; }
 bool receiver_noise_learned(void) { return s_noise_rel > 0.0f; }
