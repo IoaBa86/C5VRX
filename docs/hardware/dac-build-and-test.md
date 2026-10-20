@@ -141,11 +141,19 @@ The pattern has two parts:
 
 | What you see | Likely cause |
 | --- | --- |
-| Smooth ramp, contrast grows from D4 to D9 | The DAC is correct |
+| Every ramp step brighter, contrast grows from D4 to D9 | The DAC is correct |
 | One bar with no contrast at all | That pin's resistor is missing, open or badly soldered |
 | Two bars in the wrong order | Those two resistors are swapped |
-| Ramp with repeating bands or steps backwards | At least one resistor is wrong; the bars show which |
+| One bar much stronger than its neighbours suggest | That pin's resistor is too small, or something is in parallel with it |
+| Ramp striped light and dark | A resistor is wrong. The wider the stripes, the higher the pin: every step is D4, every 2 steps D5, every 4 steps D6, every 8 steps D7. D8 and D9 show as one or two jumps |
 | Picture rolls, tears or is missing | Check the ground wire, the video lead and the 200 Ω load first |
+
+![The pattern with a deliberate fault on D4](dac-test-pattern-fault.jpg)
+
+*The same build with a 1 kΩ resistor clipped across D4's 8.2 kΩ, which makes
+D4 about nine times too strong. The D4 bar now shows strong contrast, and the
+ramp is striped light and dark at every step. Photographed with the earlier
+full-screen layout.*
 
 ### 2. Multimeter check
 
