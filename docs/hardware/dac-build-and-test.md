@@ -88,6 +88,12 @@ shared with the XIAO GND and the shield of the video lead.
 The video lead ends in an RCA plug, and a 5.8 GHz antenna is fitted to the
 XIAO's U.FL connector.
 
+<img src="dac-build-underside.jpg" alt="Underside of the board with the optional 470 pF capacitor" width="450">
+
+This build also has the optional 470 pF capacitor, fitted on the underside
+of the board between the VIDEO node and ground, in parallel with the 200 Ω
+load.
+
 Here the XIAO is mounted upside down, which is why the pin labels and BAT
 pads are visible. It works, with two caveats. The BOOT and RESET buttons
 face the board, so the menu is driven from the USB console or the web
